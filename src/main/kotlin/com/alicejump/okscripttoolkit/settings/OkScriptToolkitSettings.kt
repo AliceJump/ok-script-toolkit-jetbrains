@@ -24,6 +24,9 @@ class OkScriptToolkitSettings : SimplePersistentStateComponent<OkScriptToolkitSe
         var enablePoData by property(true)
         var enableInlayHints by property(true)
         var enableTemplateGallery by property(true)
+        // TaskLauncher settings
+        var okScriptProjectPath by string("")
+        var okScriptPython by string("")
     }
 
     init {
@@ -41,4 +44,6 @@ class OkScriptToolkitSettings : SimplePersistentStateComponent<OkScriptToolkitSe
     fun displayLocale(): String = state.displayLocale.orEmpty().ifBlank { "auto" }
     fun featureAliases(): List<String> = state.featureAliases.filter { it.isNotBlank() }.ifEmpty { listOf("fL", "FeatureList") }
     fun effectsFile(): String = state.effectsFile.orEmpty().ifBlank { "src/data/effects.py" }
+    fun okScriptProjectPath(): String = state.okScriptProjectPath.orEmpty()
+    fun okScriptPython(): String = state.okScriptPython.orEmpty()
 }

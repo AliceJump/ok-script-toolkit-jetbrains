@@ -13,6 +13,16 @@ repositories {
     }
 }
 
+// 把 Python 脚本打包进插件 resources（python/ 在 ok-script-toolkit/python/，jetbrains 的上一层）
+val pythonDir = project.rootDir.resolve("../python").normalize()
+val copyPython = tasks.register<Copy>("copyPythonScripts") {
+    from(pythonDir) {
+        include("**/*.py")
+    }
+    into(project.layout.buildDirectory.dir("resources/main/python"))
+}
+tasks.processResources { dependsOn(copyPython) }
+
 dependencies {
     intellijPlatform {
         val localPath = providers.gradleProperty("platformLocalPath").orNull

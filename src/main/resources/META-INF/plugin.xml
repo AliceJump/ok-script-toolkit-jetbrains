@@ -41,6 +41,10 @@
             id="ok-script Templates"
             anchor="right"
             factoryClass="com.alicejump.okscripttoolkit.ui.TemplatesToolWindowFactory"/>
+        <toolWindow
+            id="ok-script Tasks"
+            anchor="bottom"
+            factoryClass="com.alicejump.okscripttoolkit.tasklauncher.TaskLauncherToolWindowFactory"/>
 
         <notificationGroup
             id="okScriptToolkit"
@@ -57,6 +61,13 @@
             <add-to-group group-id="ToolsMenu" anchor="last"/>
             <keyboard-shortcut keymap="$default" first-keystroke="control alt T"/>
             <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt T"/>
+        </action>
+        <action
+            id="com.alicejump.okscripttoolkit.ShowTasks"
+            class="com.alicejump.okscripttoolkit.tasklauncher.ShowTasksAction"
+            text="Show ok-script Tasks"
+            description="Open the ok-script task launcher">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
     </actions>
 </idea-plugin>

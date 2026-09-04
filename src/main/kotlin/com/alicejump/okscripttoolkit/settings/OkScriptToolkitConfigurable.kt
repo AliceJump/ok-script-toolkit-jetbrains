@@ -19,6 +19,9 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
     private val enablePoData = JBCheckBox(OkScriptToolkitBundle.message("settings.enablePoData"))
     private val enableInlayHints = JBCheckBox(OkScriptToolkitBundle.message("settings.enableInlayHints"))
     private val enableTemplateGallery = JBCheckBox(OkScriptToolkitBundle.message("settings.templateGallery"))
+    // TaskLauncher settings
+    private val okScriptProjectPath = JBTextField()
+    private val okScriptPython = JBTextField()
 
     override fun getDisplayName(): String = OkScriptToolkitBundle.message("settings.displayName")
 
@@ -48,6 +51,14 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
             row { cell(enableInlayHints) }
             row { cell(enableTemplateGallery) }
         }
+        group(OkScriptToolkitBundle.message("settings.taskLauncher")) {
+            row(OkScriptToolkitBundle.message("settings.okScriptProjectPath")) {
+                cell(okScriptProjectPath).align(AlignX.FILL)
+            }
+            row(OkScriptToolkitBundle.message("settings.okScriptPython")) {
+                cell(okScriptPython).align(AlignX.FILL)
+            }
+        }
     }.also { reset() }
 
     override fun isModified(): Boolean {
@@ -60,7 +71,9 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
             effectsFile.text != state.effectsFile.orEmpty() ||
             enablePoData.isSelected != state.enablePoData ||
             enableInlayHints.isSelected != state.enableInlayHints ||
-            enableTemplateGallery.isSelected != state.enableTemplateGallery
+            enableTemplateGallery.isSelected != state.enableTemplateGallery ||
+            okScriptProjectPath.text != state.okScriptProjectPath.orEmpty() ||
+            okScriptPython.text != state.okScriptPython.orEmpty()
     }
 
     override fun apply() {
@@ -74,6 +87,8 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
         settings.state.enablePoData = enablePoData.isSelected
         settings.state.enableInlayHints = enableInlayHints.isSelected
         settings.state.enableTemplateGallery = enableTemplateGallery.isSelected
+        settings.state.okScriptProjectPath = okScriptProjectPath.text.trim()
+        settings.state.okScriptPython = okScriptPython.text.trim()
     }
 
     override fun reset() {
@@ -87,6 +102,8 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
         enablePoData.isSelected = state.enablePoData
         enableInlayHints.isSelected = state.enableInlayHints
         enableTemplateGallery.isSelected = state.enableTemplateGallery
+        okScriptProjectPath.text = state.okScriptProjectPath.orEmpty()
+        okScriptPython.text = state.okScriptPython.orEmpty()
     }
 
     private fun splitList(value: String): List<String> = value
