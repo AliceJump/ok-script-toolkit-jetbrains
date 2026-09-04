@@ -11,7 +11,7 @@ import com.intellij.openapi.project.Project
 @Service(Service.Level.PROJECT)
 @State(
     name = "com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings",
-    storages = [Storage("ok-lang-hints.xml")],
+    storages = [Storage("ok-script-toolkit.xml")],
 )
 class OkScriptToolkitSettings : SimplePersistentStateComponent<OkScriptToolkitSettings.SettingsState>(SettingsState()) {
     class SettingsState : BaseState() {

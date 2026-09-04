@@ -57,7 +57,7 @@ intellijPlatform {
         }
         vendor {
             name = "AliceJump"
-            url = "https://github.com/AliceJump/ok-lang-hints-jetbrains"
+            url = "https://github.com/AliceJump/ok-script-toolkit-jetbrains"
         }
     }
 

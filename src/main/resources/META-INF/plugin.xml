@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.alicejump.okscripttoolkit</id>
     <name>ok-script Toolkit</name>
-    <vendor url="https://github.com/AliceJump/ok-lang-hints">AliceJump</vendor>
+    <vendor url="https://github.com/AliceJump/ok-script-toolkit">AliceJump</vendor>
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.lang</depends>

@@ -28,5 +28,5 @@ pass `-PplatformLocalPath=/absolute/path/to/PyCharm` and run Gradle with JDK 21.
 
 The repository root project is the single release coordinator. The version in this
 repository must match the parent `package.json`, and only a new `vX.Y.Z` tag pushed to
-`AliceJump/ok-lang-hints` publishes both the VS Code and JetBrains distributions.
+`AliceJump/ok-script-toolkit` publishes both the VS Code and JetBrains distributions.
 This repository's own CI validates source changes but does not publish releases.

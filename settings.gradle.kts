@@ -1,1 +1,1 @@
-rootProject.name = "ok-lang-hints-jetbrains"
+rootProject.name = "ok-script-toolkit-jetbrains"
