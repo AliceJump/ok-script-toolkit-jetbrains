@@ -13,26 +13,21 @@ import com.intellij.psi.PsiFile
 class OkInlayHintsProvider : InlayHintsProvider {
     override fun createCollector(file: PsiFile, editor: Editor): InlayHintsCollector? {
         if (!OkScriptToolkitSettings.getInstance(file.project).state.enableInlayHints) return null
-        return Collector(file, editor)
+        return Collector(editor)
     }
 
     private class Collector(
-        private val file: PsiFile,
         private val editor: Editor,
     ) : SharedBypassCollector {
-        private val seen = mutableSetOf<Pair<Int, String>>()
-
         override fun collectFromElement(element: PsiElement, sink: InlayTreeSink) {
-            if (element !== file) return
+            if (element !is PsiFile) return
             val document = editor.document
-            val references = OkEditorSupport.references(document, 0, document.textLength, file.project)
+            val project = editor.project ?: return
+            val references = OkEditorSupport.references(document, 0, document.textLength, project)
             for (reference in references) {
-                val hint = OkEditorSupport.hint(reference, file.project) ?: continue
-                val key = reference.hintOffset to hint
-                if (!seen.add(key)) continue
+                val hint = OkEditorSupport.hint(reference, project) ?: continue
                 sink.addPresentation(
                     InlineInlayPosition(reference.hintOffset, true),
-                    hasBackground = false,
                 ) {
                     text(hint)
                 }

@@ -40,10 +40,17 @@
         <toolWindow
             id="ok-script Templates"
             anchor="right"
+            icon="/icons/templates.svg"
             factoryClass="com.alicejump.okscripttoolkit.ui.TemplatesToolWindowFactory"/>
+        <toolWindow
+            id="ok-script Characters"
+            anchor="right"
+            icon="/icons/toolbox.svg"
+            factoryClass="com.alicejump.okscripttoolkit.ui.CharacterToolWindowFactory"/>
         <toolWindow
             id="ok-script Tasks"
             anchor="bottom"
+            icon="/icons/task.svg"
             factoryClass="com.alicejump.okscripttoolkit.tasklauncher.TaskLauncherToolWindowFactory"/>
 
         <notificationGroup
@@ -67,6 +74,13 @@
             class="com.alicejump.okscripttoolkit.tasklauncher.ShowTasksAction"
             text="Show ok-script Tasks"
             description="Open the ok-script task launcher">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+        <action
+            id="com.alicejump.okscripttoolkit.ShowCharacterManager"
+            class="com.alicejump.okscripttoolkit.ui.ShowCharacterManagerAction"
+            text="Show ok-script Characters"
+            description="Open the ok-script character manager">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
     </actions>

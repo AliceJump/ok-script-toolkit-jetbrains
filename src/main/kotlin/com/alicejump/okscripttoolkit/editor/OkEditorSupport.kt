@@ -10,7 +10,11 @@ import com.intellij.openapi.editor.Document
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.util.text.StringUtil
+import java.awt.image.BufferedImage
+import java.io.ByteArrayOutputStream
+import java.util.Base64
 import java.util.regex.Pattern
+import javax.imageio.ImageIO
 
 data class EditorReference(
     val kind: Kind,
@@ -148,7 +152,7 @@ object OkEditorSupport {
             }
             EditorReference.Kind.OCR -> data.poEntry("ocr", reference.id)?.let(data::pick)?.let { "→ ${it.value}" }
             EditorReference.Kind.EFFECT -> data.effect(reference.id)?.let { "「${it.description}」" }
-            EditorReference.Kind.FEATURE -> null
+            EditorReference.Kind.FEATURE -> data.feature(reference.id)?.let { "「${it.width}×${it.height}」" }
         }
     }
 
@@ -237,12 +241,41 @@ object OkEditorSupport {
             "<div class='content'><table><tr><th>Language</th><th>Type</th><th>Value</th></tr>$rows</table></div>"
     }
 
-    private fun formatFeature(feature: FeatureTemplate): String =
-        "<div class='definition'><code>fL.${html(feature.name)}</code></div>" +
-            "<div class='content'><p><b>Template name:</b> <code>${html(feature.name)}</code></p>" +
+    private fun formatFeature(feature: FeatureTemplate): String {
+        val thumbHtml = cropThumbnailBase64(feature)
+        return "<div class='definition'><code>fL.${html(feature.name)}</code></div>" +
+            "<div class='content'>" +
+            (if (thumbHtml != null) "<p><img src='data:image/png;base64,$thumbHtml' width='120'/></p>" else "") +
+            "<p><b>Template name:</b> <code>${html(feature.name)}</code></p>" +
             "<p><b>Size:</b> ${feature.width} × ${feature.height}</p>" +
             "<p><b>Source:</b> <code>${html(feature.imagePath.toString())}</code></p>" +
             "<p><b>bbox:</b> <code>${feature.bbox.joinToString(", ")}</code></p></div>"
+    }
+
+    private fun cropThumbnailBase64(feature: FeatureTemplate): String? {
+        return try {
+            val file = feature.imagePath.toFile()
+            if (!file.exists()) return null
+            val original: BufferedImage = ImageIO.read(file) ?: return null
+            val x = feature.bbox[0].coerceIn(0, original.width - 1)
+            val y = feature.bbox[1].coerceIn(0, original.height - 1)
+            val w = feature.bbox[2].coerceAtMost(original.width - x)
+            val h = feature.bbox[3].coerceAtMost(original.height - y)
+            if (w <= 0 || h <= 0) return null
+            val crop = original.getSubimage(x, y, w, h)
+            val targetH = 96
+            val targetW = (w * targetH.toDouble() / h).toInt().coerceIn(1, 240)
+            val thumb = BufferedImage(targetW, targetH, BufferedImage.TYPE_INT_ARGB)
+            val g = thumb.createGraphics()
+            g.drawImage(crop, 0, 0, targetW, targetH, null)
+            g.dispose()
+            val baos = ByteArrayOutputStream()
+            ImageIO.write(thumb, "png", baos)
+            Base64.getEncoder().encodeToString(baos.toByteArray())
+        } catch (_: Exception) {
+            null
+        }
+    }
 
     private fun formatEffect(effect: EffectEntry): String =
         "<div class='definition'><code>${html(effect.id)}</code></div>" +
