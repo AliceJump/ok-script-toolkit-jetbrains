@@ -22,6 +22,14 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
     // TaskLauncher settings
     private val okScriptProjectPath = JBTextField()
     private val okScriptPython = JBTextField()
+    // Character settings
+    private val characterProjectPath = JBTextField()
+    private val characterMasterFile = JBTextField()
+    private val characterSkillsDirectory = JBTextField()
+    private val characterLocaleFile = JBTextField()
+    private val characterAvatarTemplateRegex = JBTextField()
+    // Template assets settings
+    private val okTemplatesDirectory = JBTextField()
 
     override fun getDisplayName(): String = OkScriptToolkitBundle.message("settings.displayName")
 
@@ -59,6 +67,28 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
                 cell(okScriptPython).align(AlignX.FILL)
             }
         }
+        group(OkScriptToolkitBundle.message("settings.character")) {
+            row(OkScriptToolkitBundle.message("settings.characterProjectPath")) {
+                cell(characterProjectPath).align(AlignX.FILL)
+            }
+            row(OkScriptToolkitBundle.message("settings.characterMasterFile")) {
+                cell(characterMasterFile).align(AlignX.FILL)
+            }
+            row(OkScriptToolkitBundle.message("settings.characterSkillsDirectory")) {
+                cell(characterSkillsDirectory).align(AlignX.FILL)
+            }
+            row(OkScriptToolkitBundle.message("settings.characterLocaleFile")) {
+                cell(characterLocaleFile).align(AlignX.FILL)
+            }
+            row(OkScriptToolkitBundle.message("settings.characterAvatarTemplateRegex")) {
+                cell(characterAvatarTemplateRegex).align(AlignX.FILL)
+            }
+        }
+        group(OkScriptToolkitBundle.message("settings.templateAssets")) {
+            row(OkScriptToolkitBundle.message("settings.okTemplatesDirectory")) {
+                cell(okTemplatesDirectory).align(AlignX.FILL)
+            }
+        }
     }.also { reset() }
 
     override fun isModified(): Boolean {
@@ -73,7 +103,13 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
             enableInlayHints.isSelected != state.enableInlayHints ||
             enableTemplateGallery.isSelected != state.enableTemplateGallery ||
             okScriptProjectPath.text != state.okScriptProjectPath.orEmpty() ||
-            okScriptPython.text != state.okScriptPython.orEmpty()
+            okScriptPython.text != state.okScriptPython.orEmpty() ||
+            characterProjectPath.text != state.characterProjectPath.orEmpty() ||
+            characterMasterFile.text != state.characterMasterFile.orEmpty() ||
+            characterSkillsDirectory.text != state.characterSkillsDirectory.orEmpty() ||
+            characterLocaleFile.text != state.characterLocaleFile.orEmpty() ||
+            characterAvatarTemplateRegex.text != state.characterAvatarTemplateRegex.orEmpty() ||
+            okTemplatesDirectory.text != state.okTemplatesDirectory.orEmpty()
     }
 
     override fun apply() {
@@ -89,6 +125,12 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
         settings.state.enableTemplateGallery = enableTemplateGallery.isSelected
         settings.state.okScriptProjectPath = okScriptProjectPath.text.trim()
         settings.state.okScriptPython = okScriptPython.text.trim()
+        settings.state.characterProjectPath = characterProjectPath.text.trim()
+        settings.state.characterMasterFile = characterMasterFile.text.trim()
+        settings.state.characterSkillsDirectory = characterSkillsDirectory.text.trim()
+        settings.state.characterLocaleFile = characterLocaleFile.text.trim()
+        settings.state.characterAvatarTemplateRegex = characterAvatarTemplateRegex.text.trim()
+        settings.state.okTemplatesDirectory = okTemplatesDirectory.text.trim()
     }
 
     override fun reset() {
@@ -104,6 +146,12 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
         enableTemplateGallery.isSelected = state.enableTemplateGallery
         okScriptProjectPath.text = state.okScriptProjectPath.orEmpty()
         okScriptPython.text = state.okScriptPython.orEmpty()
+        characterProjectPath.text = state.characterProjectPath.orEmpty()
+        characterMasterFile.text = state.characterMasterFile.orEmpty()
+        characterSkillsDirectory.text = state.characterSkillsDirectory.orEmpty()
+        characterLocaleFile.text = state.characterLocaleFile.orEmpty()
+        characterAvatarTemplateRegex.text = state.characterAvatarTemplateRegex.orEmpty()
+        okTemplatesDirectory.text = state.okTemplatesDirectory.orEmpty()
     }
 
     private fun splitList(value: String): List<String> = value

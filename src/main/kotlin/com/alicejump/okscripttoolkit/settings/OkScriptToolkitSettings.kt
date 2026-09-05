@@ -27,6 +27,14 @@ class OkScriptToolkitSettings : SimplePersistentStateComponent<OkScriptToolkitSe
         // TaskLauncher settings
         var okScriptProjectPath by string("")
         var okScriptPython by string("")
+        // Character settings
+        var characterProjectPath by string("")
+        var characterMasterFile by string("assets/data/characters.json")
+        var characterSkillsDirectory by string("assets/data/character_skills")
+        var characterLocaleFile by string("assets/lang/characters.json")
+        var characterAvatarTemplateRegex by string("^battle[_-]?icon[_-]?")
+        // Template assets settings
+        var okTemplatesDirectory by string("ok_templates")
     }
 
     init {
@@ -46,4 +54,10 @@ class OkScriptToolkitSettings : SimplePersistentStateComponent<OkScriptToolkitSe
     fun effectsFile(): String = state.effectsFile.orEmpty().ifBlank { "src/data/effects.py" }
     fun okScriptProjectPath(): String = state.okScriptProjectPath.orEmpty()
     fun okScriptPython(): String = state.okScriptPython.orEmpty()
+    fun characterProjectPath(): String = state.characterProjectPath.orEmpty()
+    fun characterMasterFile(): String = state.characterMasterFile.orEmpty().ifBlank { "assets/data/characters.json" }
+    fun characterSkillsDirectory(): String = state.characterSkillsDirectory.orEmpty().ifBlank { "assets/data/character_skills" }
+    fun characterLocaleFile(): String = state.characterLocaleFile.orEmpty().ifBlank { "assets/lang/characters.json" }
+    fun characterAvatarTemplateRegex(): String = state.characterAvatarTemplateRegex.orEmpty().ifBlank { "^battle[_-]?icon[_-]?" }
+    fun okTemplatesDirectory(): String = state.okTemplatesDirectory.orEmpty().ifBlank { "ok_templates" }
 }
