@@ -190,16 +190,16 @@ class TaskLauncherService(private val project: Project) {
             val parsed = objectMapper.readTree(jsonOutput)
             val ok = parsed.get("ok")?.asBoolean() ?: false
             if (!ok) {
-                return TaskListResult(ok = false, error = parsed.get("error")?.asText() ?: "Unknown error")
+                return TaskListResult(ok = false, error = parsed.get("error")?.asText(null) ?: "Unknown error")
             }
-            val configModule = parsed.get("config_module")?.asText() ?: "src.config"
+            val configModule = parsed.get("config_module")?.asText(null) ?: "src.config"
             val tasks = mutableListOf<TaskInfo>()
             parsed.get("onetime")?.forEach { node ->
                 tasks.add(
                     TaskInfo(
                         module = node.get("module").asText(),
                         className = node.get("class").asText(),
-                        displayName = node.get("name")?.asText() ?: node.get("class").asText(),
+                        displayName = node.get("name")?.asText(null) ?: node.get("class").asText(),
                     ),
                 )
             }
@@ -208,7 +208,7 @@ class TaskLauncherService(private val project: Project) {
                     TaskInfo(
                         module = node.get("module").asText(),
                         className = node.get("class").asText(),
-                        displayName = node.get("name")?.asText() ?: node.get("class").asText(),
+                        displayName = node.get("name")?.asText(null) ?: node.get("class").asText(),
                     ),
                 )
             }
@@ -247,7 +247,7 @@ class TaskLauncherService(private val project: Project) {
             val parsed = objectMapper.readTree(jsonOutput)
             val ok = parsed.get("ok")?.asBoolean() ?: false
             if (!ok) {
-                return SchemaProbeResult(ok = false, error = parsed.get("error")?.asText() ?: "Unknown error")
+                return SchemaProbeResult(ok = false, error = parsed.get("error")?.asText(null) ?: "Unknown error")
             }
             val total = parsed.get("total")?.asInt() ?: 0
             val configModule = parsed.get("config_module")?.asText(null)
@@ -274,25 +274,25 @@ class TaskLauncherService(private val project: Project) {
                 fields.add(
                     TaskParamField(
                         key = fieldNode.get("key").asText(),
-                        displayKey = fieldNode.get("displayKey")?.asText(),
+                        displayKey = fieldNode.get("displayKey")?.asText(null),
                         default = fieldNode.get("default")?.let { objectMapper.convertValue(it, Any::class.java) },
                         value = fieldNode.get("value")?.let { objectMapper.convertValue(it, Any::class.java) },
                         type = fieldNode.get("type")?.takeIf { !it.isNull }?.let {
                             @Suppress("UNCHECKED_CAST")
                             objectMapper.convertValue(it, Map::class.java) as? Map<String, Any>
                         },
-                        desc = fieldNode.get("desc")?.asText(),
-                        displayDesc = fieldNode.get("displayDesc")?.asText(),
+                        desc = fieldNode.get("desc")?.asText(null),
+                        displayDesc = fieldNode.get("displayDesc")?.asText(null),
                     ),
                 )
             }
             schemas[key] = TaskSchema(
                 fields = fields,
                 broken = schemaNode.get("broken")?.asBoolean() ?: false,
-                error = schemaNode.get("error")?.asText(),
-                displayName = schemaNode.get("displayName")?.asText(),
-                description = schemaNode.get("description")?.asText(),
-                kind = schemaNode.get("kind")?.asText(),
+                error = schemaNode.get("error")?.asText(null),
+                displayName = schemaNode.get("displayName")?.asText(null),
+                description = schemaNode.get("description")?.asText(null),
+                kind = schemaNode.get("kind")?.asText(null),
                 configGroups = schemaNode.get("configGroups")?.takeIf { !it.isNull }?.let {
                     @Suppress("UNCHECKED_CAST")
                     objectMapper.convertValue(it, Map::class.java) as? Map<String, List<String>>
@@ -301,8 +301,8 @@ class TaskLauncherService(private val project: Project) {
                     @Suppress("UNCHECKED_CAST")
                     objectMapper.convertValue(it, Map::class.java) as? Map<String, String>
                 },
-                groupSelector = schemaNode.get("groupSelector")?.asText(),
-                locale = schemaNode.get("locale")?.asText(),
+                groupSelector = schemaNode.get("groupSelector")?.asText(null),
+                locale = schemaNode.get("locale")?.asText(null),
             )
         }
         return schemas
@@ -341,7 +341,7 @@ class TaskLauncherService(private val project: Project) {
             val tasks = linkedMapOf<String, TaskConfig>()
             projectNode.get("tasks")?.fields()?.forEach { (taskKey, taskNode) ->
                 tasks[taskKey] = TaskConfig(
-                    extraArgs = taskNode.get("extraArgs")?.asText(),
+                    extraArgs = taskNode.get("extraArgs")?.asText(null),
                     env = taskNode.get("env")?.takeIf { it.isObject }?.let { envNode ->
                         val env = linkedMapOf<String, String>()
                         envNode.fields().forEach { (k, v) -> if (v.isTextual) env[k] = v.asText() }
@@ -409,11 +409,11 @@ class TaskLauncherService(private val project: Project) {
     private fun parseSchemaProbeResult(node: JsonNode): SchemaProbeResult {
         return SchemaProbeResult(
             ok = node.get("ok")?.asBoolean() ?: false,
-            error = node.get("error")?.asText(),
+            error = node.get("error")?.asText(null),
             schemas = node.get("schemas")?.takeIf { it.isObject && it.size() > 0 }?.let { parseSchemas(node) },
             total = node.get("total")?.asInt() ?: 0,
-            projectDir = node.get("projectDir")?.asText(),
-            locale = node.get("locale")?.asText(),
+            projectDir = node.get("projectDir")?.asText(null),
+            locale = node.get("locale")?.asText(null),
             configModule = node.get("configModule")?.asText(null),
         )
     }
