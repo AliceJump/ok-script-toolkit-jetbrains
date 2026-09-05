@@ -1,8 +1,10 @@
 package com.alicejump.okscripttoolkit.tasklauncher
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
+import com.alicejump.okscripttoolkit.core.OkProjectDataService
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
@@ -15,21 +17,22 @@ import com.intellij.ui.content.ContentManagerListener
 import com.intellij.ui.table.JBTable
 import java.awt.BorderLayout
 import java.awt.Dimension
-import java.awt.Font
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.Insets
+import java.io.BufferedReader
 import java.io.File
+import java.io.InputStreamReader
+import java.io.OutputStreamWriter
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.util.concurrent.CompletableFuture
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.*
+import javax.swing.event.DocumentEvent
+import javax.swing.event.DocumentListener
 import javax.swing.table.DefaultTableModel
 
-/**
- * 任务启动器工具窗口工厂。
- * 对应 VS Code 版本的 TaskLauncherViewProvider。
- */
 class TaskLauncherToolWindowFactory : ToolWindowFactory {
 
     companion object {
@@ -49,10 +52,6 @@ class TaskLauncherToolWindowFactory : ToolWindowFactory {
     }
 }
 
-/**
- * 任务启动器面板。
- * 对应 VS Code 版本的 TaskLauncherViewProvider 中的 Webview UI。
- */
 class TaskLauncherPanel(private val project: Project) {
 
     companion object {
@@ -63,25 +62,28 @@ class TaskLauncherPanel(private val project: Project) {
     val mainPanel: JPanel
     private val taskService = TaskLauncherService(project)
 
-    // UI 组件
     private val taskTableModel = DefaultTableModel(arrayOf("Task", "Type", "Status"), 0)
     private val taskTable = JBTable(taskTableModel)
     private val refreshButton = JButton()
     private val runButton = JButton()
     private val stopButton = JButton()
+    private val pauseButton = JButton()
+    private val resumeButton = JButton()
     private val statusLabel = JBLabel()
     private val progressBar = JProgressBar()
 
-    // 参数面板
     private val paramPanel = JPanel(GridBagLayout())
     private val paramFields = mutableMapOf<String, JComponent>()
+    private val timeoutSpinner = JSpinner(SpinnerNumberModel(0, 0, 7 * 24 * 60 * 60, 1))
 
-    // 状态
     private var tasks = listOf<TaskLauncherService.TaskInfo>()
     private var currentProcess: Process? = null
     private var currentTask: TaskLauncherService.TaskInfo? = null
     private var configModule = "src.config"
     private var schemas = mapOf<String, TaskLauncherService.TaskSchema>()
+    private var paused = false
+    private var stdoutRemainder = ""
+    private val stopping = AtomicBoolean(false)
 
     init {
         mainPanel = JPanel(BorderLayout())
@@ -90,7 +92,6 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     private fun initUI() {
-        // 工具栏
         val toolbar = JPanel()
         toolbar.layout = BoxLayout(toolbar, BoxLayout.X_AXIS)
         toolbar.border = BorderFactory.createEmptyBorder(4, 4, 4, 4)
@@ -108,13 +109,26 @@ class TaskLauncherPanel(private val project: Project) {
         stopButton.addActionListener { stopCurrentTask() }
         stopButton.isEnabled = false
 
+        pauseButton.icon = AllIcons.Actions.Pause
+        pauseButton.toolTipText = OkScriptToolkitBundle.message("taskLauncher.pause")
+        pauseButton.addActionListener { sendControlCommand("pause") }
+        pauseButton.isEnabled = false
+
+        resumeButton.icon = AllIcons.Actions.Play_forward
+        resumeButton.toolTipText = OkScriptToolkitBundle.message("taskLauncher.resume")
+        resumeButton.addActionListener { sendControlCommand("resume") }
+        resumeButton.isEnabled = false
+
         toolbar.add(refreshButton)
         toolbar.add(Box.createHorizontalStrut(4))
         toolbar.add(runButton)
         toolbar.add(Box.createHorizontalStrut(4))
         toolbar.add(stopButton)
+        toolbar.add(Box.createHorizontalStrut(4))
+        toolbar.add(pauseButton)
+        toolbar.add(Box.createHorizontalStrut(4))
+        toolbar.add(resumeButton)
 
-        // 任务表格
         taskTable.selectionModel.selectionMode = ListSelectionModel.SINGLE_SELECTION
         taskTable.showHorizontalLines = true
         taskTable.showVerticalLines = false
@@ -127,19 +141,16 @@ class TaskLauncherPanel(private val project: Project) {
 
         val tableScrollPane = JBScrollPane(taskTable)
 
-        // 参数面板
         val paramScrollPane = JBScrollPane(paramPanel)
         paramScrollPane.border = BorderFactory.createTitledBorder("Parameters")
 
-        // 底部状态栏
         val statusBar = JPanel(BorderLayout())
         statusBar.border = BorderFactory.createEmptyBorder(2, 4, 2, 4)
         statusBar.add(statusLabel, BorderLayout.CENTER)
-        statusBar.add(progressBar, BorderLayout.EAST)
         progressBar.preferredSize = Dimension(200, 20)
         progressBar.isVisible = false
+        statusBar.add(progressBar, BorderLayout.EAST)
 
-        // 分割面板
         val splitPane = JSplitPane(JSplitPane.VERTICAL_SPLIT, tableScrollPane, paramScrollPane)
         splitPane.resizeWeight = 0.5
 
@@ -148,10 +159,6 @@ class TaskLauncherPanel(private val project: Project) {
         mainPanel.add(statusBar, BorderLayout.SOUTH)
     }
 
-    /**
-     * 自动检测项目路径。
-     * 优先使用设置中的路径，否则尝试工作区根目录。
-     */
     private fun detectProjectPath(): String {
         val settings = OkScriptToolkitSettings.getInstance(project)
         val configured = settings.okScriptProjectPath()
@@ -159,8 +166,6 @@ class TaskLauncherPanel(private val project: Project) {
             val path = configured.replace("~", System.getProperty("user.home"))
             if (Files.isDirectory(Paths.get(path))) return path
         }
-
-        // 自动检测：项目根目录下是否存在 src/config.py 或 config.py
         val basePath = project.basePath ?: return ""
         val candidates = listOf(
             Paths.get(basePath, "src", "config.py"),
@@ -169,16 +174,11 @@ class TaskLauncherPanel(private val project: Project) {
         return if (candidates.any { Files.exists(it) }) basePath else ""
     }
 
-    /**
-     * 自动检测 Python 解释器路径。
-     * 优先使用设置中的路径，然后检查 .venv，最后使用默认值。
-     */
     private fun detectPythonPath(): String {
         val settings = OkScriptToolkitSettings.getInstance(project)
         val configured = settings.okScriptPython()
         if (configured.isNotBlank()) return configured
 
-        // 检查 .venv/Scripts/python.exe
         val projectDir = detectProjectPath()
         if (projectDir.isNotBlank()) {
             val venvPy = Paths.get(projectDir, ".venv", "Scripts", "python.exe").toFile()
@@ -186,13 +186,9 @@ class TaskLauncherPanel(private val project: Project) {
             val venvPyUnix = Paths.get(projectDir, ".venv", "bin", "python").toFile()
             if (venvPyUnix.exists()) return venvPyUnix.absolutePath
         }
-
         return DEFAULT_PYTHON_PATH
     }
 
-    /**
-     * 加载任务列表。
-     */
     private fun loadTasks() {
         val projectDir = detectProjectPath()
         if (projectDir.isBlank()) {
@@ -205,15 +201,18 @@ class TaskLauncherPanel(private val project: Project) {
         progressBar.isVisible = true
 
         CompletableFuture.supplyAsync {
-            // 先尝试从缓存加载
-            val cachedResult = taskService.loadSchemaCache()
+            val dataService = project.service<OkProjectDataService>()
+            val locale = dataService.currentLocale()
+            val cachedResult = taskService.loadSchemaCache(projectDir, locale)
             if (cachedResult.ok && cachedResult.schemas != null) {
                 return@supplyAsync cachedResult
             }
-
-            // 重新探测
             val pythonPath = detectPythonPath()
-            taskService.probeTaskSchemas(pythonPath)
+            val probeResult = taskService.probeTaskSchemas(pythonPath, locale)
+            if (probeResult.ok && probeResult.schemas != null) {
+                taskService.saveSchemaCache(projectDir, locale, probeResult)
+            }
+            probeResult
         }.thenAccept { result ->
             SwingUtilities.invokeLater {
                 progressBar.isIndeterminate = false
@@ -221,8 +220,10 @@ class TaskLauncherPanel(private val project: Project) {
 
                 if (result.ok && result.schemas != null) {
                     schemas = result.schemas
+                    if (result.projectDir != null) {
+                        configModule = "src.config"
+                    }
 
-                    // 从 schema 中提取任务列表
                     tasks = result.schemas.map { (key, schema) ->
                         val parts = key.split("::")
                         TaskLauncherService.TaskInfo(
@@ -232,7 +233,6 @@ class TaskLauncherPanel(private val project: Project) {
                         )
                     }
 
-                    // 更新表格
                     taskTableModel.rowCount = 0
                     for (task in tasks) {
                         val taskKey = "${task.module}::${task.className}"
@@ -268,9 +268,6 @@ class TaskLauncherPanel(private val project: Project) {
         }
     }
 
-    /**
-     * 加载任务参数。
-     */
     private fun loadTaskParams(task: TaskLauncherService.TaskInfo) {
         paramPanel.removeAll()
         paramFields.clear()
@@ -278,64 +275,94 @@ class TaskLauncherPanel(private val project: Project) {
         val taskKey = "${task.module}::${task.className}"
         val schema = schemas[taskKey]
 
-        if (schema == null) {
+        var row = 0
+
+        val timeoutLabel = JBLabel("${OkScriptToolkitBundle.message("taskLauncher.timeout")}:")
+        paramPanel.add(timeoutLabel, GridBagConstraints().apply {
+            gridx = 0; gridy = row
+            anchor = GridBagConstraints.WEST
+            insets = Insets(4, 8, 4, 4)
+        })
+        val timeoutPanel = JPanel(BorderLayout())
+        timeoutPanel.add(timeoutSpinner, BorderLayout.CENTER)
+        timeoutPanel.add(JBLabel("s"), BorderLayout.EAST)
+        paramPanel.add(timeoutPanel, GridBagConstraints().apply {
+            gridx = 1; gridy = row
+            fill = GridBagConstraints.HORIZONTAL
+            weightx = 1.0
+            insets = Insets(4, 4, 4, 8)
+        })
+
+        val taskConfig = taskService.getTaskConfig(taskKey)
+        timeoutSpinner.value = taskConfig.timeout ?: 0
+        timeoutSpinner.addChangeListener {
+            autoSaveTaskConfig(task)
+        }
+        row++
+
+        if (schema != null && schema.fields.isNotEmpty()) {
+            val separator = JSeparator()
+            paramPanel.add(separator, GridBagConstraints().apply {
+                gridx = 0; gridy = row; gridwidth = 2
+                fill = GridBagConstraints.HORIZONTAL
+                insets = Insets(4, 0, 4, 0)
+            })
+            row++
+
+            for (field in schema.fields) {
+                val label = JBLabel("${field.displayKey ?: field.key}:")
+                val component = createFieldComponent(field, task)
+
+                paramPanel.add(label, GridBagConstraints().apply {
+                    gridx = 0; gridy = row
+                    anchor = GridBagConstraints.WEST
+                    insets = Insets(4, 8, 4, 4)
+                })
+
+                paramPanel.add(component, GridBagConstraints().apply {
+                    gridx = 1; gridy = row
+                    fill = GridBagConstraints.HORIZONTAL
+                    weightx = 1.0
+                    insets = Insets(4, 4, 4, 8)
+                })
+
+                paramFields[field.key] = component
+                row++
+            }
+        } else if (schema == null) {
             val gbc = GridBagConstraints().apply {
-                gridx = 0; gridy = 0; insets = Insets(10, 10, 10, 10)
+                gridx = 0; gridy = row; gridwidth = 2
+                insets = Insets(10, 10, 10, 10)
             }
             paramPanel.add(JBLabel("No schema available for this task"), gbc)
-            paramPanel.revalidate()
-            paramPanel.repaint()
-            return
-        }
-
-        var row = 0
-        for (field in schema.fields) {
-            val label = JBLabel("${field.displayKey ?: field.key}:")
-            val component = createFieldComponent(field)
-
-            paramPanel.add(label, GridBagConstraints().apply {
-                gridx = 0; gridy = row
-                anchor = GridBagConstraints.WEST
-                insets = Insets(4, 8, 4, 4)
-            })
-
-            paramPanel.add(component, GridBagConstraints().apply {
-                gridx = 1; gridy = row
-                fill = GridBagConstraints.HORIZONTAL
-                weightx = 1.0
-                insets = Insets(4, 4, 4, 8)
-            })
-
-            paramFields[field.key] = component
-            row++
         }
 
         paramPanel.revalidate()
         paramPanel.repaint()
     }
 
-    /**
-     * 创建参数字段组件。
-     */
     @Suppress("UNCHECKED_CAST")
-    private fun createFieldComponent(field: TaskLauncherService.TaskParamField): JComponent {
-        val currentValue = field.value ?: field.default
+    private fun createFieldComponent(field: TaskLauncherService.TaskParamField, task: TaskLauncherService.TaskInfo): JComponent {
+        val taskKey = "${task.module}::${task.className}"
+        val taskConfig = taskService.getTaskConfig(taskKey)
+        val savedValue = taskConfig.params?.get(field.key)
+        val currentValue = savedValue ?: field.value ?: field.default
 
-        return when {
-            // 布尔类型
+        val component = when {
             field.type?.get("type") == "bool" || currentValue is Boolean -> {
-                JCheckBox("", currentValue as? Boolean ?: false)
+                JCheckBox("", currentValue as? Boolean ?: false).also { cb ->
+                    cb.addActionListener { autoSaveTaskConfig(task) }
+                }
             }
 
-            // 下拉选择
             field.type?.get("type") == "drop_down" -> {
                 val options = field.type?.get("options") as? List<*> ?: emptyList<Any>()
                 val comboBox = JComboBox(options.toTypedArray())
                 comboBox.selectedItem = currentValue
+                comboBox.addActionListener { autoSaveTaskConfig(task) }
                 comboBox
             }
 
-            // 多选
             field.type?.get("type") == "multi_selection" -> {
                 val options = field.type?.get("options") as? List<*> ?: emptyList<Any>()
                 val list = JList(options.toTypedArray())
@@ -344,49 +371,72 @@ class TaskLauncherPanel(private val project: Project) {
                     val selectedIndices = currentValue.mapNotNull { options.indexOf(it).takeIf { i -> i >= 0 } }
                     list.selectedIndices = selectedIndices.toIntArray()
                 }
+                list.addListSelectionListener { autoSaveTaskConfig(task) }
                 JBScrollPane(list)
             }
 
-            // 数字类型
             currentValue is Int -> {
-                JSpinner(SpinnerNumberModel(currentValue, Int.MIN_VALUE, Int.MAX_VALUE, 1))
+                JSpinner(SpinnerNumberModel(currentValue, Int.MIN_VALUE, Int.MAX_VALUE, 1)).also { sp ->
+                    sp.addChangeListener { autoSaveTaskConfig(task) }
+                }
             }
             currentValue is Double -> {
-                JSpinner(SpinnerNumberModel(currentValue, Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY, 0.1))
+                JSpinner(SpinnerNumberModel(currentValue, Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY, 0.1)).also { sp ->
+                    sp.addChangeListener { autoSaveTaskConfig(task) }
+                }
             }
 
-            // 文本类型（默认）
             else -> {
                 val textField = JTextField(currentValue?.toString() ?: "")
                 textField.columns = 20
+                textField.document.addDocumentListener(object : DocumentListener {
+                    private var insideUpdate = false
+                    override fun insertUpdate(e: DocumentEvent?) = scheduleSave()
+                    override fun removeUpdate(e: DocumentEvent?) = scheduleSave()
+                    override fun changedUpdate(e: DocumentEvent?) = scheduleSave()
+                    private fun scheduleSave() {
+                        if (!insideUpdate) {
+                            insideUpdate = true
+                            SwingUtilities.invokeLater {
+                                autoSaveTaskConfig(task)
+                                insideUpdate = false
+                            }
+                        }
+                    }
+                })
                 textField
             }
         }
+        return component
     }
 
-    /**
-     * 获取当前选中任务的参数覆盖。
-     */
-    private fun getParamOverrides(): Map<String, Any> {
-        val overrides = mutableMapOf<String, Any>()
+    private fun autoSaveTaskConfig(task: TaskLauncherService.TaskInfo) {
+        val taskKey = "${task.module}::${task.className}"
+        val config = buildTaskConfig(task)
+        taskService.saveTaskConfig(taskKey, config)
+    }
+
+    private fun buildTaskConfig(task: TaskLauncherService.TaskInfo): TaskLauncherService.TaskConfig {
+        val params = mutableMapOf<String, Any>()
         for ((key, component) in paramFields) {
             when (component) {
-                is JCheckBox -> overrides[key] = component.isSelected
-                is JSpinner -> overrides[key] = component.value
-                is JTextField -> if (component.text.isNotBlank()) overrides[key] = component.text
-                is JComboBox<*> -> component.selectedItem?.let { overrides[key] = it }
+                is JCheckBox -> params[key] = component.isSelected
+                is JSpinner -> params[key] = component.value
+                is JTextField -> if (component.text.isNotBlank()) params[key] = component.text
+                is JComboBox<*> -> component.selectedItem?.let { params[key] = it }
                 is JList<*> -> {
                     val selectedValues = component.selectedValuesList.toList()
-                    if (selectedValues.isNotEmpty()) overrides[key] = selectedValues
+                    if (selectedValues.isNotEmpty()) params[key] = selectedValues
                 }
             }
         }
-        return overrides
+        val timeout = (timeoutSpinner.value as? Number)?.toInt()?.takeIf { it > 0 }
+        return TaskLauncherService.TaskConfig(
+            timeout = timeout,
+            params = params.ifEmpty { null },
+        )
     }
 
-    /**
-     * 运行选中的任务。
-     */
     private fun runSelectedTask() {
         val selectedRow = taskTable.selectedRow
         if (selectedRow < 0 || selectedRow >= tasks.size) {
@@ -407,14 +457,12 @@ class TaskLauncherPanel(private val project: Project) {
         }
 
         val pythonPath = detectPythonPath()
-        val taskConfig = taskService.getTaskConfig(taskService.getProjectName(), "${task.module}::${task.className}")
-
+        val taskConfig = taskService.getTaskConfig("${task.module}::${task.className}")
         val command = taskService.buildRunTaskCommand(task, configModule)
 
         val env = mutableMapOf<String, String>()
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
-        taskConfig.env?.let { env.putAll(it) }
 
         val paramOverrides = getParamOverrides()
         if (paramOverrides.isNotEmpty()) {
@@ -424,12 +472,15 @@ class TaskLauncherPanel(private val project: Project) {
             env["OK_LANG_HINTS_INJECT"] = injectJson
         }
 
-        val extraArgs = taskService.parseExtraArgs(taskConfig.extraArgs)
-        val fullCommand = listOf(pythonPath) + command + extraArgs
+        val fullCommand = listOf(pythonPath) + command
 
         statusLabel.text = "Running: ${task.displayName}..."
         runButton.isEnabled = false
         stopButton.isEnabled = true
+        pauseButton.isEnabled = true
+        paused = false
+        stdoutRemainder = ""
+        stopping.set(false)
 
         try {
             val processBuilder = ProcessBuilder(fullCommand)
@@ -441,45 +492,77 @@ class TaskLauncherPanel(private val project: Project) {
             currentProcess = process
             currentTask = task
 
-            // 异步读取输出（消费 stdout 防止管道阻塞）
+            val stdoutReader = BufferedReader(InputStreamReader(process.inputStream, Charsets.UTF_8))
+            val stderrReader = BufferedReader(InputStreamReader(process.errorStream, Charsets.UTF_8))
+
             Thread {
                 try {
-                    process.inputStream.bufferedReader().use { reader ->
-                        while (reader.readLine() != null) { /* consume */ }
+                    stdoutReader.lineSequence().forEach { line ->
+                        scanControlMarkers(line)
                     }
                 } catch (_: Exception) { }
             }.start()
 
-            // 监听进程结束
+            Thread {
+                try {
+                    stderrReader.lineSequence().forEach { _ -> }
+                } catch (_: Exception) { }
+            }.start()
+
             Thread {
                 try {
                     val exitCode = process.waitFor()
                     SwingUtilities.invokeLater {
-                        statusLabel.text = if (exitCode == 0) {
+                        statusLabel.text = if (stopping.get()) {
+                            OkScriptToolkitBundle.message("taskLauncher.taskStopped")
+                        } else if (exitCode == 0) {
                             OkScriptToolkitBundle.message("taskLauncher.taskCompleted")
                         } else {
                             OkScriptToolkitBundle.message("taskLauncher.taskFailed") + " (exit code $exitCode)"
                         }
                         runButton.isEnabled = true
                         stopButton.isEnabled = false
+                        pauseButton.isEnabled = false
+                        resumeButton.isEnabled = false
                         currentProcess = null
                         currentTask = null
+                        paused = false
                     }
                 } catch (e: InterruptedException) {
                     SwingUtilities.invokeLater {
                         statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.taskStopped")
                         runButton.isEnabled = true
                         stopButton.isEnabled = false
+                        pauseButton.isEnabled = false
+                        resumeButton.isEnabled = false
                         currentProcess = null
                         currentTask = null
+                        paused = false
                     }
                 }
             }.start()
+
+            val timeout = taskConfig.timeout ?: 0
+            if (timeout > 0) {
+                Thread {
+                    try {
+                        Thread.sleep(timeout * 1000L)
+                        if (currentProcess?.isAlive == true) {
+                            SwingUtilities.invokeLater {
+                                statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.taskTimeout")
+                            }
+                            stopCurrentTask()
+                        }
+                    } catch (_: InterruptedException) { }
+                }.start()
+            }
         } catch (e: Exception) {
             LOG.error("Failed to run task", e)
             statusLabel.text = "Failed: ${e.message}"
             runButton.isEnabled = true
             stopButton.isEnabled = false
+            pauseButton.isEnabled = false
+            resumeButton.isEnabled = false
             JOptionPane.showMessageDialog(
                 mainPanel,
                 "Failed to run task: ${e.message}",
@@ -489,25 +572,98 @@ class TaskLauncherPanel(private val project: Project) {
         }
     }
 
-    /**
-     * 停止当前任务。
-     */
-    private fun stopCurrentTask() {
-        currentProcess?.let { process ->
-            if (process.isAlive) {
-                process.destroyForcibly()
-                statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.taskStopped")
-                runButton.isEnabled = true
-                stopButton.isEnabled = false
-                currentProcess = null
-                currentTask = null
+    private fun sendControlCommand(command: String) {
+        val process = currentProcess
+        if (process == null || !process.isAlive) {
+            JOptionPane.showMessageDialog(
+                mainPanel,
+                OkScriptToolkitBundle.message("taskLauncher.noTaskRunning"),
+                "Warning",
+                JOptionPane.WARNING_MESSAGE,
+            )
+            return
+        }
+        try {
+            val writer = OutputStreamWriter(process.outputStream, Charsets.UTF_8)
+            writer.write("$command\n")
+            writer.flush()
+        } catch (e: Exception) {
+            LOG.error("Failed to send control command: $command", e)
+            statusLabel.text = "Failed to send command: ${e.message}"
+        }
+    }
+
+    private fun scanControlMarkers(line: String) {
+        when {
+            line.contains("OK_TOOLKIT_PAUSED") -> setPaused(true)
+            line.contains("OK_TOOLKIT_RESUMED") -> setPaused(false)
+            line.contains("OK_TOOLKIT_ERROR:") -> {
+                val error = line.substringAfter("OK_TOOLKIT_ERROR:").trim()
+                if (error.isNotBlank()) {
+                    SwingUtilities.invokeLater {
+                        statusLabel.text = "Task control error: $error"
+                    }
+                }
             }
         }
     }
 
-    /**
-     * 面板销毁时调用。
-     */
+    private fun setPaused(newPaused: Boolean) {
+        if (paused == newPaused) return
+        paused = newPaused
+        SwingUtilities.invokeLater {
+            pauseButton.isEnabled = newPaused.not() && currentProcess?.isAlive == true
+            resumeButton.isEnabled = newPaused && currentProcess?.isAlive == true
+        }
+    }
+
+    private fun getParamOverrides(): Map<String, Any> {
+        val overrides = mutableMapOf<String, Any>()
+        for ((key, component) in paramFields) {
+            when (component) {
+                is JCheckBox -> overrides[key] = component.isSelected
+                is JSpinner -> overrides[key] = component.value
+                is JTextField -> if (component.text.isNotBlank()) overrides[key] = component.text
+                is JComboBox<*> -> component.selectedItem?.let { overrides[key] = it }
+                is JList<*> -> {
+                    val selectedValues = component.selectedValuesList.toList()
+                    if (selectedValues.isNotEmpty()) overrides[key] = selectedValues
+                }
+            }
+        }
+        return overrides
+    }
+
+    private fun stopCurrentTask() {
+        currentProcess?.let { process ->
+            if (process.isAlive) {
+                stopping.set(true)
+                try {
+                    val pid = process.pid()
+                    if (pid > 0 && System.getProperty("os.name").lowercase().contains("win")) {
+                        ProcessBuilder("taskkill", "/F", "/T", "/PID", pid.toString())
+                            .redirectErrorStream(true)
+                            .start()
+                            .waitFor()
+                    } else {
+                        process.destroyForcibly()
+                    }
+                } catch (e: Exception) {
+                    LOG.warn("Failed to stop task process", e)
+                    process.destroyForcibly()
+                }
+                statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.taskStopped")
+                runButton.isEnabled = true
+                stopButton.isEnabled = false
+                pauseButton.isEnabled = false
+                resumeButton.isEnabled = false
+                currentProcess = null
+                currentTask = null
+                paused = false
+            }
+        }
+    }
+
     fun onDispose() {
         stopCurrentTask()
     }

@@ -74,6 +74,8 @@ class TaskLauncherService(private val project: Project) {
         val error: String? = null,
         val schemas: Map<String, TaskSchema>? = null,
         val total: Int = 0,
+        val projectDir: String? = null,
+        val locale: String? = null,
     )
 
     data class TaskConfig(
@@ -284,7 +286,7 @@ class TaskLauncherService(private val project: Project) {
                     locale = schemaNode.get("locale")?.asText(),
                 )
             }
-            SchemaProbeResult(ok = true, schemas = schemas, total = total)
+            SchemaProbeResult(ok = true, schemas = schemas, total = total, projectDir = projectDir, locale = locale)
         } catch (e: Exception) {
             LOG.error("Failed to probe task schemas", e)
             SchemaProbeResult(ok = false, error = e.message)
@@ -329,39 +331,47 @@ class TaskLauncherService(private val project: Project) {
         }
     }
 
-    fun getTaskConfig(projectName: String, taskKey: String): TaskConfig {
+    fun getTaskConfig(taskKey: String): TaskConfig {
         val store = loadTaskConfigs()
-        return store.projects[projectName]?.tasks?.get(taskKey) ?: TaskConfig()
+        return store.projects[getProjectRoot()]?.tasks?.get(taskKey) ?: TaskConfig()
     }
 
-    fun saveTaskConfig(projectName: String, taskKey: String, config: TaskConfig) {
+    fun saveTaskConfig(taskKey: String, config: TaskConfig) {
         val store = loadTaskConfigs()
         val projects = store.projects.toMutableMap()
-        val projectConfig = projects[projectName] ?: TaskConfigStore.ProjectConfig()
+        val projectConfig = projects[getProjectRoot()] ?: TaskConfigStore.ProjectConfig()
         val tasks = projectConfig.tasks.toMutableMap()
         tasks[taskKey] = config
-        projects[projectName] = projectConfig.copy(tasks = tasks)
+        projects[getProjectRoot()] = projectConfig.copy(tasks = tasks)
         saveTaskConfigs(store.copy(projects = projects))
     }
 
     // ── Schema cache ──────────────────────────────────────────────────
 
-    fun loadSchemaCache(): SchemaProbeResult {
+    fun loadSchemaCache(projectDir: String, locale: String): SchemaProbeResult {
         val cacheFile = Paths.get(getProjectRoot(), SCHEMA_CACHE_FILE).toFile()
         if (!cacheFile.exists()) return SchemaProbeResult(ok = false, error = "Schema cache not found")
         return try {
-            objectMapper.readValue(cacheFile, SchemaProbeResult::class.java)
+            val cached = objectMapper.readValue(cacheFile, SchemaProbeResult::class.java)
+            val cachedLocale = cached.locale
+                ?: cached.schemas?.values?.firstOrNull()?.locale
+            if (cached.projectDir == projectDir && cachedLocale == locale) {
+                cached
+            } else {
+                SchemaProbeResult(ok = false, error = "Schema cache stale (projectDir or locale changed)")
+            }
         } catch (e: Exception) {
             LOG.warn("Failed to load schema cache", e)
             SchemaProbeResult(ok = false, error = e.message)
         }
     }
 
-    fun saveSchemaCache(result: SchemaProbeResult) {
+    fun saveSchemaCache(projectDir: String, locale: String, result: SchemaProbeResult) {
         val cacheFile = Paths.get(getProjectRoot(), SCHEMA_CACHE_FILE).toFile()
         cacheFile.parentFile?.mkdirs()
         try {
-            objectMapper.writerWithDefaultPrettyPrinter().writeValue(cacheFile, result)
+            val enriched = result.copy(projectDir = projectDir, locale = locale)
+            objectMapper.writerWithDefaultPrettyPrinter().writeValue(cacheFile, enriched)
         } catch (e: Exception) {
             LOG.error("Failed to save schema cache", e)
             throw e
