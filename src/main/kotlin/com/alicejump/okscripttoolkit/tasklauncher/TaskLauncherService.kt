@@ -2,6 +2,7 @@ package com.alicejump.okscripttoolkit.tasklauncher
 
 import com.alicejump.okscripttoolkit.core.PythonScriptRunner
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
@@ -76,6 +77,7 @@ class TaskLauncherService(private val project: Project) {
         val total: Int = 0,
         val projectDir: String? = null,
         val locale: String? = null,
+        val configModule: String? = null,
     )
 
     data class TaskConfig(
@@ -248,49 +250,62 @@ class TaskLauncherService(private val project: Project) {
                 return SchemaProbeResult(ok = false, error = parsed.get("error")?.asText() ?: "Unknown error")
             }
             val total = parsed.get("total")?.asInt() ?: 0
-            val schemas = mutableMapOf<String, TaskSchema>()
-            parsed.get("schemas")?.fields()?.forEach { (key, schemaNode) ->
-                val fields = mutableListOf<TaskParamField>()
-                schemaNode.get("fields")?.forEach { fieldNode ->
-                    fields.add(
-                        TaskParamField(
-                            key = fieldNode.get("key").asText(),
-                            displayKey = fieldNode.get("displayKey")?.asText(),
-                            default = fieldNode.get("default")?.let { objectMapper.convertValue(it, Any::class.java) },
-                            value = fieldNode.get("value")?.let { objectMapper.convertValue(it, Any::class.java) },
-                            type = fieldNode.get("type")?.takeIf { !it.isNull }?.let {
-                                @Suppress("UNCHECKED_CAST")
-                                objectMapper.convertValue(it, Map::class.java) as? Map<String, Any>
-                            },
-                            desc = fieldNode.get("desc")?.asText(),
-                            displayDesc = fieldNode.get("displayDesc")?.asText(),
-                        ),
-                    )
-                }
-                schemas[key] = TaskSchema(
-                    fields = fields,
-                    broken = schemaNode.get("broken")?.asBoolean() ?: false,
-                    error = schemaNode.get("error")?.asText(),
-                    displayName = schemaNode.get("displayName")?.asText(),
-                    description = schemaNode.get("description")?.asText(),
-                    kind = schemaNode.get("kind")?.asText(),
-                    configGroups = schemaNode.get("configGroups")?.takeIf { !it.isNull }?.let {
-                        @Suppress("UNCHECKED_CAST")
-                        objectMapper.convertValue(it, Map::class.java) as? Map<String, List<String>>
-                    },
-                    groupLabels = schemaNode.get("groupLabels")?.takeIf { !it.isNull }?.let {
-                        @Suppress("UNCHECKED_CAST")
-                        objectMapper.convertValue(it, Map::class.java) as? Map<String, String>
-                    },
-                    groupSelector = schemaNode.get("groupSelector")?.asText(),
-                    locale = schemaNode.get("locale")?.asText(),
-                )
-            }
-            SchemaProbeResult(ok = true, schemas = schemas, total = total, projectDir = projectDir, locale = locale)
+            val configModule = parsed.get("config_module")?.asText(null)
+            val schemas = parseSchemas(parsed)
+            SchemaProbeResult(
+                ok = true,
+                schemas = schemas,
+                total = total,
+                projectDir = projectDir,
+                locale = locale,
+                configModule = configModule,
+            )
         } catch (e: Exception) {
             LOG.error("Failed to probe task schemas", e)
             SchemaProbeResult(ok = false, error = e.message)
         }
+    }
+
+    private fun parseSchemas(parsed: JsonNode): MutableMap<String, TaskSchema> {
+        val schemas = mutableMapOf<String, TaskSchema>()
+        parsed.get("schemas")?.fields()?.forEach { (key, schemaNode) ->
+            val fields = mutableListOf<TaskParamField>()
+            schemaNode.get("fields")?.forEach { fieldNode ->
+                fields.add(
+                    TaskParamField(
+                        key = fieldNode.get("key").asText(),
+                        displayKey = fieldNode.get("displayKey")?.asText(),
+                        default = fieldNode.get("default")?.let { objectMapper.convertValue(it, Any::class.java) },
+                        value = fieldNode.get("value")?.let { objectMapper.convertValue(it, Any::class.java) },
+                        type = fieldNode.get("type")?.takeIf { !it.isNull }?.let {
+                            @Suppress("UNCHECKED_CAST")
+                            objectMapper.convertValue(it, Map::class.java) as? Map<String, Any>
+                        },
+                        desc = fieldNode.get("desc")?.asText(),
+                        displayDesc = fieldNode.get("displayDesc")?.asText(),
+                    ),
+                )
+            }
+            schemas[key] = TaskSchema(
+                fields = fields,
+                broken = schemaNode.get("broken")?.asBoolean() ?: false,
+                error = schemaNode.get("error")?.asText(),
+                displayName = schemaNode.get("displayName")?.asText(),
+                description = schemaNode.get("description")?.asText(),
+                kind = schemaNode.get("kind")?.asText(),
+                configGroups = schemaNode.get("configGroups")?.takeIf { !it.isNull }?.let {
+                    @Suppress("UNCHECKED_CAST")
+                    objectMapper.convertValue(it, Map::class.java) as? Map<String, List<String>>
+                },
+                groupLabels = schemaNode.get("groupLabels")?.takeIf { !it.isNull }?.let {
+                    @Suppress("UNCHECKED_CAST")
+                    objectMapper.convertValue(it, Map::class.java) as? Map<String, String>
+                },
+                groupSelector = schemaNode.get("groupSelector")?.asText(),
+                locale = schemaNode.get("locale")?.asText(),
+            )
+        }
+        return schemas
     }
 
     // ── Run command builder ───────────────────────────────────────────
@@ -313,11 +328,34 @@ class TaskLauncherService(private val project: Project) {
         val configFile = Paths.get(getProjectRoot(), TASKS_CONFIG_FILE).toFile()
         if (!configFile.exists()) return TaskConfigStore()
         return try {
-            objectMapper.readValue(configFile, TaskConfigStore::class.java)
+            parseTaskConfigStore(objectMapper.readTree(configFile))
         } catch (e: Exception) {
             LOG.warn("Failed to load task configs", e)
             TaskConfigStore()
         }
+    }
+
+    private fun parseTaskConfigStore(node: JsonNode): TaskConfigStore {
+        val projects = linkedMapOf<String, TaskConfigStore.ProjectConfig>()
+        node.get("projects")?.fields()?.forEach { (projectDir, projectNode) ->
+            val tasks = linkedMapOf<String, TaskConfig>()
+            projectNode.get("tasks")?.fields()?.forEach { (taskKey, taskNode) ->
+                tasks[taskKey] = TaskConfig(
+                    extraArgs = taskNode.get("extraArgs")?.asText(),
+                    env = taskNode.get("env")?.takeIf { it.isObject }?.let { envNode ->
+                        val env = linkedMapOf<String, String>()
+                        envNode.fields().forEach { (k, v) -> if (v.isTextual) env[k] = v.asText() }
+                        env
+                    },
+                    timeout = taskNode.get("timeout")?.takeIf { it.isInt }?.asInt(),
+                    params = taskNode.get("params")?.takeIf { it.isObject }?.let {
+                        objectMapper.convertValue(it, Map::class.java) as? Map<String, Any>
+                    },
+                )
+            }
+            projects[projectDir] = TaskConfigStore.ProjectConfig(tasks = tasks)
+        }
+        return TaskConfigStore(projects = projects)
     }
 
     fun saveTaskConfigs(store: TaskConfigStore) {
@@ -352,7 +390,9 @@ class TaskLauncherService(private val project: Project) {
         val cacheFile = Paths.get(getProjectRoot(), SCHEMA_CACHE_FILE).toFile()
         if (!cacheFile.exists()) return SchemaProbeResult(ok = false, error = "Schema cache not found")
         return try {
-            val cached = objectMapper.readValue(cacheFile, SchemaProbeResult::class.java)
+            // 手动从 JsonNode 解析：SchemaProbeResult 是 Kotlin data class，没有 Jackson 需要的
+            // Creator，readValue 会直接抛 "no Creators"（缓存此前从未加载成功过）。
+            val cached = parseSchemaProbeResult(objectMapper.readTree(cacheFile))
             val cachedLocale = cached.locale
                 ?: cached.schemas?.values?.firstOrNull()?.locale
             if (cached.projectDir == projectDir && cachedLocale == locale) {
@@ -364,6 +404,18 @@ class TaskLauncherService(private val project: Project) {
             LOG.warn("Failed to load schema cache", e)
             SchemaProbeResult(ok = false, error = e.message)
         }
+    }
+
+    private fun parseSchemaProbeResult(node: JsonNode): SchemaProbeResult {
+        return SchemaProbeResult(
+            ok = node.get("ok")?.asBoolean() ?: false,
+            error = node.get("error")?.asText(),
+            schemas = node.get("schemas")?.takeIf { it.isObject && it.size() > 0 }?.let { parseSchemas(node) },
+            total = node.get("total")?.asInt() ?: 0,
+            projectDir = node.get("projectDir")?.asText(),
+            locale = node.get("locale")?.asText(),
+            configModule = node.get("configModule")?.asText(null),
+        )
     }
 
     fun saveSchemaCache(projectDir: String, locale: String, result: SchemaProbeResult) {

@@ -11,6 +11,7 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.io.path.isDirectory
 import kotlin.io.path.isRegularFile
 import kotlin.io.path.name
@@ -18,6 +19,7 @@ import kotlin.io.path.readText
 
 private val JSON = ObjectMapper()
 private val LOCALE_ORDER = listOf("zh_CN", "zh_TW", "en_US", "ja_JP", "ko_KR", "es_ES")
+private const val SCAN_THROTTLE_MS = 300L
 
 data class LangNode(val value: String, val type: String)
 data class LangEntry(val module: String, val key: String, val locales: Map<String, LangNode>)
@@ -44,6 +46,7 @@ class OkProjectDataService(private val project: Project) {
     @Volatile
     private var snapshot = Snapshot(emptyMap(), emptyMap(), emptyMap(), emptyMap(), -1L, -1L)
     private val fileStamps = ConcurrentHashMap<Path, Long>()
+    private val lastRefreshAttempt = AtomicLong(0L)
 
     fun modules(): List<String> = current().modules.keys.sorted()
 
@@ -118,7 +121,12 @@ class OkProjectDataService(private val project: Project) {
     }
 
     private fun current(): Snapshot {
-        refresh()
+        // 与 VSCode 版的 ACCESSOR_SCAN_INTERVAL_MS 对齐：补全/提示/hover 每次访问都会走到这里，
+        // 300ms 节流避免每个按键触发一轮全量目录遍历。
+        val now = System.currentTimeMillis()
+        val last = lastRefreshAttempt.get()
+        if (snapshot.stamp != -1L && now - last < SCAN_THROTTLE_MS) return snapshot
+        if (lastRefreshAttempt.compareAndSet(last, now)) refresh()
         return snapshot
     }
 

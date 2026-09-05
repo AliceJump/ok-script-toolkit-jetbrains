@@ -11,6 +11,7 @@ import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.content.ContentManagerEvent
 import com.intellij.ui.content.ContentManagerListener
@@ -57,6 +58,7 @@ class TaskLauncherPanel(private val project: Project) {
     companion object {
         private val LOG = Logger.getInstance(TaskLauncherPanel::class.java)
         private const val DEFAULT_PYTHON_PATH = "python"
+        private const val MAX_CONSOLE_CHARS = 400_000
     }
 
     val mainPanel: JPanel
@@ -84,9 +86,13 @@ class TaskLauncherPanel(private val project: Project) {
     private var paused = false
     private var stdoutRemainder = ""
     private val stopping = AtomicBoolean(false)
+    private val consoleArea = JBTextArea()
+    private val saveTimer = javax.swing.Timer(400, null)
 
     init {
         mainPanel = JPanel(BorderLayout())
+        saveTimer.isRepeats = false
+        saveTimer.addActionListener { flushPendingSave() }
         initUI()
         loadTasks()
     }
@@ -119,6 +125,10 @@ class TaskLauncherPanel(private val project: Project) {
         resumeButton.addActionListener { sendControlCommand("resume") }
         resumeButton.isEnabled = false
 
+        val clearConsoleButton = JButton(AllIcons.Actions.GC)
+        clearConsoleButton.toolTipText = OkScriptToolkitBundle.message("taskLauncher.clearConsole")
+        clearConsoleButton.addActionListener { consoleArea.text = "" }
+
         toolbar.add(refreshButton)
         toolbar.add(Box.createHorizontalStrut(4))
         toolbar.add(runButton)
@@ -128,6 +138,8 @@ class TaskLauncherPanel(private val project: Project) {
         toolbar.add(pauseButton)
         toolbar.add(Box.createHorizontalStrut(4))
         toolbar.add(resumeButton)
+        toolbar.add(Box.createHorizontalStrut(4))
+        toolbar.add(clearConsoleButton)
 
         taskTable.selectionModel.selectionMode = ListSelectionModel.SINGLE_SELECTION
         taskTable.showHorizontalLines = true
@@ -154,8 +166,18 @@ class TaskLauncherPanel(private val project: Project) {
         val splitPane = JSplitPane(JSplitPane.VERTICAL_SPLIT, tableScrollPane, paramScrollPane)
         splitPane.resizeWeight = 0.5
 
+        // 输出控制台：对齐 VSCode 版的专属输出频道，展示任务 stdout/stderr
+        consoleArea.isEditable = false
+        consoleArea.lineWrap = false
+        consoleArea.rows = 6
+        val consoleScrollPane = JBScrollPane(consoleArea)
+        consoleScrollPane.border = BorderFactory.createTitledBorder(OkScriptToolkitBundle.message("taskLauncher.console"))
+
+        val centerPane = JSplitPane(JSplitPane.VERTICAL_SPLIT, splitPane, consoleScrollPane)
+        centerPane.resizeWeight = 0.62
+
         mainPanel.add(toolbar, BorderLayout.NORTH)
-        mainPanel.add(splitPane, BorderLayout.CENTER)
+        mainPanel.add(centerPane, BorderLayout.CENTER)
         mainPanel.add(statusBar, BorderLayout.SOUTH)
     }
 
@@ -208,9 +230,30 @@ class TaskLauncherPanel(private val project: Project) {
                 return@supplyAsync cachedResult
             }
             val pythonPath = detectPythonPath()
+            // parse_config_tasks.py 是纯 AST 解析（快），用它的 config_module 结果，
+            // 对齐 VSCode 版不再硬编码 "src.config"
+            val parseResult = taskService.parseConfigTasks(pythonPath, locale)
             val probeResult = taskService.probeTaskSchemas(pythonPath, locale)
             if (probeResult.ok && probeResult.schemas != null) {
-                taskService.saveSchemaCache(projectDir, locale, probeResult)
+                val withConfigModule = probeResult.copy(
+                    configModule = probeResult.configModule ?: parseResult.configModule.takeIf { parseResult.ok },
+                )
+                taskService.saveSchemaCache(projectDir, locale, withConfigModule)
+                return@supplyAsync withConfigModule
+            }
+            if (parseResult.ok && parseResult.tasks.isNotEmpty()) {
+                // 探测失败但任务列表可用：至少能列出任务（无 schema 参数）
+                return@supplyAsync TaskLauncherService.SchemaProbeResult(
+                    ok = true,
+                    schemas = parseResult.tasks.associate { task ->
+                        val key = "${task.module}::${task.className}"
+                        key to TaskLauncherService.TaskSchema(displayName = task.displayName)
+                    },
+                    total = parseResult.tasks.size,
+                    projectDir = projectDir,
+                    locale = locale,
+                    configModule = parseResult.configModule,
+                )
             }
             probeResult
         }.thenAccept { result ->
@@ -220,8 +263,8 @@ class TaskLauncherPanel(private val project: Project) {
 
                 if (result.ok && result.schemas != null) {
                     schemas = result.schemas
-                    if (result.projectDir != null) {
-                        configModule = "src.config"
+                    if (result.configModule != null) {
+                        configModule = result.configModule
                     }
 
                     tasks = result.schemas.map { (key, schema) ->
@@ -411,9 +454,25 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     private fun autoSaveTaskConfig(task: TaskLauncherService.TaskInfo) {
+        // 参数变更在 EDT 上高频触发：先构建快照，文件 IO 经 400ms 防抖后放到后台执行
         val taskKey = "${task.module}::${task.className}"
         val config = buildTaskConfig(task)
-        taskService.saveTaskConfig(taskKey, config)
+        pendingSave = taskKey to config
+        saveTimer.restart()
+    }
+
+    private var pendingSave: Pair<String, TaskLauncherService.TaskConfig>? = null
+
+    private fun flushPendingSave() {
+        val (taskKey, config) = pendingSave ?: return
+        pendingSave = null
+        CompletableFuture.runAsync {
+            try {
+                taskService.saveTaskConfig(taskKey, config)
+            } catch (e: Exception) {
+                LOG.warn("Failed to save task config for $taskKey", e)
+            }
+        }
     }
 
     private fun buildTaskConfig(task: TaskLauncherService.TaskInfo): TaskLauncherService.TaskConfig {
@@ -435,6 +494,16 @@ class TaskLauncherPanel(private val project: Project) {
             timeout = timeout,
             params = params.ifEmpty { null },
         )
+    }
+
+    private fun appendConsole(line: String) {
+        SwingUtilities.invokeLater {
+            var text = consoleArea.text
+            if (text.length > MAX_CONSOLE_CHARS) text = text.substring(text.length / 2)
+            consoleArea.text = text
+            consoleArea.append(line + "\n")
+            consoleArea.caretPosition = consoleArea.document.length
+        }
     }
 
     private fun runSelectedTask() {
@@ -475,6 +544,7 @@ class TaskLauncherPanel(private val project: Project) {
         val fullCommand = listOf(pythonPath) + command
 
         statusLabel.text = "Running: ${task.displayName}..."
+        appendConsole("=== ${task.displayName} ===")
         runButton.isEnabled = false
         stopButton.isEnabled = true
         pauseButton.isEnabled = true
@@ -482,32 +552,37 @@ class TaskLauncherPanel(private val project: Project) {
         stdoutRemainder = ""
         stopping.set(false)
 
-        try {
-            val processBuilder = ProcessBuilder(fullCommand)
-                .directory(File(projectDir))
-            val envMap = processBuilder.environment()
-            env.forEach { (k, v) -> envMap[k] = v }
+        // 进程启动涉及 IO，移出 EDT
+        CompletableFuture.runAsync {
+            try {
+                val processBuilder = ProcessBuilder(fullCommand)
+                    .directory(File(projectDir))
+                val envMap = processBuilder.environment()
+                env.forEach { (k, v) -> envMap[k] = v }
 
-            val process = processBuilder.start()
-            currentProcess = process
-            currentTask = task
+                val process = processBuilder.start()
+                currentProcess = process
+                currentTask = task
 
-            val stdoutReader = BufferedReader(InputStreamReader(process.inputStream, Charsets.UTF_8))
-            val stderrReader = BufferedReader(InputStreamReader(process.errorStream, Charsets.UTF_8))
+                val stdoutReader = BufferedReader(InputStreamReader(process.inputStream, Charsets.UTF_8))
+                val stderrReader = BufferedReader(InputStreamReader(process.errorStream, Charsets.UTF_8))
 
-            Thread {
-                try {
-                    stdoutReader.lineSequence().forEach { line ->
-                        scanControlMarkers(line)
-                    }
-                } catch (_: Exception) { }
-            }.start()
+                Thread {
+                    try {
+                        stdoutReader.lineSequence().forEach { line ->
+                            appendConsole(line)
+                            scanControlMarkers(line)
+                        }
+                    } catch (_: Exception) { }
+                }.start()
 
-            Thread {
-                try {
-                    stderrReader.lineSequence().forEach { _ -> }
-                } catch (_: Exception) { }
-            }.start()
+                Thread {
+                    try {
+                        stderrReader.lineSequence().forEach { line ->
+                            appendConsole(line)
+                        }
+                    } catch (_: Exception) { }
+                }.start()
 
             Thread {
                 try {
@@ -558,17 +633,20 @@ class TaskLauncherPanel(private val project: Project) {
             }
         } catch (e: Exception) {
             LOG.error("Failed to run task", e)
-            statusLabel.text = "Failed: ${e.message}"
-            runButton.isEnabled = true
-            stopButton.isEnabled = false
-            pauseButton.isEnabled = false
-            resumeButton.isEnabled = false
-            JOptionPane.showMessageDialog(
-                mainPanel,
-                "Failed to run task: ${e.message}",
-                "Error",
-                JOptionPane.ERROR_MESSAGE,
-            )
+            SwingUtilities.invokeLater {
+                statusLabel.text = "Failed: ${e.message}"
+                runButton.isEnabled = true
+                stopButton.isEnabled = false
+                pauseButton.isEnabled = false
+                resumeButton.isEnabled = false
+                JOptionPane.showMessageDialog(
+                    mainPanel,
+                    "Failed to run task: ${e.message}",
+                    "Error",
+                    JOptionPane.ERROR_MESSAGE,
+                )
+            }
+        }
         }
     }
 
@@ -638,28 +716,34 @@ class TaskLauncherPanel(private val project: Project) {
         currentProcess?.let { process ->
             if (process.isAlive) {
                 stopping.set(true)
-                try {
-                    val pid = process.pid()
-                    if (pid > 0 && System.getProperty("os.name").lowercase().contains("win")) {
-                        ProcessBuilder("taskkill", "/F", "/T", "/PID", pid.toString())
-                            .redirectErrorStream(true)
-                            .start()
-                            .waitFor()
-                    } else {
+                appendConsole("--- ${OkScriptToolkitBundle.message("taskLauncher.taskStopped")} ---")
+                // taskkill /F /T 是阻塞调用，移出 EDT
+                CompletableFuture.runAsync {
+                    try {
+                        val pid = process.pid()
+                        if (pid > 0 && System.getProperty("os.name").lowercase().contains("win")) {
+                            ProcessBuilder("taskkill", "/F", "/T", "/PID", pid.toString())
+                                .redirectErrorStream(true)
+                                .start()
+                                .waitFor()
+                        } else {
+                            process.destroyForcibly()
+                        }
+                    } catch (e: Exception) {
+                        LOG.warn("Failed to stop task process", e)
                         process.destroyForcibly()
                     }
-                } catch (e: Exception) {
-                    LOG.warn("Failed to stop task process", e)
-                    process.destroyForcibly()
+                    SwingUtilities.invokeLater {
+                        statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.taskStopped")
+                        runButton.isEnabled = true
+                        stopButton.isEnabled = false
+                        pauseButton.isEnabled = false
+                        resumeButton.isEnabled = false
+                        currentProcess = null
+                        currentTask = null
+                        paused = false
+                    }
                 }
-                statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.taskStopped")
-                runButton.isEnabled = true
-                stopButton.isEnabled = false
-                pauseButton.isEnabled = false
-                resumeButton.isEnabled = false
-                currentProcess = null
-                currentTask = null
-                paused = false
             }
         }
     }

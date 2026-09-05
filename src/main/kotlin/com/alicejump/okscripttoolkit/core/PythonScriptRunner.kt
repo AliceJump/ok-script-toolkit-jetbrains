@@ -34,6 +34,8 @@ class PythonScriptRunner(private val project: Project) {
 
     /**
      * 同步运行 Python 脚本。
+     * 注意：必须先 waitFor(timeout) 再收集输出（读取放在后台线程），否则进程不退出时
+     * readText() 会无限阻塞，timeout 形同虚设（曾导致任务 schema 探测卡死）。
      */
     fun runSync(
         pythonPath: String,
@@ -55,15 +57,37 @@ class PythonScriptRunner(private val project: Project) {
         LOG.info("Running Python script: ${command.joinToString(" ")}")
 
         val process = processBuilder.start()
-        val stdout = process.inputStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
-        val stderr = process.errorStream.bufferedReader(StandardCharsets.UTF_8).use { it.readText() }
-        val completed = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
-        val exitCode = if (completed) process.exitValue() else -1
-        val isTimeout = !completed
+        val stdoutBuilder = StringBuilder()
+        val stderrBuilder = StringBuilder()
 
+        val stdoutThread = Thread {
+            runCatching {
+                process.inputStream.bufferedReader(StandardCharsets.UTF_8).forEachLine { line ->
+                    synchronized(stdoutBuilder) { stdoutBuilder.append(line).append('\n') }
+                }
+            }
+        }.apply { isDaemon = true; start() }
+        val stderrThread = Thread {
+            runCatching {
+                process.errorStream.bufferedReader(StandardCharsets.UTF_8).forEachLine { line ->
+                    synchronized(stderrBuilder) { stderrBuilder.append(line).append('\n') }
+                }
+            }
+        }.apply { isDaemon = true; start() }
+
+        val completed = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
+        val isTimeout = !completed
         if (isTimeout) {
             process.destroyForcibly()
+            process.waitFor(5, TimeUnit.SECONDS)
         }
+        // 给读取线程一点时间收尾，但不再无限等待
+        stdoutThread.join(2000)
+        stderrThread.join(2000)
+
+        val stdout = synchronized(stdoutBuilder) { stdoutBuilder.toString() }
+        val stderr = synchronized(stderrBuilder) { stderrBuilder.toString() }
+        val exitCode = if (completed) process.exitValue() else -1
 
         return ScriptProcessOutput(stdout, stderr, exitCode, isTimeout)
     }
