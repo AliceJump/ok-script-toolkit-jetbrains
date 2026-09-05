@@ -1,16 +1,27 @@
-# ok-script Lang Hints for JetBrains
+# ok-script Toolkit for JetBrains
 
 JetBrains Platform/PyCharm port of the VS Code extension in the repository root.
 
 ## Implemented features
 
-- `self.lang.<module>.<key>` completion and quick documentation.
-- OCR `match` completion/documentation from `ocr.po`.
-- `fL` / `FeatureList` template completion and quick documentation.
-- `EffectType.XXX` and JSON/Python effect-ID completion/documentation.
-- Python inline hints for language keys, OCR patterns, and effect IDs.
-- Searchable native template gallery with insert/copy/open-source actions.
+- `self.lang.<module>.<key>` completion and quick documentation (full
+  per-locale table on hover, inline value hints with tooltips).
+- OCR `match` completion/documentation from `ocr.po`, plus inline
+  translation hints after the call.
+- `fL` / `FeatureList` template completion with pinned priority and quick
+  documentation with cropped previews.
+- `EffectType.XXX` and JSON/Python effect-ID completion (grouped by
+  category)/documentation/inline description hints.
+- Template gallery tool window with bbox-cropped thumbnails, insert/copy,
+  and red-box annotated source image preview.
+- Template asset manager tool window (import/delete images with COCO sync).
+- Character manager tool window with diagnostics and double-click
+  jump-to-source for issues and effects.
+- Task launcher tool window: schema-driven parameter forms (grouped by
+  `configGroups`), per-task overrides with auto-save, run/stop/pause/resume,
+  timeout, and a live output console.
 - Project settings for paths, locale, aliases, and feature toggles.
+- UI localized in en, zh_CN, zh_TW, ja, ko, es.
 
 ## Build
 
@@ -21,8 +32,11 @@ Use the bundled Wrapper from this directory:
 
 The plugin ZIP is written to `build/distributions/`.
 
-The default build downloads the configured PyCharm SDK. To reuse a local installation,
-pass `-PplatformLocalPath=/absolute/path/to/PyCharm` and run Gradle with JDK 21.
+The build targets the JDK 21 toolchain (matching CI and the IntelliJ 2025.1 runtime).
+If no matching JDK is installed locally it is provisioned automatically via the
+foojay resolver. To reuse a local PyCharm installation instead of downloading the
+SDK, pass `-PplatformLocalPath=/absolute/path/to/PyCharm` (must contain
+`product-info.json`).
 
 ## Releases
 
