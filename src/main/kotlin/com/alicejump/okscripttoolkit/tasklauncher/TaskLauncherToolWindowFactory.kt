@@ -352,25 +352,50 @@ class TaskLauncherPanel(private val project: Project) {
             })
             row++
 
-            for (field in schema.fields) {
-                val label = JBLabel("${field.displayKey ?: field.key}:")
-                val component = createFieldComponent(field, task)
-
-                paramPanel.add(label, GridBagConstraints().apply {
-                    gridx = 0; gridy = row
-                    anchor = GridBagConstraints.WEST
-                    insets = Insets(4, 8, 4, 4)
-                })
-
-                paramPanel.add(component, GridBagConstraints().apply {
-                    gridx = 1; gridy = row
-                    fill = GridBagConstraints.HORIZONTAL
-                    weightx = 1.0
-                    insets = Insets(4, 4, 4, 8)
-                })
-
-                paramFields[field.key] = component
-                row++
+            val groups = schema.configGroups
+            if (groups.isNullOrEmpty()) {
+                for (field in schema.fields) {
+                    row = appendFieldRow(field, task, row)
+                }
+            } else {
+                // 对齐 VSCode 版：按 configGroups 分组渲染（每组一个 titled 子面板），
+                // 不属于任何组的字段平铺在"通用"下
+                val groupedKeys = groups.values.flatten().toSet()
+                for ((groupName, fieldKeys) in groups) {
+                    val groupFields = fieldKeys.mapNotNull { key -> schema.fields.firstOrNull { it.key == key } }
+                    if (groupFields.isEmpty()) continue
+                    val groupPanel = JPanel(GridBagLayout())
+                    groupPanel.border = BorderFactory.createTitledBorder(groupName)
+                    var grow = 0
+                    for (field in groupFields) {
+                        val label = JBLabel("${field.displayKey ?: field.key}:")
+                        val component = createFieldComponent(field, task)
+                        groupPanel.add(label, GridBagConstraints().apply {
+                            gridx = 0; gridy = grow
+                            anchor = GridBagConstraints.WEST
+                            insets = Insets(3, 6, 3, 4)
+                        })
+                        groupPanel.add(component, GridBagConstraints().apply {
+                            gridx = 1; gridy = grow
+                            fill = GridBagConstraints.HORIZONTAL
+                            weightx = 1.0
+                            insets = Insets(3, 4, 3, 6)
+                        })
+                        paramFields[field.key] = component
+                        grow++
+                    }
+                    paramPanel.add(groupPanel, GridBagConstraints().apply {
+                        gridx = 0; gridy = row; gridwidth = 2
+                        fill = GridBagConstraints.HORIZONTAL
+                        weightx = 1.0
+                        insets = Insets(4, 2, 4, 2)
+                    })
+                    row++
+                }
+                val others = schema.fields.filter { it.key !in groupedKeys }
+                for (field in others) {
+                    row = appendFieldRow(field, task, row)
+                }
             }
         } else if (schema == null) {
             val gbc = GridBagConstraints().apply {
@@ -382,6 +407,29 @@ class TaskLauncherPanel(private val project: Project) {
 
         paramPanel.revalidate()
         paramPanel.repaint()
+    }
+
+    private fun appendFieldRow(
+        field: TaskLauncherService.TaskParamField,
+        task: TaskLauncherService.TaskInfo,
+        row: Int,
+    ): Int {
+        val label = JBLabel("${field.displayKey ?: field.key}:")
+        val component = createFieldComponent(field, task)
+
+        paramPanel.add(label, GridBagConstraints().apply {
+            gridx = 0; gridy = row
+            anchor = GridBagConstraints.WEST
+            insets = Insets(4, 8, 4, 4)
+        })
+        paramPanel.add(component, GridBagConstraints().apply {
+            gridx = 1; gridy = row
+            fill = GridBagConstraints.HORIZONTAL
+            weightx = 1.0
+            insets = Insets(4, 4, 4, 8)
+        })
+        paramFields[field.key] = component
+        return row + 1
     }
 
     @Suppress("UNCHECKED_CAST")

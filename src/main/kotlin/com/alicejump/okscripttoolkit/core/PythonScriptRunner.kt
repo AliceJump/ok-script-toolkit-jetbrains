@@ -95,6 +95,40 @@ class PythonScriptRunner(private val project: Project) {
     /**
      * 解析 JSON 输出：从 stdout 中提取最后一个 JSON 行（前面的输出可能是日志）。
      */
+    fun parseJsonFromStdout(stdout: String): String? = PythonScriptUtils.parseJsonFromStdout(stdout)
+
+    /**
+     * 解析额外参数：优先接受 JSON 字符串数组，否则按 shell 风格引号拆分。
+     */
+    fun parseExtraArgs(value: String?): List<String> = PythonScriptUtils.parseExtraArgs(value)
+
+    /**
+     * 构建运行任务的命令行参数。
+     * 对应 VS Code 版本的 buildRunTaskCommand 函数。
+     */
+    fun buildRunTaskCommand(
+        pythonScriptDir: String,
+        taskClassName: String,
+        taskModule: String,
+        configModule: String = "src.config",
+    ): List<String> {
+        return listOf(
+            "$pythonScriptDir/run_task.py",
+            "--task", taskClassName,
+            "--task-module", taskModule,
+            "--config-module", configModule,
+        )
+    }
+}
+
+/**
+ * 无平台依赖的 Python 脚本输出解析工具（可独立单测）。
+ */
+object PythonScriptUtils {
+
+    /**
+     * 解析 JSON 输出：从 stdout 中提取最后一个 JSON 行（前面的输出可能是日志）。
+     */
     fun parseJsonFromStdout(stdout: String): String? {
         val lines = stdout.split("\n").filter { it.isNotBlank() }
         for (i in lines.size - 1 downTo 0) {
@@ -155,24 +189,6 @@ class PythonScriptRunner(private val project: Project) {
         if (current.isNotEmpty()) args.add(current.toString())
 
         return args
-    }
-
-    /**
-     * 构建运行任务的命令行参数。
-     * 对应 VS Code 版本的 buildRunTaskCommand 函数。
-     */
-    fun buildRunTaskCommand(
-        pythonScriptDir: String,
-        taskClassName: String,
-        taskModule: String,
-        configModule: String = "src.config",
-    ): List<String> {
-        return listOf(
-            "$pythonScriptDir/run_task.py",
-            "--task", taskClassName,
-            "--task-module", taskModule,
-            "--config-module", configModule,
-        )
     }
 }
 

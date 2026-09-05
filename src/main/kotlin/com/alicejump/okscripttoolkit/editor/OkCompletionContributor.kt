@@ -5,6 +5,7 @@ import com.intellij.codeInsight.completion.CompletionContributor
 import com.intellij.codeInsight.completion.CompletionParameters
 import com.intellij.codeInsight.completion.CompletionResultSet
 import com.intellij.codeInsight.completion.CompletionType
+import com.intellij.codeInsight.completion.PrioritizedLookupElement
 import com.intellij.codeInsight.lookup.LookupElementBuilder
 import com.intellij.openapi.components.service
 
@@ -35,19 +36,21 @@ class OkPythonCompletionContributor : CompletionContributor() {
                 )
             }
             CompletionKind.FEATURE -> data.features().forEach { feature ->
-                replacement.addElement(
-                    LookupElementBuilder.create(feature.name)
-                        .withTypeText("${feature.width}×${feature.height}", true),
-                )
+                val element = LookupElementBuilder.create(feature.name)
+                    .withTypeText("${feature.width}×${feature.height}", true)
+                // 对齐 VSCode 版：模板名强制置顶（sortText \u0000 + preselect）
+                replacement.addElement(PrioritizedLookupElement.withPriority(element, 1000.0))
             }
-            CompletionKind.EFFECT -> data.effectIds().forEach { id ->
-                val effect = data.effect(id)
-                replacement.addElement(
-                    LookupElementBuilder.create(id)
-                        .withTypeText(effect?.category, true)
-                        .withTailText(effect?.description?.let { "  $it" }, true),
-                )
-            }
+            CompletionKind.EFFECT -> data.effectIds()
+                .sortedWith(compareBy({ data.effect(it)?.category.orEmpty() }, { it }))
+                .forEach { id ->
+                    val effect = data.effect(id)
+                    replacement.addElement(
+                        LookupElementBuilder.create(id)
+                            .withTypeText(effect?.category, true)
+                            .withTailText(effect?.description?.let { "  $it" }, true),
+                    )
+                }
             CompletionKind.OCR -> data.poKeys("ocr").forEach { key ->
                 val node = data.poEntry("ocr", key)?.let(data::pick)
                 replacement.addElement(
@@ -70,13 +73,15 @@ class OkJsonCompletionContributor : CompletionContributor() {
         if (context.kind != CompletionKind.EFFECT) return
         val data = parameters.position.project.service<OkProjectDataService>()
         val replacement = if (context.prefix.isEmpty()) result else result.withPrefixMatcher(context.prefix)
-        data.effectIds().forEach { id ->
-            val effect = data.effect(id)
-            replacement.addElement(
-                LookupElementBuilder.create(id)
-                    .withTypeText(effect?.category, true)
-                    .withTailText(effect?.description?.let { "  $it" }, true),
-            )
-        }
+        data.effectIds()
+            .sortedWith(compareBy({ data.effect(it)?.category.orEmpty() }, { it }))
+            .forEach { id ->
+                val effect = data.effect(id)
+                replacement.addElement(
+                    LookupElementBuilder.create(id)
+                        .withTypeText(effect?.category, true)
+                        .withTailText(effect?.description?.let { "  $it" }, true),
+                )
+            }
     }
 }
