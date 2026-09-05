@@ -156,6 +156,25 @@ object OkEditorSupport {
         }
     }
 
+    /** 悬停提示：对齐 VSCode 版的全语言表格（LANG/OCR）与 ID/分类/描述（EFFECT）。 */
+    fun tooltip(reference: EditorReference, project: Project): String? {
+        val data = project.service<OkProjectDataService>()
+        val body = when (reference.kind) {
+            EditorReference.Kind.LANG -> data.langEntry(reference.module ?: return null, reference.id)?.let {
+                formatLang(it, data, "self.lang.${it.module}.${it.key}")
+            }
+            EditorReference.Kind.OCR -> data.poEntry("ocr", reference.id)?.let {
+                formatLang(it, data, "match=re.compile(r\"${html(reference.id)}\")")
+            }
+            EditorReference.Kind.EFFECT -> data.effect(reference.id)?.let(::formatEffect)
+            EditorReference.Kind.FEATURE -> data.feature(reference.id)?.let {
+                "<p><b>fL.${html(it.name)}</b></p><p><b>Size:</b> ${it.width} × ${it.height}</p>" +
+                    "<p><b>Source:</b> <code>${html(it.imagePath.toString())}</code></p>"
+            }
+        } ?: return null
+        return "<html>$body</html>"
+    }
+
     private fun findOcrReferences(text: String, baseOffset: Int): List<EditorReference> {
         val result = mutableListOf<EditorReference>()
         val matcher = ocrCallPattern.matcher(text)

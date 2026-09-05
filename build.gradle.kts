@@ -39,7 +39,9 @@ dependencies {
 }
 
 kotlin {
-    jvmToolchain(23)
+    // CI（release.yml 的 setup-java）只安装 JDK 21；IntelliJ 2025.1 的 JBR 也是 21，
+    // 用 23 编译会同时造成 CI toolchain 缺失和产物流水线类文件版本不兼容。
+    jvmToolchain(21)
 }
 
 tasks {

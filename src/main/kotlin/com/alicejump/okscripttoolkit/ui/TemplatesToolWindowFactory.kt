@@ -161,7 +161,7 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
 
     private fun notify(content: String, type: NotificationType) {
         NotificationGroupManager.getInstance()
-            .getNotificationGroup("OkScriptToolkit")
+            .getNotificationGroup("okScriptToolkit")
             .createNotification(content, type)
             .notify(project)
     }

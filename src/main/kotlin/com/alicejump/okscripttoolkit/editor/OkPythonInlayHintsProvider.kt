@@ -9,6 +9,7 @@ import com.intellij.codeInsight.hints.declarative.SharedBypassCollector
 import com.intellij.openapi.editor.Editor
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiFile
+import java.util.concurrent.atomic.AtomicBoolean
 
 class OkInlayHintsProvider : InlayHintsProvider {
     override fun createCollector(file: PsiFile, editor: Editor): InlayHintsCollector? {
@@ -19,8 +20,12 @@ class OkInlayHintsProvider : InlayHintsProvider {
     private class Collector(
         private val editor: Editor,
     ) : SharedBypassCollector {
+        // 平台对 SharedBypassCollector 会按 PSI 树逐元素回调；root 不一定是 PsiFile，
+        // 因此用一次性标记保证每个 pass 只做一次全文档扫描。
+        private val collected = AtomicBoolean(false)
+
         override fun collectFromElement(element: PsiElement, sink: InlayTreeSink) {
-            if (element !is PsiFile) return
+            if (!collected.compareAndSet(false, true)) return
             val document = editor.document
             val project = editor.project ?: return
             val references = OkEditorSupport.references(document, 0, document.textLength, project)
@@ -28,6 +33,8 @@ class OkInlayHintsProvider : InlayHintsProvider {
                 val hint = OkEditorSupport.hint(reference, project) ?: continue
                 sink.addPresentation(
                     InlineInlayPosition(reference.hintOffset, true),
+                    tooltip = OkEditorSupport.tooltip(reference, project),
+                    hasBackground = false,
                 ) {
                     text(hint)
                 }

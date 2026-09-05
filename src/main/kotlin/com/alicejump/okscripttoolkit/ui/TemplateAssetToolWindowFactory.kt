@@ -268,7 +268,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
 
     private fun notify(content: String, type: NotificationType) {
         NotificationGroupManager.getInstance()
-            .getNotificationGroup("OkScriptToolkit")
+            .getNotificationGroup("okScriptToolkit")
             .createNotification(content, type)
             .notify(project)
     }

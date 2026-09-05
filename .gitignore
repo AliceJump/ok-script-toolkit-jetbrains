@@ -9,3 +9,4 @@ build/
 
 # Local environment
 local.properties
+.kotlin/

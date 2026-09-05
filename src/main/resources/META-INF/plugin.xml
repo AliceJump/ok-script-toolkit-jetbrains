@@ -29,12 +29,20 @@
         <codeInsight.declarativeInlayProvider
             language="Python"
             providerId="ok.script.toolkit.python"
-            name="ok-script Toolkit"
+            group="OTHER_GROUP"
+            bundle="messages.OkScriptToolkitBundle"
+            nameKey="hints.python.name"
+            descriptionKey="hints.python.description"
+            isEnabledByDefault="true"
             implementationClass="com.alicejump.okscripttoolkit.editor.OkInlayHintsProvider"/>
         <codeInsight.declarativeInlayProvider
             language="JSON"
             providerId="ok.script.toolkit.json"
-            name="ok-script Effect Hints"
+            group="OTHER_GROUP"
+            bundle="messages.OkScriptToolkitBundle"
+            nameKey="hints.json.name"
+            descriptionKey="hints.json.description"
+            isEnabledByDefault="true"
             implementationClass="com.alicejump.okscripttoolkit.editor.OkInlayHintsProvider"/>
 
         <toolWindow
