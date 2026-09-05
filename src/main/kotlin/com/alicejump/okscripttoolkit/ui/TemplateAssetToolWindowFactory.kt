@@ -49,7 +49,8 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     private val countLabel = JBLabel()
     private var images = listOf<TemplateImage>()
     private var currentFilter = ""
-    private val thumbCache = mutableMapOf<String, ImageIcon?>()
+    // loadData 在后台线程失效缓存，EDT 在渲染时读写，需要并发安全
+    private val thumbCache = java.util.concurrent.ConcurrentHashMap<String, ImageIcon?>()
 
     companion object {
         private const val THUMB_HEIGHT = 96

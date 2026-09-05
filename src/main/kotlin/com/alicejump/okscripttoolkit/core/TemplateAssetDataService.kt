@@ -119,6 +119,7 @@ class TemplateAssetDataService(private val project: Project) {
             Paths.get(projectDir, templatesDir)
     }
 
+    @Volatile
     private var cocoData = CocoData()
     private var cocoFile: Path? = null
     private var templateFolder: Path? = null
