@@ -51,6 +51,11 @@
             icon="/icons/templates.svg"
             factoryClass="com.alicejump.okscripttoolkit.ui.TemplatesToolWindowFactory"/>
         <toolWindow
+            id="ok-script Assets"
+            anchor="right"
+            icon="/icons/templates.svg"
+            factoryClass="com.alicejump.okscripttoolkit.ui.TemplateAssetToolWindowFactory"/>
+        <toolWindow
             id="ok-script Characters"
             anchor="right"
             icon="/icons/toolbox.svg"
@@ -82,6 +87,13 @@
             class="com.alicejump.okscripttoolkit.tasklauncher.ShowTasksAction"
             text="Show ok-script Tasks"
             description="Open the ok-script task launcher">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+        <action
+            id="com.alicejump.okscripttoolkit.ShowTemplateAssets"
+            class="com.alicejump.okscripttoolkit.ui.ShowTemplateAssetsAction"
+            text="Show ok-script Template Assets"
+            description="Open the ok-script template asset manager">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
         <action

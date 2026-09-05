@@ -8,6 +8,7 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.components.service
+import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
@@ -105,6 +106,17 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         issuesTable.showHorizontalLines = true
         issuesTable.showVerticalLines = false
         issuesTable.autoResizeMode = JTable.AUTO_RESIZE_ALL_COLUMNS
+        issuesTable.setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
+        issuesTable.addMouseListener(object : java.awt.event.MouseAdapter() {
+            override fun mouseClicked(e: java.awt.event.MouseEvent) {
+                if (e.clickCount != 2) return
+                val row = issuesTable.selectedRow
+                val snap = snapshot ?: return
+                if (row in 0 until snap.issues.size) {
+                    openIssueSource(snap.issues[row])
+                }
+            }
+        })
         tabbedPane.addTab(OkScriptToolkitBundle.message("characterManager.issues"), JBScrollPane(issuesTable))
 
         effectsList.cellRenderer = object : DefaultListCellRenderer() {
@@ -121,6 +133,17 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
                 return c
             }
         }
+        effectsList.setSelectionMode(ListSelectionModel.SINGLE_SELECTION)
+        effectsList.addMouseListener(object : java.awt.event.MouseAdapter() {
+            override fun mouseClicked(e: java.awt.event.MouseEvent) {
+                if (e.clickCount != 2) return
+                val index = effectsList.selectedIndex
+                val snap = snapshot ?: return
+                if (index in 0 until snap.effects.size) {
+                    openEffectsFileAt(snap.effects[index].id)
+                }
+            }
+        })
         tabbedPane.addTab(OkScriptToolkitBundle.message("characterManager.effects"), JBScrollPane(effectsList))
 
         rightPanel.add(tabbedPane, BorderLayout.CENTER)
@@ -251,6 +274,62 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
 
         detailPane.text = sb.toString()
         detailPane.caretPosition = 0
+    }
+
+    /** 双击问题跳转源文件并定位（对齐 VSCode 版 openSource）。 */
+    private fun openIssueSource(issue: CharacterIssue) {
+        val settings = OkScriptToolkitSettings.getInstance(project)
+        val projectDir = settings.characterProjectPath().ifBlank { project.basePath ?: "" }
+        if (projectDir.isBlank()) return
+        val paths = CharacterDataService.configuredPaths(projectDir, CharacterDataSettings(
+            masterFile = settings.characterMasterFile(),
+            skillsDirectory = settings.characterSkillsDirectory(),
+            localeFile = settings.characterLocaleFile(),
+            effectsFile = settings.effectsFile(),
+        ))
+        val source = issue.source
+        val targetFile = when (source?.kind) {
+            SourceKind.MASTER -> paths.masterFile
+            SourceKind.LOCALE -> paths.localeFile
+            SourceKind.EFFECTS -> paths.effectsFile
+            SourceKind.CHARACTER -> {
+                val name = source.fileName
+                    ?: source.characterId?.let { "$it.json" }
+                    ?: return
+                java.nio.file.Paths.get(paths.skillsDir, name).toString()
+            }
+            null -> return
+        }
+        val needle = source.effectId ?: source.skillId ?: source.characterId
+        openFileAt(targetFile, needle)
+    }
+
+    private fun openEffectsFileAt(effectId: String) {
+        val settings = OkScriptToolkitSettings.getInstance(project)
+        val projectDir = settings.characterProjectPath().ifBlank { project.basePath ?: "" }
+        if (projectDir.isBlank()) return
+        val paths = CharacterDataService.configuredPaths(projectDir, CharacterDataSettings(
+            masterFile = settings.characterMasterFile(),
+            skillsDirectory = settings.characterSkillsDirectory(),
+            localeFile = settings.characterLocaleFile(),
+            effectsFile = settings.effectsFile(),
+        ))
+        openFileAt(paths.effectsFile, effectId)
+    }
+
+    private fun openFileAt(filePath: String, needle: String?) {
+        val file = com.intellij.openapi.vfs.LocalFileSystem.getInstance()
+            .refreshAndFindFileByNioFile(java.nio.file.Paths.get(filePath))
+            ?: return
+        val descriptor = if (needle.isNullOrBlank()) {
+            OpenFileDescriptor(project, file)
+        } else {
+            val document = com.intellij.openapi.fileEditor.FileDocumentManager
+                .getInstance().getDocument(file)
+            val index = document?.text?.indexOf(needle) ?: -1
+            if (index >= 0) OpenFileDescriptor(project, file, index) else OpenFileDescriptor(project, file)
+        }
+        descriptor.navigate(true)
     }
 
     override fun dispose() {}

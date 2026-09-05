@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.SerializationFeature
 import com.fasterxml.jackson.databind.node.ArrayNode
 import com.fasterxml.jackson.databind.node.ObjectNode
+import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import java.awt.image.BufferedImage
@@ -105,6 +106,7 @@ data class TemplateImage(
 
 // ── Service ──────────────────────────────────────────────────────
 
+@Service(Service.Level.PROJECT)
 class TemplateAssetDataService(private val project: Project) {
 
     companion object {
@@ -214,7 +216,9 @@ class TemplateAssetDataService(private val project: Project) {
             }
             root.set<JsonNode>("annotations", annotationsArray)
 
-            JSON.writerWithDefaultPrettyPrinter().writeValue(file, root.toPrettyString())
+            // 直接写 root 节点；此前写 root.toPrettyString() 会把整份 COCO 当字符串
+            // 再包一层引号，产生损坏的 JSON
+            JSON.writerWithDefaultPrettyPrinter().writeValue(file, root)
         } catch (e: Exception) {
             LOG.error("Failed to save COCO data", e)
         }

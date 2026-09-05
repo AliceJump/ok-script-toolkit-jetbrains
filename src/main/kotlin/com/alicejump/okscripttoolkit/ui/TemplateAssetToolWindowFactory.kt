@@ -49,6 +49,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     private val countLabel = JBLabel()
     private var images = listOf<TemplateImage>()
     private var currentFilter = ""
+    private val thumbCache = mutableMapOf<String, ImageIcon?>()
 
     companion object {
         private const val THUMB_HEIGHT = 96
@@ -108,7 +109,11 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             val settings = OkScriptToolkitSettings.getInstance(project)
             val projectDir = project.basePath ?: ""
             data.load(projectDir, settings.okTemplatesDirectory())
-            data.listImages()
+            val result = data.listImages()
+            // 图片集合可能已变化，按路径失效缩略图缓存
+            val validPaths = result.map { it.file.absolutePath }.toSet()
+            thumbCache.keys.retainAll(validPaths)
+            result
         }.thenAccept { result ->
             SwingUtilities.invokeLater {
                 images = result
@@ -161,23 +166,13 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         card.preferredSize = Dimension(140, THUMB_HEIGHT + 40)
         card.maximumSize = Dimension(140, THUMB_HEIGHT + 40)
 
-        val thumbLabel = object : JBLabel() {
-            override fun paintComponent(g: Graphics) {
-                super.paintComponent(g)
-                try {
-                    val bi = javax.imageio.ImageIO.read(img.file)
-                    if (bi != null) {
-                        val scale = THUMB_HEIGHT.toDouble() / bi.height
-                        val w = (bi.width * scale).toInt().coerceAtMost(120)
-                        val h = THUMB_HEIGHT
-                        val x = (width - w) / 2
-                        g.drawImage(bi, x, 0, w, h, this)
-                    }
-                } catch (_: Exception) {
-                    g.drawString("?", width / 2 - 5, THUMB_HEIGHT / 2)
-                }
-            }
-            override fun getPreferredSize() = Dimension(140, THUMB_HEIGHT)
+        // 缩略图只读盘一次并缓存（此前每次 paint 都重新 ImageIO.read）
+        val thumbIcon = thumbCache[img.file.absolutePath] ?: loadThumbIcon(img.file).also {
+            if (it != null) thumbCache[img.file.absolutePath] = it
+        }
+        val thumbLabel = JBLabel(thumbIcon).apply {
+            horizontalAlignment = SwingConstants.CENTER
+            preferredSize = Dimension(140, THUMB_HEIGHT)
         }
         thumbLabel.border = EmptyBorder(2, 2, 2, 2)
 
@@ -205,6 +200,21 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         return card
     }
 
+    private fun loadThumbIcon(file: File): ImageIcon? {
+        return try {
+            val bi = javax.imageio.ImageIO.read(file) ?: return null
+            val scale = THUMB_HEIGHT.toDouble() / bi.height
+            val w = (bi.width * scale).toInt().coerceIn(1, 120)
+            val thumb = java.awt.image.BufferedImage(w, THUMB_HEIGHT, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+            val g = thumb.createGraphics()
+            g.drawImage(bi, 0, 0, w, THUMB_HEIGHT, null)
+            g.dispose()
+            ImageIcon(thumb)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun openInEditor(img: TemplateImage) {
         com.intellij.openapi.vfs.LocalFileSystem.getInstance()
             .refreshAndFindFileByNioFile(img.file.toPath())
@@ -217,7 +227,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     private fun showContextMenu(e: MouseEvent, img: TemplateImage) {
         val popup = JPopupMenu()
 
-        val openItem = JMenuItem("Open Source Image")
+        val openItem = JMenuItem(OkScriptToolkitBundle.message("templateAsset.open"))
         openItem.addActionListener {
             openInEditor(img)
         }
@@ -225,18 +235,22 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
 
         popup.addSeparator()
 
-        val deleteItem = JMenuItem("Delete")
+        val deleteItem = JMenuItem(OkScriptToolkitBundle.message("templateAsset.delete"))
         deleteItem.addActionListener {
             val confirm = JOptionPane.showConfirmDialog(
                 mainPanel,
-                "Delete template '${img.name}'?",
-                "Confirm Delete",
+                OkScriptToolkitBundle.message("templateAsset.deleteConfirm", img.name),
+                OkScriptToolkitBundle.message("templateAsset.delete"),
                 JOptionPane.YES_NO_OPTION,
             )
             if (confirm == JOptionPane.YES_OPTION) {
-                data.deleteImage(img.file)
-                data.save()
-                loadData()
+                // 文件删除 + COCO 写盘移出 EDT
+                CompletableFuture.runAsync {
+                    data.deleteImage(img.file)
+                    data.save()
+                }.thenRun {
+                    SwingUtilities.invokeLater { loadData() }
+                }
             }
         }
         popup.add(deleteItem)
@@ -280,7 +294,7 @@ class ShowTemplateAssetsAction : AnAction() {
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
-            .getToolWindow("ok-script Templates")
+            .getToolWindow("ok-script Assets")
             ?.show()
     }
 
