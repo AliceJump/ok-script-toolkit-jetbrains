@@ -263,6 +263,18 @@ class TemplateAssetDataService(private val project: Project) {
     fun getAnnotationsForImage(imageId: Int): List<CocoAnnotation> =
         cocoData.annotationsForImage(imageId)
 
+    fun categories(): List<CocoCategory> = cocoData.categories.toList()
+
+    fun getOrCreateCategory(name: String): CocoCategory = cocoData.getOrCreateCategory(name)
+
+    /** 用新的 (categoryId, bbox) 列表整体替换一张图的标注（id 重新分配），随后调用 [save] 落盘。 */
+    fun replaceAnnotationsForImage(imageId: Int, items: List<Pair<Int, IntArray>>) {
+        cocoData.setAnnotationsForImage(imageId, emptyList())
+        for ((categoryId, bbox) in items) {
+            cocoData.addAnnotation(imageId, categoryId, bbox)
+        }
+    }
+
     fun setAnnotationsForImage(imageId: Int, annotations: List<CocoAnnotation>) {
         cocoData.setAnnotationsForImage(imageId, annotations)
     }

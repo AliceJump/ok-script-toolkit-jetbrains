@@ -188,7 +188,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
 
         card.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
-                if (e.clickCount == 2) openInEditor(img)
+                if (e.clickCount == 2) openAnnotator(img)
             }
             override fun mousePressed(e: MouseEvent) {
                 if (e.isPopupTrigger) showContextMenu(e, img)
@@ -199,6 +199,13 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         })
 
         return card
+    }
+
+    /** 双击打开 COCO 标注编辑器（对齐 VSCode 版标注编辑器入口），关闭后刷新网格。 */
+    private fun openAnnotator(img: TemplateImage) {
+        val dialog = AnnotationDialog(project, data, img)
+        dialog.show()
+        loadData()
     }
 
     private fun loadThumbIcon(file: File): ImageIcon? {
