@@ -53,7 +53,7 @@
         <toolWindow
             id="ok-script Assets"
             anchor="right"
-            icon="/icons/templates.svg"
+            icon="/icons/assets.svg"
             factoryClass="com.alicejump.okscripttoolkit.ui.TemplateAssetToolWindowFactory"/>
         <toolWindow
             id="ok-script Characters"
