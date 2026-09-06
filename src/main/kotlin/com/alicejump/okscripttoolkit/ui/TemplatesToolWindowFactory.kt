@@ -72,14 +72,14 @@ class TemplatesToolWindowFactory : ToolWindowFactory, DumbAware {
 private class TemplateGalleryPanel(private val project: Project) : com.intellij.openapi.Disposable {
     companion object {
         private val LOG = Logger.getInstance(TemplateGalleryPanel::class.java)
-        private const val THUMB_HEIGHT = 96
-        private const val CARD_WIDTH = 148
+        private const val THUMB_HEIGHT = ThumbGridPolicy.THUMB_HEIGHT
+        private const val CARD_WIDTH = ThumbGridPolicy.CELL_WIDTH
         private const val ANNOTATION_MARGIN = 200
     }
 
     private val data = project.service<OkProjectDataService>()
     private var templates = emptyList<FeatureTemplate>()
-    private val gridPanel = JBPanel<JBPanel<*>>(GridLayout(0, 5, 10, 10))
+    private val gridPanel = JBPanel<JBPanel<*>>(GridLayout(0, 5, ThumbGridPolicy.HGAP_VALUE, ThumbGridPolicy.HGAP_VALUE))
     private val gridWrap = JPanel(BorderLayout()).apply { isOpaque = false }
     private val scrollPane = JBScrollPane(gridWrap)
     private val search = SearchTextField(false)
@@ -149,10 +149,10 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
     private fun applyGridLayout() {
         val viewportWidth = scrollPane.width.takeIf { it > 0 } ?: scrollPane.viewport.width
         if (viewportWidth <= 0) return
-        val cols = ((viewportWidth - 44) / (CARD_WIDTH + 10)).coerceIn(2, 12)
+        val cols = ThumbGridPolicy.columnsFor(viewportWidth)
         if (cols != gridCols) {
             gridCols = cols
-            gridPanel.layout = GridLayout(0, cols, 10, 10)
+            gridPanel.layout = GridLayout(0, cols, ThumbGridPolicy.HGAP_VALUE, ThumbGridPolicy.HGAP_VALUE)
             gridPanel.revalidate()
             gridPanel.repaint()
         }
@@ -168,7 +168,7 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
         applyGridLayout()
         pendingThumbLabels.clear()
         gridPanel.removeAll()
-        gridPanel.layout = GridLayout(0, gridCols, 10, 10)
+        gridPanel.layout = GridLayout(0, gridCols, ThumbGridPolicy.HGAP_VALUE, ThumbGridPolicy.HGAP_VALUE)
         for (img in filtered) {
             gridPanel.add(createCard(img, generation))
         }

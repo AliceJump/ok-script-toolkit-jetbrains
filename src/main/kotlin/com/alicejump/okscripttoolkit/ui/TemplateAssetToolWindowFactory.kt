@@ -44,8 +44,15 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     private val data = project.service<TemplateAssetDataService>()
 
     private val searchField = JBTextField()
-    private val gridPanel = JPanel()
-    private val scrollPane = JBScrollPane(gridPanel)
+    private val gridPanel = JPanel(GridLayout(0, ThumbGridPolicy.columnsFor(540), ThumbGridPolicy.HGAP_VALUE, ThumbGridPolicy.HGAP_VALUE)).apply {
+        isOpaque = false
+    }
+    private val gridWrap = JPanel(BorderLayout()).apply {
+        isOpaque = false
+        add(gridPanel, BorderLayout.NORTH)
+    }
+    private val scrollPane = JBScrollPane(gridWrap)
+    private var gridCols = ThumbGridPolicy.columnsFor(540)
     private val statusLabel = JBLabel()
     private val countLabel = JBLabel()
     private var images = listOf<TemplateImage>()
@@ -54,10 +61,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     private val thumbCache = java.util.concurrent.ConcurrentHashMap<String, ImageIcon?>()
 
     companion object {
-        private const val THUMB_HEIGHT = 96
-        private const val GRID_COLS = 4
-        private const val CELL_HGap = 8
-        private const val CELL_VGap = 8
+        private const val THUMB_HEIGHT = ThumbGridPolicy.THUMB_HEIGHT
     }
 
     init {
@@ -89,8 +93,13 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
 
         toolbar.add(btnPanel, BorderLayout.EAST)
 
-        gridPanel.layout = GridBagLayout()
         gridPanel.border = EmptyBorder(8, 8, 8, 8)
+        // 视口宽度变化时按统一规则重算列数（与模板画廊一致）
+        scrollPane.addComponentListener(object : java.awt.event.ComponentAdapter() {
+            override fun componentResized(e: java.awt.event.ComponentEvent?) {
+                applyGridLayout()
+            }
+        })
 
         val statusPanel = JPanel(BorderLayout())
         statusPanel.border = JBUI.Borders.empty(2, 4)
@@ -127,30 +136,19 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     }
 
     private fun renderGrid() {
+        applyGridLayout()
         gridPanel.removeAll()
 
         val filtered = if (currentFilter.isEmpty()) images else {
             images.filter { it.name.lowercase().contains(currentFilter) }
         }
 
-        val gbc = GridBagConstraints().apply {
-            insets = Insets(CELL_VGap, CELL_HGap, CELL_VGap, CELL_HGap)
-            anchor = GridBagConstraints.NORTH
-            fill = GridBagConstraints.NONE
-        }
-
-        for ((index, img) in filtered.withIndex()) {
-            gbc.gridx = index % GRID_COLS
-            gbc.gridy = index / GRID_COLS
-            gbc.gridwidth = 1
-            val card = createImageCard(img)
-            gridPanel.add(card, gbc)
+        for (img in filtered) {
+            gridPanel.add(createImageCard(img))
         }
 
         if (filtered.isEmpty()) {
-            val emptyLabel = JBLabel(OkScriptToolkitBundle.message("templateAsset.empty"))
-            gbc.gridx = 0; gbc.gridy = 0; gbc.gridwidth = GRID_COLS
-            gridPanel.add(emptyLabel, gbc)
+            gridPanel.add(JBLabel(OkScriptToolkitBundle.message("templateAsset.empty")))
         }
 
         countLabel.text = OkScriptToolkitBundle.message("templateAsset.count", filtered.size)
@@ -159,11 +157,24 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         gridPanel.repaint()
     }
 
+    /** 与模板画廊一致：按视口宽等分铺满，动态调整列数 */
+    private fun applyGridLayout() {
+        val viewportWidth = scrollPane.width.takeIf { it > 0 } ?: return
+        val cols = ThumbGridPolicy.columnsFor(viewportWidth)
+        if (cols != gridCols) {
+            gridCols = cols
+            gridPanel.layout = GridLayout(0, cols, ThumbGridPolicy.HGAP_VALUE, ThumbGridPolicy.HGAP_VALUE)
+            gridPanel.revalidate()
+            gridPanel.repaint()
+        }
+    }
+
     private fun createImageCard(img: TemplateImage): JPanel {
         val card = JPanel(BorderLayout())
-        card.border = BorderFactory.createLineBorder(JBColor.border())
-        card.preferredSize = Dimension(140, THUMB_HEIGHT + 40)
-        card.maximumSize = Dimension(140, THUMB_HEIGHT + 40)
+        card.border = BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(JBColor.border()),
+            BorderFactory.createEmptyBorder(4, 4, 4, 4),
+        )
 
         // 缩略图只读盘一次并缓存（此前每次 paint 都重新 ImageIO.read）
         val thumbIcon = thumbCache[img.file.absolutePath] ?: loadThumbIcon(img.file).also {
@@ -171,9 +182,9 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         }
         val thumbLabel = JBLabel(thumbIcon).apply {
             horizontalAlignment = SwingConstants.CENTER
-            preferredSize = Dimension(140, THUMB_HEIGHT)
+            verticalAlignment = SwingConstants.CENTER
+            preferredSize = Dimension(0, THUMB_HEIGHT)
         }
-        thumbLabel.border = EmptyBorder(2, 2, 2, 2)
 
         val annText = if (img.annotations.isNotEmpty()) " [${img.annotations.size} ann]" else ""
         val infoText = "<html><center><b>${img.name}</b><br>${img.width}x${img.height}$annText</center></html>"
