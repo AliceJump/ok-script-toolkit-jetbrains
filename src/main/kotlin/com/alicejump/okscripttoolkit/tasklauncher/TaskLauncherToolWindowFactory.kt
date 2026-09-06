@@ -69,8 +69,7 @@ class TaskLauncherPanel(private val project: Project) {
         private const val MAX_CONSOLE_CHARS = 400_000
         private val OK_BORDER = JBColor(Color(40, 120, 40), Color(76, 175, 80))
         private const val LF_CHAR: Char = 0x0A.toChar()
-        private const val BS_N = "\n"
-        private const val OK_LIST_FIELD = "ok-script.listField"
+        private const val OK_JSON_FIELD = "ok-script.jsonField"
         private val BAD_BORDER = JBColor(Color(180, 40, 40), Color(239, 83, 80))
     }
 
@@ -607,44 +606,22 @@ class TaskLauncherPanel(private val project: Project) {
             }
 
             currentValue is List<*> -> {
-                // 对齐 VSCode buildList：每行一项，保存时拆回数组（此前会把数组写成字符串）
-                val lineSeparator = "\n"
-                val area = JTextArea(currentValue.joinToString(lineSeparator) { it?.toString().orEmpty() })
-                area.rows = 3
-                area.putClientProperty(OK_LIST_FIELD, true)
-                area.document.addDocumentListener(object : DocumentListener {
-                    override fun insertUpdate(e: DocumentEvent?) = autoSaveTaskConfig(task)
-                    override fun removeUpdate(e: DocumentEvent?) = autoSaveTaskConfig(task)
-                    override fun changedUpdate(e: DocumentEvent?) = autoSaveTaskConfig(task)
-                })
-                JBScrollPane(area).apply { preferredSize = Dimension(200, 70) }
+                if (currentValue.any { it is Map<*, *> }) {
+                    // 对象数组（条件/动作序列）：无结构化编辑器，回退多行 JSON（避免 toString 破坏数据）
+                    jsonSequenceArea(currentValue, task)
+                } else {
+                    // 对齐 VSCode buildList：折叠摘要 + 「修改」弹窗（ModifyListDialog 语义）
+                    ListEditorComponent(
+                        project = project,
+                        dialogTitle = field.displayKey ?: field.key,
+                        typeMeta = field.type,
+                        initialValue = currentValue,
+                        onChanged = { autoSaveTaskConfig(task) },
+                    )
+                }
             }
 
-            field.type?.get("type") == "cond_sequence_editor" -> {
-                // 条件序列：多行 JSON 编辑 + 非法 JSON 红边提示（VSCode 版为结构化编辑器，此处为务实折中）
-                val mapper = com.fasterxml.jackson.databind.ObjectMapper()
-                val area = JTextArea(
-                    when (val v = currentValue) {
-                        null -> ""
-                        is String -> v
-                        else -> runCatching { mapper.writerWithDefaultPrettyPrinter().writeValueAsString(v) }.getOrDefault(v.toString())
-                    },
-                )
-                area.rows = 4
-                area.lineWrap = true
-                fun validateJson() {
-                    val text = area.text.trim()
-                    val valid = text.isEmpty() || runCatching { mapper.readTree(text) }.isSuccess
-                    area.border = BorderFactory.createLineBorder(if (valid) OK_BORDER else BAD_BORDER)
-                }
-                area.document.addDocumentListener(object : DocumentListener {
-                    override fun insertUpdate(e: DocumentEvent?) { validateJson(); autoSaveTaskConfig(task) }
-                    override fun removeUpdate(e: DocumentEvent?) { validateJson(); autoSaveTaskConfig(task) }
-                    override fun changedUpdate(e: DocumentEvent?) { validateJson(); autoSaveTaskConfig(task) }
-                })
-                validateJson()
-                JBScrollPane(area).apply { preferredSize = Dimension(200, 90) }
-            }
+            field.type?.get("type") == "cond_sequence_editor" -> jsonSequenceArea(currentValue, task)
 
             currentValue is Int -> {
                 JSpinner(SpinnerNumberModel(currentValue, Int.MIN_VALUE, Int.MAX_VALUE, 1)).also { sp ->
@@ -694,6 +671,53 @@ class TaskLauncherPanel(private val project: Project) {
         return component
     }
 
+    /**
+     * 读取文本域值：条件/动作序列等 JSON 域在合法时保存解析后的结构（对齐 VSCode 结构化
+     * 编辑器的数组/对象语义）；空/非法文本返回 null（跳过保存，保持默认值）。
+     */
+    private fun textAreaValue(area: JTextArea): Any? {
+        val text = area.text
+        if (text.isBlank()) return null
+        if (area.getClientProperty(OK_JSON_FIELD) == true) {
+            val parsed = runCatching {
+                val node = com.fasterxml.jackson.databind.ObjectMapper().readTree(text.trim())
+                com.fasterxml.jackson.databind.ObjectMapper().convertValue(node, Any::class.java)
+            }.getOrNull()
+            if (parsed != null) return parsed
+        }
+        return text
+    }
+
+    /** 条件/动作序列：多行 JSON 编辑 + 非法 JSON 红边提示（VSCode 版为结构化编辑器，此处为务实折中） */
+    private fun jsonSequenceArea(
+        currentValue: Any?,
+        task: TaskLauncherService.TaskInfo,
+    ): JComponent {
+        val mapper = com.fasterxml.jackson.databind.ObjectMapper()
+        val area = JTextArea(
+            when (val v = currentValue) {
+                null -> ""
+                is String -> v
+                else -> runCatching { mapper.writerWithDefaultPrettyPrinter().writeValueAsString(v) }.getOrDefault(v.toString())
+            },
+        )
+        area.rows = 4
+        area.lineWrap = true
+        area.putClientProperty(OK_JSON_FIELD, true)
+        fun validateJson() {
+            val text = area.text.trim()
+            val valid = text.isEmpty() || runCatching { mapper.readTree(text) }.isSuccess
+            area.border = BorderFactory.createLineBorder(if (valid) OK_BORDER else BAD_BORDER)
+        }
+        area.document.addDocumentListener(object : DocumentListener {
+            override fun insertUpdate(e: DocumentEvent?) { validateJson(); autoSaveTaskConfig(task) }
+            override fun removeUpdate(e: DocumentEvent?) { validateJson(); autoSaveTaskConfig(task) }
+            override fun changedUpdate(e: DocumentEvent?) { validateJson(); autoSaveTaskConfig(task) }
+        })
+        validateJson()
+        return JBScrollPane(area).apply { preferredSize = Dimension(200, 90) }
+    }
+
     private fun autoSaveTaskConfig(task: TaskLauncherService.TaskInfo) {
         // 参数变更在 EDT 上高频触发：先构建快照，文件 IO 经 400ms 防抖后放到后台执行
         val taskKey = "${task.module}::${task.className}"
@@ -723,14 +747,9 @@ class TaskLauncherPanel(private val project: Project) {
                 is JCheckBox -> params[key] = component.isSelected
                 is JSpinner -> params[key] = component.value
                 is JTextField -> if (component.text.isNotBlank()) params[key] = component.text
-                is JTextArea -> {
-                    if (component.getClientProperty(OK_LIST_FIELD) == true) {
-                        val values = component.text.split(BS_N).map { it.trim() }.filter { it.isNotEmpty() }
-                        if (values.isNotEmpty()) params[key] = values
-                    } else if (component.text.isNotBlank()) {
-                        params[key] = component.text
-                    }
-                }
+                is JTextArea -> textAreaValue(component)?.let { params[key] = it }
+                // 对齐 VSCode：表单当前值全量保存（包括空列表）
+                is ListEditorComponent -> params[key] = component.value
                 is JComboBox<*> -> component.selectedItem?.let { params[key] = it }
                 is JList<*> -> {
                     val selectedValues = component.selectedValuesList.toList()
@@ -1013,14 +1032,8 @@ class TaskLauncherPanel(private val project: Project) {
                 is JCheckBox -> overrides[key] = component.isSelected
                 is JSpinner -> overrides[key] = component.value
                 is JTextField -> if (component.text.isNotBlank()) overrides[key] = component.text
-                is JTextArea -> {
-                    if (component.getClientProperty(OK_LIST_FIELD) == true) {
-                        val values = component.text.split(BS_N).map { it.trim() }.filter { it.isNotEmpty() }
-                        if (values.isNotEmpty()) overrides[key] = values
-                    } else if (component.text.isNotBlank()) {
-                        overrides[key] = component.text
-                    }
-                }
+                is JTextArea -> textAreaValue(component)?.let { overrides[key] = it }
+                is ListEditorComponent -> overrides[key] = component.value
                 is JComboBox<*> -> component.selectedItem?.let { overrides[key] = it }
                 is JList<*> -> {
                     val selectedValues = component.selectedValuesList.toList()
