@@ -66,6 +66,9 @@ class TaskLauncherPanel(private val project: Project) {
         private const val DEFAULT_PYTHON_PATH = "python"
         private const val MAX_CONSOLE_CHARS = 400_000
         private val OK_BORDER = JBColor(Color(40, 120, 40), Color(76, 175, 80))
+        private const val LF_CHAR: Char = 0x0A.toChar()
+        private const val BS_N = "\n"
+        private const val OK_LIST_FIELD = "ok-script.listField"
         private val BAD_BORDER = JBColor(Color(180, 40, 40), Color(239, 83, 80))
     }
 
@@ -209,15 +212,19 @@ class TaskLauncherPanel(private val project: Project) {
         CompletableFuture.supplyAsync {
             val dataService = project.service<OkProjectDataService>()
             val locale = dataService.currentLocale()
+            val poDirectory = OkScriptToolkitSettings.getInstance(project).poDirectory()
+            val pythonPath = detectPythonPath()
+            // parse_config_tasks.py 是纯 AST 解析（快）：每次刷新都重跑，
+            // 保证 schema 缓存命中时新增任务也能出现（对齐 VSCode 行为）
+            val parseResult = taskService.parseConfigTasks(pythonPath, locale)
             val cachedResult = taskService.loadSchemaCache(projectDir, locale)
             if (cachedResult.ok && cachedResult.schemas != null) {
-                return@supplyAsync cachedResult
+                return@supplyAsync cachedResult.copy(
+                    schemas = mergeTaskLists(cachedResult.schemas!!, parseResult),
+                    configModule = parseResult.configModule.takeIf { parseResult.ok } ?: cachedResult.configModule,
+                )
             }
-            val pythonPath = detectPythonPath()
-            // parse_config_tasks.py 是纯 AST 解析（快），用它的 config_module 结果，
-            // 对齐 VSCode 版不再硬编码 "src.config"
-            val parseResult = taskService.parseConfigTasks(pythonPath, locale)
-            val probeResult = taskService.probeTaskSchemas(pythonPath, locale)
+            val probeResult = taskService.probeTaskSchemas(pythonPath, locale, poDirectory)
             if (probeResult.ok && probeResult.schemas != null) {
                 val withConfigModule = probeResult.copy(
                     configModule = probeResult.configModule ?: parseResult.configModule.takeIf { parseResult.ok },
@@ -393,6 +400,23 @@ class TaskLauncherPanel(private val project: Project) {
         paramPanel.repaint()
     }
 
+    /** schema 缓存与最新任务列表合并：新增任务补空 schema，消失任务剔除 */
+    private fun mergeTaskLists(
+        cached: Map<String, TaskLauncherService.TaskSchema>,
+        parseResult: TaskLauncherService.TaskListResult,
+    ): Map<String, TaskLauncherService.TaskSchema> {
+        if (!parseResult.ok) return cached
+        val merged = cached.toMutableMap()
+        for (task in parseResult.tasks) {
+            val key = "${task.module}::${task.className}"
+            if (!merged.containsKey(key)) {
+                merged[key] = TaskLauncherService.TaskSchema(displayName = task.displayName)
+            }
+        }
+        val validKeys = parseResult.tasks.map { "${'$'}{it.module}::${'$'}{it.className}" }.toSet()
+        return merged.filterKeys { it in validKeys }
+    }
+
     private fun appendFieldRow(
         field: TaskLauncherService.TaskParamField,
         task: TaskLauncherService.TaskInfo,
@@ -488,6 +512,20 @@ class TaskLauncherPanel(private val project: Project) {
                 }
             }
 
+            currentValue is List<*> -> {
+                // 对齐 VSCode buildList：每行一项，保存时拆回数组（此前会把数组写成字符串）
+                val lineSeparator = "\n"
+                val area = JTextArea(currentValue.joinToString(lineSeparator) { it?.toString().orEmpty() })
+                area.rows = 3
+                area.putClientProperty(OK_LIST_FIELD, true)
+                area.document.addDocumentListener(object : DocumentListener {
+                    override fun insertUpdate(e: DocumentEvent?) = autoSaveTaskConfig(task)
+                    override fun removeUpdate(e: DocumentEvent?) = autoSaveTaskConfig(task)
+                    override fun changedUpdate(e: DocumentEvent?) = autoSaveTaskConfig(task)
+                })
+                JBScrollPane(area).apply { preferredSize = Dimension(200, 70) }
+            }
+
             field.type?.get("type") == "cond_sequence_editor" -> {
                 // 条件序列：多行 JSON 编辑 + 非法 JSON 红边提示（VSCode 版为结构化编辑器，此处为务实折中）
                 val mapper = com.fasterxml.jackson.databind.ObjectMapper()
@@ -526,7 +564,20 @@ class TaskLauncherPanel(private val project: Project) {
             }
 
             else -> {
-                val textField = JTextField(currentValue?.toString() ?: "")
+                val text = currentValue?.toString() ?: ""
+                
+                if (field.type?.get("type") == "text_edit" || text.contains(LF_CHAR) || text.length > 80) {
+                    val area = JTextArea(text)
+                    area.rows = 3
+                    area.lineWrap = true
+                    area.document.addDocumentListener(object : DocumentListener {
+                        override fun insertUpdate(e: DocumentEvent?) = autoSaveTaskConfig(task)
+                        override fun removeUpdate(e: DocumentEvent?) = autoSaveTaskConfig(task)
+                        override fun changedUpdate(e: DocumentEvent?) = autoSaveTaskConfig(task)
+                    })
+                    return JBScrollPane(area).apply { preferredSize = Dimension(200, 70) }
+                }
+                val textField = JTextField(text)
                 textField.columns = 20
                 textField.document.addDocumentListener(object : DocumentListener {
                     private var insideUpdate = false
@@ -578,7 +629,14 @@ class TaskLauncherPanel(private val project: Project) {
                 is JCheckBox -> params[key] = component.isSelected
                 is JSpinner -> params[key] = component.value
                 is JTextField -> if (component.text.isNotBlank()) params[key] = component.text
-                is JTextArea -> if (component.text.isNotBlank()) params[key] = component.text
+                is JTextArea -> {
+                    if (component.getClientProperty(OK_LIST_FIELD) == true) {
+                        val values = component.text.split(BS_N).map { it.trim() }.filter { it.isNotEmpty() }
+                        if (values.isNotEmpty()) params[key] = values
+                    } else if (component.text.isNotBlank()) {
+                        params[key] = component.text
+                    }
+                }
                 is JComboBox<*> -> component.selectedItem?.let { params[key] = it }
                 is JList<*> -> {
                     val selectedValues = component.selectedValuesList.toList()
@@ -804,7 +862,14 @@ class TaskLauncherPanel(private val project: Project) {
                 is JCheckBox -> overrides[key] = component.isSelected
                 is JSpinner -> overrides[key] = component.value
                 is JTextField -> if (component.text.isNotBlank()) overrides[key] = component.text
-                is JTextArea -> if (component.text.isNotBlank()) overrides[key] = component.text
+                is JTextArea -> {
+                    if (component.getClientProperty(OK_LIST_FIELD) == true) {
+                        val values = component.text.split(BS_N).map { it.trim() }.filter { it.isNotEmpty() }
+                        if (values.isNotEmpty()) overrides[key] = values
+                    } else if (component.text.isNotBlank()) {
+                        overrides[key] = component.text
+                    }
+                }
                 is JComboBox<*> -> component.selectedItem?.let { overrides[key] = it }
                 is JList<*> -> {
                     val selectedValues = component.selectedValuesList.toList()

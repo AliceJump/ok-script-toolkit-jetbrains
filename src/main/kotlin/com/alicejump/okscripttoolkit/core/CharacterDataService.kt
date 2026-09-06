@@ -224,15 +224,22 @@ class CharacterDataService(private val project: Project) {
             val masterEntries = readJsonMap(paths.masterFile)
             if (masterEntries == null) {
                 issues.add(CharacterIssue(nextIssueId(), IssueSeverity.ERROR, "missing-file",
-                    "Master file not found: ${paths.masterFile}"))
+                    "Master file not found: ${paths.masterFile}",
+                    CharacterIssueSource(SourceKind.MASTER)))
             }
 
             // ── Effects ──────────────────────────────────────────
             val effectDefinitions = readEffectsFile(paths.effectsFile)
             if (effectDefinitions == null) {
                 issues.add(CharacterIssue(nextIssueId(), IssueSeverity.ERROR, "missing-effects-file",
-                    "Effects file not found: ${paths.effectsFile}"))
+                    "Effects file not found: ${paths.effectsFile}",
+                    CharacterIssueSource(SourceKind.EFFECTS)))
             }
+            // 效果术语映射（"中文": EffectType.XXX），供触发文本推断效果 ID
+            val effectTermMap = runCatching {
+                val text = java.io.File(paths.effectsFile).readText(StandardCharsets.UTF_8)
+                parseEffectTermMap(text)
+            }.getOrDefault(emptyMap())
             effectDefinitions?.keys?.let { allEffectIds.addAll(it) }
 
             val effectCategories = extractEffectCategories(paths.effectsFile)
@@ -249,7 +256,8 @@ class CharacterDataService(private val project: Project) {
                 skillsDir.listFiles()?.filter { it.extension == "json" }?.sortedBy { it.name } ?: emptyList()
             } else {
                 issues.add(CharacterIssue(nextIssueId(), IssueSeverity.ERROR, "missing-skills-directory",
-                    "Skills directory not found: ${paths.skillsDir}"))
+                    "Skills directory not found: ${paths.skillsDir}",
+                    CharacterIssueSource(SourceKind.CHARACTER)))
                 emptyList()
             }
 
@@ -265,7 +273,8 @@ class CharacterDataService(private val project: Project) {
                 val root = readJsonFile(file.absolutePath)
                 if (root == null) {
                     issues.add(CharacterIssue(nextIssueId(), IssueSeverity.ERROR, "invalid-json",
-                        "Failed to parse ${file.name}"))
+                        "Failed to parse ${file.name}",
+                        CharacterIssueSource(SourceKind.CHARACTER, fileName = file.name)))
                     continue
                 }
 
@@ -273,12 +282,14 @@ class CharacterDataService(private val project: Project) {
                 if (characterId == null) {
                     characterId = file.nameWithoutExtension
                     issues.add(CharacterIssue(nextIssueId(), IssueSeverity.ERROR, "missing-character-id",
-                        "Skill file ${file.name} missing character_id, using filename"))
+                        "Skill file ${file.name} missing character_id, using filename",
+                        CharacterIssueSource(SourceKind.CHARACTER, fileName = file.name)))
                 }
 
                 if (characterId in seenCharacterIds) {
                     issues.add(CharacterIssue(nextIssueId(), IssueSeverity.ERROR, "duplicate-character-id",
-                        "Duplicate character_id '$characterId' in ${file.name}"))
+                        "Duplicate character_id '$characterId' in ${file.name}",
+                        CharacterIssueSource(SourceKind.CHARACTER, characterId = characterId, fileName = file.name)))
                     continue
                 }
                 seenCharacterIds.add(characterId)
@@ -294,7 +305,8 @@ class CharacterDataService(private val project: Project) {
                 val skillsArray = root.get("skills")
                 if (skillsArray == null || !skillsArray.isArray) {
                     issues.add(CharacterIssue(nextIssueId(), IssueSeverity.WARNING, "missing-skills-array",
-                        "Skill file ${file.name} has no skills array"))
+                        "Skill file ${file.name} has no skills array",
+                        CharacterIssueSource(SourceKind.CHARACTER, fileName = file.name)))
                     parsedCharacters.add(ParsedSkillCharacter(
                         characterId, name, star, element, profession, weaponType, wikiItemId,
                         file.absolutePath, emptyList()))
@@ -305,7 +317,8 @@ class CharacterDataService(private val project: Project) {
                 for ((idx, skillNode) in skillsArray.withIndex()) {
                     if (!skillNode.isObject) {
                         issues.add(CharacterIssue(nextIssueId(), IssueSeverity.WARNING, "invalid-skill-entry",
-                            "Invalid skill entry at index $idx in ${file.name}"))
+                            "Invalid skill entry at index $idx in ${file.name}",
+                            CharacterIssueSource(SourceKind.CHARACTER, fileName = file.name)))
                         continue
                     }
 
@@ -313,12 +326,14 @@ class CharacterDataService(private val project: Project) {
                     if (skillId == null) {
                         skillId = "${characterId}_skill_${idx + 1}"
                         issues.add(CharacterIssue(nextIssueId(), IssueSeverity.ERROR, "missing-skill-id",
-                            "Skill at index $idx in ${file.name} missing skill_id"))
+                            "Skill at index $idx in ${file.name} missing skill_id",
+                            CharacterIssueSource(SourceKind.CHARACTER, fileName = file.name)))
                     }
 
                     if (skillId in seenSkillIds) {
                         issues.add(CharacterIssue(nextIssueId(), IssueSeverity.ERROR, "duplicate-skill-id",
-                            "Duplicate skill_id '$skillId' in ${file.name}"))
+                            "Duplicate skill_id '$skillId' in ${file.name}",
+                            CharacterIssueSource(SourceKind.CHARACTER, skillId = skillId, fileName = file.name)))
                     }
                     seenSkillIds.add(skillId)
 
@@ -360,11 +375,11 @@ class CharacterDataService(private val project: Project) {
 
                     if (enhancementsNode != null && enhancementsNode.isArray) {
                         for (enhNode in enhancementsNode) {
-                            parseEnhancement(enhNode, characterId, name, skillId, skillName, skillType, pendingUsages)
+                            parseEnhancement(enhNode, characterId, name, skillId, skillName, skillType, pendingUsages, effectTermMap, effectDefinitions?.keys)
                                 ?.let { enhancements.add(it) }
                         }
                     } else if (legacyEnhancement != null && legacyEnhancement.isObject) {
-                        parseEnhancement(legacyEnhancement, characterId, name, skillId, skillName, skillType, pendingUsages)
+                        parseEnhancement(legacyEnhancement, characterId, name, skillId, skillName, skillType, pendingUsages, effectTermMap, effectDefinitions?.keys)
                             ?.let { enhancements.add(it) }
                     }
 
@@ -397,7 +412,8 @@ class CharacterDataService(private val project: Project) {
                     val entry = masterEntries?.get(masterId)
                     val zhName = entry?.get("zh")?.asText() ?: ""
                     issues.add(CharacterIssue(nextIssueId(), IssueSeverity.WARNING, "missing-skill-file",
-                        "Master entry '$masterId' ($zhName) has no corresponding skill file"))
+                        "Master entry '$masterId' ($zhName) has no corresponding skill file",
+                        CharacterIssueSource(SourceKind.MASTER, characterId = masterId)))
                 }
             }
 
@@ -409,16 +425,19 @@ class CharacterDataService(private val project: Project) {
                     val masterZh = masterEntry.get("zh")?.asText() ?: ""
                     if (masterZh.isNotBlank() && masterZh != parsed.name) {
                         issues.add(CharacterIssue(nextIssueId(), IssueSeverity.WARNING, "character-name-mismatch",
-                            "Character '${parsed.characterId}': master name '$masterZh' != skill name '${parsed.name}'"))
+                            "Character '${parsed.characterId}': master name '$masterZh' != skill name '${parsed.name}'",
+                            CharacterIssueSource(SourceKind.CHARACTER, characterId = parsed.characterId)))
                     }
                     val masterStars = masterEntry.get("stars")?.asInt() ?: 0
                     if (masterStars > 0 && masterStars != parsed.star) {
                         issues.add(CharacterIssue(nextIssueId(), IssueSeverity.WARNING, "character-star-mismatch",
-                            "Character '${parsed.characterId}': master stars $masterStars != skill star ${parsed.star}"))
+                            "Character '${parsed.characterId}': master stars $masterStars != skill star ${parsed.star}",
+                            CharacterIssueSource(SourceKind.CHARACTER, characterId = parsed.characterId)))
                     }
                 } else {
                     issues.add(CharacterIssue(nextIssueId(), IssueSeverity.WARNING, "missing-master-entry",
-                        "Skill file for '${parsed.characterId}' has no master table entry"))
+                        "Skill file for '${parsed.characterId}' has no master table entry",
+                        CharacterIssueSource(SourceKind.CHARACTER, characterId = parsed.characterId)))
                 }
 
                 val locales = mutableMapOf<String, String>()
@@ -432,7 +451,8 @@ class CharacterDataService(private val project: Project) {
                 }
                 if (locales.isEmpty()) {
                     issues.add(CharacterIssue(nextIssueId(), IssueSeverity.WARNING, "missing-character-locales",
-                        "Character '${parsed.characterId}' has no locale entries"))
+                        "Character '${parsed.characterId}' has no locale entries",
+                        CharacterIssueSource(SourceKind.LOCALE, characterId = parsed.characterId)))
                 }
 
                 val master = masterEntry?.let {
@@ -459,7 +479,8 @@ class CharacterDataService(private val project: Project) {
             localeData?.forEach { (charId, _) ->
                 if (charId !in seenCharacterIds && charId !in masterCharacterIds) {
                     issues.add(CharacterIssue(nextIssueId(), IssueSeverity.INFO, "orphan-locale-entry",
-                        "Locale entry for '$charId' has no corresponding character"))
+                        "Locale entry for '$charId' has no corresponding character",
+                        CharacterIssueSource(SourceKind.LOCALE, characterId = charId)))
                 }
             }
 
@@ -673,6 +694,8 @@ class CharacterDataService(private val project: Project) {
             skillName: String,
             skillType: String,
             pendingUsages: MutableList<PendingUsage>,
+            effectTermMap: Map<String, String>,
+            definedEffectIds: Set<String>?,
         ): CharacterEnhancementView? {
             val name = node.get("name")?.asText() ?: return null
             val enhancementEffect = node.get("enhancement_effect")?.asText() ?: ""
@@ -734,6 +757,28 @@ class CharacterDataService(private val project: Project) {
                             }
                         }
                     }
+                }
+            }
+
+            // 对齐 VSCode 版：触发文本非空且无显式效果时，按术语映射推断效果 ID（标 inferred）
+            var inferredIds: List<String> = emptyList()
+            if (triggerEffects.isEmpty() && triggerText.isNotBlank() && effectTermMap.isNotEmpty()) {
+                inferredIds = inferEffectIds(triggerText, effectTermMap)
+                for (inferId in inferredIds) {
+                    triggerEffects.add(
+                        CharacterEffectRef(
+                            effectId = inferId,
+                            displayName = inferId,
+                            known = definedEffectIds?.contains(inferId) == true,
+                            inferred = true,
+                        ),
+                    )
+                    pendingUsages.add(PendingUsage(
+                        inferId,
+                        CharacterEffectUsage(characterId, characterName, skillId, skillName, skillType,
+                            EffectUsageScope.ENHANCEMENT_TRIGGER, name),
+                        CharacterIssueSource(SourceKind.CHARACTER, characterId, skillId, inferId),
+                    ))
                 }
             }
 

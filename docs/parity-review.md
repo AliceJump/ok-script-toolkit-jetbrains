@@ -22,10 +22,10 @@
 
 | # | 问题 | 严重度 | 状态 |
 |---|---|---|---|
-| 1 | list 类型参数落入 else 分支变 JTextField，数组被存成字符串（buildTaskConfig） | 高 | 待修 |
+| 1 | list 类型参数落入 else 分支变 JTextField，数组被存成字符串（buildTaskConfig） | 高 | ✅ 已修 |
 | 2 | inferEffectIds/parseEffectTermMap 已定义但 load() 从未调用，inferred 恒 false | 中 | 待修 |
-| 3 | 大部分 issue 构造未填 source，跳转 UI 有、数据没有 | 中 | 待修 |
-| 4 | schema 缓存命中时不跑 parse_config_tasks，新增任务刷新后不出现；probeTaskSchemas 未传设置的 poDirectory（写死 i18n） | 中 | 待修 |
+| 3 | 大部分 issue 构造未填 source，跳转 UI 有、数据没有 | 中 | ✅ 已修 |
+| 4 | schema 缓存命中时不跑 parse_config_tasks，新增任务刷新后不出现；probeTaskSchemas 未传设置的 poDirectory（写死 i18n） | 中 | ✅ 已修 |
 | 5 | 任务配置 extraArgs/env 能读不应用 | 低 | 待办 |
 | 6 | 角色面板状态栏硬编码英文 | 低 | 待办 |
 | 7 | 无文件 watcher（数据变化需手动刷新；主仓库 watcher+300ms 防抖） | 低 | 待办 |
