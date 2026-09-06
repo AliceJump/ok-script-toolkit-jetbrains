@@ -21,6 +21,7 @@ import java.awt.Dimension
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.Insets
+import java.awt.Color
 import java.io.BufferedReader
 import java.io.File
 import java.io.InputStreamReader
@@ -466,6 +467,70 @@ class TaskLauncherPanel(private val project: Project) {
                 JBScrollPane(list)
             }
 
+            field.type?.get("type") == "cascade_drop_down" -> {
+                // 级联下拉：组 → 叶子两级联动（对齐 VSCode 版），值存叶子
+                val options = field.type?.get("options") as? Map<*, *> ?: emptyMap<Any, Any>()
+                val leafField = JTextField(currentValue?.toString() ?: "")
+                leafField.isVisible = false
+                val groupCombo = JComboBox(options.keys.toTypedArray())
+                val leafCombo = JComboBox<String>()
+                fun fillLeaves(group: Any?) {
+                    leafCombo.removeAllItems()
+                    (options[group] as? List<*>)?.forEach { leafCombo.addItem(it.toString()) }
+                }
+                val initial = currentValue?.toString()
+                if (!initial.isNullOrBlank()) {
+                    // 优先选中包含当前叶子的组
+                    val ownerGroup = options.entries.firstOrNull { (it.value as? List<*>)?.contains(initial) == true }?.key
+                    if (ownerGroup != null) groupCombo.selectedItem = ownerGroup
+                }
+                fillLeaves(groupCombo.selectedItem)
+                if (!initial.isNullOrBlank()) leafCombo.selectedItem = initial
+                groupCombo.addActionListener {
+                    fillLeaves(groupCombo.selectedItem)
+                    autoSaveTaskConfig(task)
+                }
+                leafCombo.addActionListener {
+                    if (leafCombo.selectedItem != null) {
+                        leafField.text = leafCombo.selectedItem?.toString()
+                        autoSaveTaskConfig(task)
+                    }
+                }
+                val combos = JPanel(BorderLayout(4, 0))
+                combos.add(groupCombo, BorderLayout.CENTER)
+                combos.add(leafCombo, BorderLayout.EAST)
+                JPanel(BorderLayout()).apply {
+                    add(combos, BorderLayout.CENTER)
+                    add(leafField, BorderLayout.SOUTH)
+                }
+            }
+
+            field.type?.get("type") == "cond_sequence_editor" -> {
+                // 条件序列：多行 JSON 编辑 + 非法 JSON 红边提示（VSCode 版为结构化编辑器，此处为务实折中）
+                val mapper = com.fasterxml.jackson.databind.ObjectMapper()
+                val area = JTextArea(
+                    when (val v = currentValue) {
+                        null -> ""
+                        is String -> v
+                        else -> runCatching { mapper.writerWithDefaultPrettyPrinter().writeValueAsString(v) }.getOrDefault(v.toString())
+                    },
+                )
+                area.rows = 4
+                area.lineWrap = true
+                fun validateJson() {
+                    val text = area.text.trim()
+                    val valid = text.isEmpty() || runCatching { mapper.readTree(text) }.isSuccess
+                    area.border = BorderFactory.createLineBorder(if (valid) Color(40, 120, 40) else Color(180, 40, 40))
+                }
+                area.document.addDocumentListener(object : DocumentListener {
+                    override fun insertUpdate(e: DocumentEvent?) { validateJson(); autoSaveTaskConfig(task) }
+                    override fun removeUpdate(e: DocumentEvent?) { validateJson(); autoSaveTaskConfig(task) }
+                    override fun changedUpdate(e: DocumentEvent?) { validateJson(); autoSaveTaskConfig(task) }
+                })
+                validateJson()
+                JBScrollPane(area).apply { preferredSize = Dimension(200, 90) }
+            }
+
             currentValue is Int -> {
                 JSpinner(SpinnerNumberModel(currentValue, Int.MIN_VALUE, Int.MAX_VALUE, 1)).also { sp ->
                     sp.addChangeListener { autoSaveTaskConfig(task) }
@@ -530,6 +595,7 @@ class TaskLauncherPanel(private val project: Project) {
                 is JCheckBox -> params[key] = component.isSelected
                 is JSpinner -> params[key] = component.value
                 is JTextField -> if (component.text.isNotBlank()) params[key] = component.text
+                is JTextArea -> if (component.text.isNotBlank()) params[key] = component.text
                 is JComboBox<*> -> component.selectedItem?.let { params[key] = it }
                 is JList<*> -> {
                     val selectedValues = component.selectedValuesList.toList()
@@ -750,6 +816,7 @@ class TaskLauncherPanel(private val project: Project) {
                 is JCheckBox -> overrides[key] = component.isSelected
                 is JSpinner -> overrides[key] = component.value
                 is JTextField -> if (component.text.isNotBlank()) overrides[key] = component.text
+                is JTextArea -> if (component.text.isNotBlank()) overrides[key] = component.text
                 is JComboBox<*> -> component.selectedItem?.let { overrides[key] = it }
                 is JList<*> -> {
                     val selectedValues = component.selectedValuesList.toList()
