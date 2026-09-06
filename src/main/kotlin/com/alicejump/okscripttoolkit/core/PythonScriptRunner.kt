@@ -135,6 +135,8 @@ object PythonScriptLocator {
         "run_task.py",
         "capture_game_window.py",
         "probe_window_config.py",
+        "connect_game.py",
+        "overlay_host.py",
     )
 
     /**

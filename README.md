@@ -22,6 +22,11 @@ JetBrains Platform/PyCharm port of the VS Code extension in the repository root.
 - Task launcher tool window: schema-driven parameter forms (grouped by
   `configGroups`), per-task overrides with auto-save, run/stop/pause/resume,
   timeout, and a live output console.
+- Toolbox in the task launcher: connect/disconnect the game window
+  (`connect_game.py`, auto-starts the game and reuses the connection for every
+  task via `configs/devices.json`) and a debug-overlay toggle that is adopted
+  by launched tasks, toggled live on running tasks, and backed by a persistent
+  overlay host (`overlay_host.py`) for Alt+Right-click coordinate picking.
 - Project settings for paths, locale, aliases, and feature toggles.
 - UI localized in en, zh_CN, zh_TW, ja, ko, es.
 

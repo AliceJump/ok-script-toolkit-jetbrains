@@ -2,6 +2,7 @@ package com.alicejump.okscripttoolkit.tasklauncher
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
+import com.alicejump.okscripttoolkit.toolbox.ToolboxService
 import com.alicejump.okscripttoolkit.ui.ToolbarAction
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.ui.JBColor
@@ -17,6 +18,7 @@ import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
+import com.intellij.util.ui.UIUtil
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.content.ContentManagerEvent
 import com.intellij.ui.content.ContentManagerListener
@@ -74,6 +76,7 @@ class TaskLauncherPanel(private val project: Project) {
 
     val mainPanel: JPanel
     private val taskService = TaskLauncherService(project)
+    private val toolboxService = ToolboxService.getInstance(project)
 
     private val taskTableModel = DefaultTableModel(arrayOf("Task", "Type", "Status"), 0)
     private val taskTable = JBTable(taskTableModel)
@@ -101,11 +104,32 @@ class TaskLauncherPanel(private val project: Project) {
     private val consoleArea = JBTextArea()
     private val saveTimer = javax.swing.Timer(400, null)
 
+    // ── Toolbox（游戏连接 + 调试浮层，状态由 ToolboxService 持有）──
+    private val connectGameButton = JButton(OkScriptToolkitBundle.message("toolbox.connectGame"))
+    private val disconnectGameButton = JButton(OkScriptToolkitBundle.message("toolbox.disconnect"))
+    private val gameStatusLabel = JBLabel()
+    private val toolboxStatusLabel = JBLabel()
+    private val overlayCheckBox = JCheckBox(OkScriptToolkitBundle.message("toolbox.overlay"))
+    /** 防止 renderToolbox 回写复选框选中态时再次触发用户切换事件 */
+    private var updatingOverlayCheckbox = false
+    /** 调试浮层当前是否生效（启动沿用工具箱状态，运行中经 overlay_* 标记行同步） */
+    private var overlayActive = false
+
+    private val toolboxStateListener: (ToolboxService.ToolboxState, String) -> Unit = { state, _ ->
+        SwingUtilities.invokeLater { renderToolbox(state) }
+    }
+    private val toolboxStatusListener: (String) -> Unit = { text ->
+        SwingUtilities.invokeLater { toolboxStatusLabel.text = text }
+    }
+
     init {
         mainPanel = JPanel(BorderLayout())
         saveTimer.isRepeats = false
         saveTimer.addActionListener { flushPendingSave() }
         initUI()
+        toolboxService.addStateListener(toolboxStateListener)
+        toolboxService.addStatusListener(toolboxStatusListener)
+        renderToolbox(toolboxService.loadState(detectProjectPath()))
         loadTasks()
     }
 
@@ -163,9 +187,79 @@ class TaskLauncherPanel(private val project: Project) {
         centerPane.firstComponent = splitPane
         centerPane.secondComponent = consoleScrollPane
 
-        mainPanel.add(toolbar, BorderLayout.NORTH)
+        val northPane = JPanel(BorderLayout())
+        northPane.add(toolbar, BorderLayout.NORTH)
+        northPane.add(buildToolboxBar(), BorderLayout.SOUTH)
+
+        mainPanel.add(northPane, BorderLayout.NORTH)
         mainPanel.add(centerPane, BorderLayout.CENTER)
         mainPanel.add(statusBar, BorderLayout.SOUTH)
+    }
+
+    /** 工具箱条：连接/断开游戏、连接状态、调试浮层开关（与 VS Code 侧栏工具箱同源状态） */
+    private fun buildToolboxBar(): JPanel {
+        connectGameButton.addActionListener { connectGame() }
+        disconnectGameButton.addActionListener { disconnectGame() }
+        overlayCheckBox.toolTipText = OkScriptToolkitBundle.message("toolbox.overlayHint")
+        overlayCheckBox.addActionListener {
+            if (updatingOverlayCheckbox) return@addActionListener
+            val projectDir = detectProjectPath()
+            val pythonPath = detectPythonPath()
+            toolboxService.setOverlayEnabled(projectDir, pythonPath, overlayCheckBox.isSelected)
+        }
+        val buttons = JPanel(java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0))
+        buttons.isOpaque = false
+        buttons.add(connectGameButton)
+        buttons.add(disconnectGameButton)
+
+        val bar = JPanel(BorderLayout(8, 0))
+        bar.border = BorderFactory.createEmptyBorder(2, 6, 2, 6)
+        bar.add(buttons, BorderLayout.WEST)
+        gameStatusLabel.foreground = UIUtil.getContextHelpForeground()
+        bar.add(gameStatusLabel, BorderLayout.CENTER)
+        toolboxStatusLabel.foreground = UIUtil.getContextHelpForeground()
+        val east = JPanel(BorderLayout(8, 0))
+        east.isOpaque = false
+        east.add(toolboxStatusLabel, BorderLayout.CENTER)
+        east.add(overlayCheckBox, BorderLayout.EAST)
+        bar.add(east, BorderLayout.EAST)
+        return bar
+    }
+
+    /** 当前工具箱状态渲染到工具箱条（EDT 调用） */
+    private fun renderToolbox(state: ToolboxService.ToolboxState) {
+        disconnectGameButton.isVisible = state.game != null
+        gameStatusLabel.text = if (state.game != null) {
+            val game = state.game!!
+            OkScriptToolkitBundle.message(
+                "toolbox.gameConnected",
+                game.title.ifEmpty { game.hwnd.toString() },
+                game.pid,
+            )
+        } else {
+            OkScriptToolkitBundle.message("toolbox.gameNotConnected")
+        }
+        updatingOverlayCheckbox = true
+        overlayCheckBox.isSelected = state.overlay
+        updatingOverlayCheckbox = false
+    }
+
+    private fun connectGame() {
+        val projectDir = detectProjectPath()
+        if (projectDir.isBlank()) {
+            toolboxStatusLabel.text = OkScriptToolkitBundle.message("toolbox.noProject")
+            return
+        }
+        connectGameButton.isEnabled = false
+        toolboxService.connectGame(projectDir, detectPythonPath()).whenComplete { _, _ ->
+            SwingUtilities.invokeLater { connectGameButton.isEnabled = true }
+        }
+    }
+
+    private fun disconnectGame() {
+        val projectDir = detectProjectPath()
+        if (projectDir.isBlank()) return
+        toolboxService.disconnectGame(projectDir, detectPythonPath())
     }
 
     private fun detectProjectPath(): String {
@@ -696,6 +790,26 @@ class TaskLauncherPanel(private val project: Project) {
             env["OK_LANG_HINTS_INJECT"] = injectJson
         }
 
+        // 工具箱共享配置：任务启动无感沿用调试浮层开关与游戏连接
+        val toolboxState = toolboxService.loadState(projectDir)
+        overlayActive = toolboxState.overlay
+        if (overlayActive) {
+            env["OK_TOOLKIT_USE_OVERLAY"] = "1"
+            appendConsole(OkScriptToolkitBundle.message("toolbox.overlayEnabledLog"))
+        }
+        toolboxState.game?.let { game ->
+            // 实际复用由 connect_game.py 写入的 configs/devices.json selected_hwnd 驱动，
+            // 这里仅记录连接来源，便于确认任务与工具箱操作的是同一个窗口。
+            appendConsole(
+                OkScriptToolkitBundle.message(
+                    "toolbox.reuseConnection",
+                    game.title.ifEmpty { game.hwnd.toString() },
+                    game.pid,
+                ),
+            )
+        }
+        toolboxService.registerTaskCommandWriter(::writeTaskCommand)
+
         val fullCommand = listOf(pythonPath) + command
 
         statusLabel.text = "Running: ${task.displayName}..."
@@ -759,6 +873,7 @@ class TaskLauncherPanel(private val project: Project) {
                         currentProcess = null
                         currentTask = null
                         paused = false
+                        overlayActive = false
                     }
                 } catch (e: InterruptedException) {
                     SwingUtilities.invokeLater {
@@ -771,6 +886,7 @@ class TaskLauncherPanel(private val project: Project) {
                         currentProcess = null
                         currentTask = null
                         paused = false
+                        overlayActive = false
                     }
                 }
             }.start()
@@ -809,6 +925,25 @@ class TaskLauncherPanel(private val project: Project) {
         }
     }
 
+    /**
+     * 向运行中任务进程的 stdin 写入控制命令（无弹窗、返回是否成功）。
+     * 供工具箱浮层开关即时下发 overlay_on/off 使用。
+     */
+    private fun writeTaskCommand(command: String): Boolean {
+        val process = currentProcess
+        if (process == null || !process.isAlive) return false
+        return try {
+            val writer = OutputStreamWriter(process.outputStream, Charsets.UTF_8)
+            writer.write("$command\n")
+            writer.flush()
+            true
+        } catch (e: Exception) {
+            LOG.warn("Failed to send control command: $command", e)
+            appendConsole(OkScriptToolkitBundle.message("toolbox.sendCommandFailed", e.message ?: ""))
+            false
+        }
+    }
+
     private fun sendControlCommand(command: String) {
         val process = currentProcess
         if (process == null || !process.isAlive) {
@@ -834,6 +969,8 @@ class TaskLauncherPanel(private val project: Project) {
         when {
             line.contains("OK_TOOLKIT_PAUSED") -> setPaused(true)
             line.contains("OK_TOOLKIT_RESUMED") -> setPaused(false)
+            line.contains("OK_TOOLKIT_OVERLAY_ON") -> setTaskOverlayActive(true)
+            line.contains("OK_TOOLKIT_OVERLAY_OFF") -> setTaskOverlayActive(false)
             line.contains("OK_TOOLKIT_ERROR:") -> {
                 val error = line.substringAfter("OK_TOOLKIT_ERROR:").trim()
                 if (error.isNotBlank()) {
@@ -842,6 +979,20 @@ class TaskLauncherPanel(private val project: Project) {
                     }
                 }
             }
+        }
+    }
+
+    /** 调试浮层以 run_task.py 的确认标记行为准；翻转时同步日志并回写工具箱共享状态 */
+    private fun setTaskOverlayActive(active: Boolean) {
+        if (overlayActive == active) return
+        overlayActive = active
+        appendConsole(
+            if (active) OkScriptToolkitBundle.message("toolbox.overlayEnabledLog")
+            else OkScriptToolkitBundle.message("toolbox.overlayDisabledLog"),
+        )
+        val projectDir = detectProjectPath()
+        if (projectDir.isNotBlank()) {
+            toolboxService.onTaskOverlayMarker(projectDir, active)
         }
     }
 
@@ -911,6 +1062,7 @@ class TaskLauncherPanel(private val project: Project) {
                         currentProcess = null
                         currentTask = null
                         paused = false
+                        overlayActive = false
                     }
                 }
             }
@@ -918,6 +1070,9 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     fun onDispose() {
+        toolboxService.removeStateListener(toolboxStateListener)
+        toolboxService.removeStatusListener(toolboxStatusListener)
+        toolboxService.registerTaskCommandWriter(null)
         stopCurrentTask()
     }
 }
