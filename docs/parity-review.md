@@ -35,8 +35,9 @@
 
 ## ❌ 完全缺失（主仓库独有，按建议优先级）
 
-1. saveToAssets 打包导出（尺寸分组 + bbox 重叠 bin-packing 多页合成 + worker 池 +
-   进度/取消 + LabelEnum.py 生成）——素材工作流收口，子仓库零命中
+1. ✅ saveToAssets 打包导出：素材面板导出按钮（目标 assets/ok_tasks/assets 二选一、
+   可选 LabelEnum.py），Kotlin 实现 bin-packing 多页合成（尺寸分组+重叠检测+白底
+   画布原坐标粘贴）+ COCO 重写（分类清理）+ Task.Backgroundable 进度
 2. ✅ 游戏窗口截图采集：素材面板新增截图按钮（probe 自动探测窗口配置，
    失败回退手输正则；capture_game_window.py 截图并自动注册进 COCO；
    PythonScriptLocator 解压白名单扩到 5 个脚本）

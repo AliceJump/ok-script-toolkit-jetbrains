@@ -55,6 +55,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     private var gridCols = ThumbGridPolicy.columnsFor(540)
     private val statusLabel = JBLabel()
     private val countLabel = JBLabel()
+    private val progressBar = JProgressBar()
     private var images = listOf<TemplateImage>()
     private var currentFilter = ""
     // loadData 在后台线程失效缓存，EDT 在渲染时读写，需要并发安全
@@ -84,8 +85,9 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
 
         val importAction = ToolbarAction(AllIcons.Actions.AddFile, OkScriptToolkitBundle.message("templateAsset.import")) { handleImport() }
         val screenshotAction = ToolbarAction(AllIcons.Actions.Preview, OkScriptToolkitBundle.message("templateAsset.screenshot")) { handleScreenshot() }
+        val exportAction = ToolbarAction(AllIcons.Actions.Upload, OkScriptToolkitBundle.message("templateAsset.export")) { handleSaveToAssets() }
         val refreshAction = ToolbarAction(AllIcons.Actions.Refresh, OkScriptToolkitBundle.message("templateAsset.refresh")) { loadData() }
-        val actionGroup = com.intellij.openapi.actionSystem.DefaultActionGroup(importAction, screenshotAction, refreshAction)
+        val actionGroup = com.intellij.openapi.actionSystem.DefaultActionGroup(importAction, screenshotAction, exportAction, refreshAction)
         val actionToolbar = com.intellij.openapi.actionSystem.ActionManager.getInstance()
             .createActionToolbar("ok-script-assets", actionGroup, true)
         actionToolbar.targetComponent = mainPanel
@@ -106,6 +108,9 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         statusPanel.border = JBUI.Borders.empty(2, 4)
         statusPanel.add(statusLabel, BorderLayout.CENTER)
         statusPanel.add(countLabel, BorderLayout.EAST)
+        progressBar.preferredSize = Dimension(200, 16)
+        progressBar.isVisible = false
+        statusPanel.add(progressBar, BorderLayout.SOUTH)
 
         mainPanel.add(toolbar, BorderLayout.NORTH)
         mainPanel.add(scrollPane, BorderLayout.CENTER)
@@ -406,6 +411,107 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
                 }
             }
         }
+    }
+
+    /**
+     * saveToAssets 导出（对齐 VSCode 版）：选择目标（assets / ok_tasks/assets）、
+     * 可选生成 LabelEnum.py，后台 bin-packing 合成 pages 并重写目标 COCO。
+     */
+    private fun handleSaveToAssets() {
+        val annotatedCount = images.count { it.annotations.isNotEmpty() }
+        if (annotatedCount == 0) {
+            notify(OkScriptToolkitBundle.message("templateAsset.exportNoAnnotations"), NotificationType.WARNING)
+            return
+        }
+        val projectDir = OkScriptToolkitSettings.getInstance(project).okScriptProjectPath().ifBlank {
+            project.basePath ?: ""
+        }
+        if (projectDir.isBlank()) {
+            notify(OkScriptToolkitBundle.message("taskLauncher.noProject"), NotificationType.WARNING)
+            return
+        }
+
+        val options = arrayOf("assets", "ok_tasks/assets")
+        val chosenIndex = com.intellij.openapi.ui.Messages.showChooseDialog(
+            project,
+            OkScriptToolkitBundle.message("templateAsset.exportTargetPrompt", annotatedCount),
+            OkScriptToolkitBundle.message("templateAsset.export"),
+            com.intellij.icons.AllIcons.General.Information,
+            options,
+            options[0],
+        )
+        if (chosenIndex < 0) return
+        val selectedTarget = options[chosenIndex]
+        val targetFolder = java.nio.file.Paths.get(projectDir, selectedTarget.replace("/", java.io.File.separator)).toString()
+
+        val generateEnum = com.intellij.openapi.ui.Messages.showYesNoDialog(
+            project,
+            OkScriptToolkitBundle.message("templateAsset.exportEnumPrompt"),
+            OkScriptToolkitBundle.message("templateAsset.export"),
+            com.intellij.openapi.ui.Messages.getQuestionIcon(),
+        ) == com.intellij.openapi.ui.Messages.YES
+
+        var enumPath: String? = null
+        if (generateEnum) {
+            val defaultPath = java.nio.file.Paths.get(targetFolder, "LabelEnum.py").toString()
+            val input = com.intellij.openapi.ui.Messages.showInputDialog(
+                project,
+                OkScriptToolkitBundle.message("templateAsset.exportEnumPathPrompt"),
+                OkScriptToolkitBundle.message("templateAsset.exportEnumTitle"),
+                com.intellij.openapi.ui.Messages.getInformationIcon(),
+                defaultPath,
+                null,
+            ) ?: return
+            enumPath = input.trim()
+        }
+
+        statusLabel.text = OkScriptToolkitBundle.message("templateAsset.exportRunning")
+        progressBar.isIndeterminate = true
+        progressBar.isVisible = true
+
+        com.intellij.openapi.progress.ProgressManager.getInstance().run(
+            object : com.intellij.openapi.progress.Task.Backgroundable(
+                project,
+                OkScriptToolkitBundle.message("templateAsset.export"),
+                false,
+            ) {
+                override fun run(indicator: com.intellij.openapi.progress.ProgressIndicator) {
+                    try {
+                        data.load(
+                            projectDir,
+                            OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory(),
+                        )
+                        data.saveToAssets(targetFolder, generateEnum, enumPath) { done, total ->
+                            indicator.fraction = if (total > 0) done.toDouble() / total else 0.0
+                            indicator.text = OkScriptToolkitBundle.message(
+                                "templateAsset.exportProgress", done, total,
+                            )
+                        }
+                        com.intellij.notification.NotificationGroupManager.getInstance()
+                            .getNotificationGroup("okScriptToolkit")
+                            .createNotification(
+                                OkScriptToolkitBundle.message("templateAsset.exportDone", targetFolder),
+                                NotificationType.INFORMATION,
+                            )
+                            .notify(project)
+                    } catch (e: Exception) {
+                        com.intellij.notification.NotificationGroupManager.getInstance()
+                            .getNotificationGroup("okScriptToolkit")
+                            .createNotification(
+                                OkScriptToolkitBundle.message("templateAsset.exportFailed", e.message ?: e.toString()),
+                                NotificationType.ERROR,
+                            )
+                            .notify(project)
+                    } finally {
+                        javax.swing.SwingUtilities.invokeLater {
+                            progressBar.isIndeterminate = false
+                            progressBar.isVisible = false
+                            loadData()
+                        }
+                    }
+                }
+            },
+        )
     }
 
     private fun applyFilter() {
