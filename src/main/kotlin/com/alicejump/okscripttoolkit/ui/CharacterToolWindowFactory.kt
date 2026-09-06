@@ -42,7 +42,7 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
     private val statusLabel = JBLabel()
     private val statsLabel = JBLabel()
 
-    private val detailPane = JTextPane()
+    private val detailPane = com.intellij.ui.components.JBHtmlPane()
     private val issuesTableModel = DefaultTableModel(arrayOf("Sev", "Code", "Message"), 0)
     private val issuesTable = JTable(issuesTableModel)
     private val effectsListModel = DefaultListModel<String>()
@@ -100,7 +100,6 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         val tabbedPane = JTabbedPane()
 
         detailPane.isEditable = false
-        detailPane.font = Font(Font.MONOSPACED, Font.PLAIN, 12)
         tabbedPane.addTab(OkScriptToolkitBundle.message("characterManager.detail"), JBScrollPane(detailPane))
 
         issuesTable.showHorizontalLines = true
@@ -234,46 +233,64 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
     }
 
     private fun showCharacterDetail(char: CharacterView) {
+        detailPane.text = buildDetailHtml(char)
+        detailPane.caretPosition = 0
+    }
+
+    /** HTML 详情（JBHtmlPane 主题适配渲染，替代等宽纯文本）。 */
+    private fun buildDetailHtml(char: CharacterView): String {
+        fun esc(v: Any?) = com.intellij.openapi.util.text.StringUtil.escapeXmlEntities(v?.toString().orEmpty())
         val sb = StringBuilder()
-        sb.appendLine("=== ${char.name} (${char.characterId}) ===")
-        sb.appendLine("Star: ${char.star}  Element: ${char.element}  Profession: ${char.profession}  Weapon: ${char.weaponType}")
+        sb.append("<h2>").append(esc(char.name))
+            .append(" <span style=\"color:gray\">").append(esc(char.characterId)).append("</span></h2>")
+        sb.append("<p>★").append(char.star)
+            .append(" &nbsp; ").append(esc(char.element))
+            .append(" &nbsp; ").append(esc(char.profession))
+            .append(" &nbsp; ").append(esc(char.weaponType)).append("</p>")
         char.master?.let {
-            sb.appendLine("Master: zh=${it.zh}  en=${it.en}")
+            sb.append("<p style=\"color:gray\">master: zh=").append(esc(it.zh))
+                .append(" / en=").append(esc(it.en)).append("</p>")
         }
         if (char.locales.isNotEmpty()) {
-            sb.appendLine("Locales:")
-            for ((locale, name) in char.locales.toSortedMap()) {
-                sb.appendLine("  $locale: $name")
+            sb.append("<p><b>Locales</b> ")
+            val parts = char.locales.toSortedMap().entries.map { (locale, name) ->
+                "<span style=\"color:gray\">${esc(locale)}:</span>${esc(name)}"
             }
+            sb.append(parts.joinToString(" &nbsp; "))
+            sb.append("</p>")
         }
-        sb.appendLine()
-        sb.appendLine("--- Skills (${char.skills.size}) ---")
+        sb.append("<hr/><p><b>Skills (").append(char.skills.size).append(")</b></p>")
         for (skill in char.skills) {
-            sb.appendLine()
-            sb.appendLine("  [${skill.source}] ${skill.name} (${skill.skillId})")
-            sb.appendLine("  Type: ${skill.skillType}  Element: ${skill.element}")
+            sb.append("<div style=\"margin:6px 0\">")
+            sb.append("<b>").append(esc(skill.name)).append("</b> <span style=\"color:gray\">[")
+                .append(esc(skill.source)).append("] ").append(esc(skill.skillId)).append("</span>")
+            sb.append("<br/><span style=\"color:gray\">Type:</span> ").append(esc(skill.skillType))
+                .append(" <span style=\"color:gray\">Element:</span> ").append(esc(skill.element))
             if (skill.description.isNotBlank()) {
-                sb.appendLine("  Desc: ${skill.description}")
+                sb.append("<br/>").append(esc(skill.description))
             }
             if (skill.damageMultiplier.isNotBlank()) {
-                sb.appendLine("  Damage: ${skill.damageMultiplier}  Stagger: ${skill.staggerValue}  CD: ${skill.cooldown}  SP: ${skill.spiritCost}")
+                sb.append("<br/><span style=\"color:gray\">DMG ").append(esc(skill.damageMultiplier))
+                    .append(" · Stagger ").append(esc(skill.staggerValue))
+                    .append(" · CD ").append(esc(skill.cooldown))
+                    .append(" · SP ").append(esc(skill.spiritCost)).append("</span>")
             }
             if (skill.effects.isNotEmpty()) {
-                sb.appendLine("  Effects:")
-                for (eff in skill.effects) {
-                    sb.appendLine("    - ${eff.effectId}${if (eff.inferred) " (inferred)" else ""}")
-                }
+                sb.append("<br/><span style=\"color:gray\">Effects:</span> ")
+                sb.append(skill.effects.joinToString(" &nbsp; ") { eff ->
+                    esc(eff.effectId) + if (eff.inferred) " <i style=\"color:gray\">(inferred)</i>" else ""
+                })
             }
             if (skill.enhancements.isNotEmpty()) {
-                sb.appendLine("  Enhancements:")
-                for (enh in skill.enhancements) {
-                    sb.appendLine("    ${enh.name}: trigger='${enh.triggerText}' mode=${enh.triggerEffectMode}")
-                }
+                sb.append("<br/><span style=\"color:gray\">Enhancements:</span> ")
+                sb.append(skill.enhancements.joinToString(" &nbsp; ") { enh ->
+                    esc(enh.name) + " <span style=\"color:gray\">(trigger: " + esc(enh.triggerText) +
+                        ", mode " + esc(enh.triggerEffectMode) + ")</span>"
+                })
             }
+            sb.append("</div>")
         }
-
-        detailPane.text = sb.toString()
-        detailPane.caretPosition = 0
+        return "<html><body style=\"margin:8px\">" + sb + "</body></html>"
     }
 
     /** 双击问题跳转源文件并定位（对齐 VSCode 版 openSource）。 */
