@@ -26,6 +26,7 @@ import java.awt.*
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.io.File
+import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import javax.swing.*
 import javax.swing.border.EmptyBorder
@@ -518,7 +519,8 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             object : com.intellij.openapi.progress.Task.Backgroundable(
                 project,
                 OkScriptToolkitBundle.message("templateAsset.export"),
-                false,
+                // 对齐 VSCode 版：导出可取消（已完成分页保留，仅中止后续合成与 COCO 重写）
+                true,
             ) {
                 override fun run(indicator: com.intellij.openapi.progress.ProgressIndicator) {
                     try {
@@ -527,6 +529,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
                             OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory(),
                         )
                         data.saveToAssets(targetFolder, generateEnum, enumPath) { done, total ->
+                            indicator.checkCanceled()
                             indicator.fraction = if (total > 0) done.toDouble() / total else 0.0
                             indicator.text = OkScriptToolkitBundle.message(
                                 "templateAsset.exportProgress", done, total,
@@ -537,6 +540,16 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
                             .createNotification(
                                 OkScriptToolkitBundle.message("templateAsset.exportDone", targetFolder),
                                 NotificationType.INFORMATION,
+                            )
+                            .notify(project)
+                    } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
+                        throw e
+                    } catch (e: CancellationException) {
+                        com.intellij.notification.NotificationGroupManager.getInstance()
+                            .getNotificationGroup("okScriptToolkit")
+                            .createNotification(
+                                OkScriptToolkitBundle.message("templateAsset.exportCancelled"),
+                                NotificationType.WARNING,
                             )
                             .notify(project)
                     } catch (e: Exception) {
