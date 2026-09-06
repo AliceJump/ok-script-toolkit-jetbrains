@@ -11,6 +11,7 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import com.alicejump.okscripttoolkit.core.forEachField
 
 /**
  * 任务启动器服务，对应 VS Code 版本的 taskLauncher.ts。
@@ -206,7 +207,7 @@ class TaskLauncherService(private val project: Project) {
 
     private fun parseSchemas(parsed: JsonNode): MutableMap<String, TaskSchema> {
         val schemas = mutableMapOf<String, TaskSchema>()
-        parsed.get("schemas")?.fields()?.forEach { (key, schemaNode) ->
+        parsed.get("schemas")?.forEachField { key, schemaNode ->
             val fields = mutableListOf<TaskParamField>()
             schemaNode.get("fields")?.forEach { fieldNode ->
                 fields.add(
@@ -286,15 +287,15 @@ class TaskLauncherService(private val project: Project) {
 
     private fun parseTaskConfigStore(node: JsonNode): TaskConfigStore {
         val projects = linkedMapOf<String, TaskConfigStore.ProjectConfig>()
-        node.get("projects")?.fields()?.forEach { (projectDir, projectNode) ->
+        node.get("projects")?.forEachField { projectDir, projectNode ->
             val tasks = linkedMapOf<String, TaskConfig>()
-            projectNode.get("tasks")?.fields()?.forEach { (taskKey, taskNode) ->
+            projectNode.get("tasks")?.forEachField { taskKey, taskNode ->
                 tasks[taskKey] = TaskConfig(
                     extraArgs = taskNode.get("extraArgs")?.asText(null),
                     env = taskNode.get("env")?.takeIf { it.isObject }?.let { envNode ->
                         val env = linkedMapOf<String, String>()
                         // 对齐 VSCode：只保留合法环境变量键
-                        envNode.fields().forEach { (k, v) ->
+                        envNode.forEachField { k, v ->
                             if (v.isTextual && k.matches(Regex("[A-Za-z_][A-Za-z0-9_]*"))) env[k] = v.asText()
                         }
                         env

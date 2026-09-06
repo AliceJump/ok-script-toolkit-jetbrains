@@ -478,15 +478,12 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         }
 
         val options = arrayOf("assets", "ok_tasks/assets")
-        val chosenIndex = com.intellij.openapi.ui.Messages.showChooseDialog(
+        val chosenIndex = ChooseDialog.show(
             project,
             OkScriptToolkitBundle.message("templateAsset.exportTargetPrompt", annotatedCount),
             OkScriptToolkitBundle.message("templateAsset.export"),
-            com.intellij.icons.AllIcons.General.Information,
-            options,
-            options[0],
-        )
-        if (chosenIndex < 0) return
+            options.toList(),
+        ) ?: return
         val selectedTarget = options[chosenIndex]
         val targetFolder = java.nio.file.Paths.get(projectDir, selectedTarget.replace("/", java.io.File.separator)).toString()
 

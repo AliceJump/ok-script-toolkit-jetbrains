@@ -239,10 +239,10 @@ class OkProjectDataService(private val project: Project) {
     private fun parseLangJson(root: JsonNode): Map<String, Map<String, LangNode>> {
         if (!root.isObject) return emptyMap()
         val result = linkedMapOf<String, Map<String, LangNode>>()
-        root.fields().forEach { (key, localesNode) ->
-            if (!localesNode.isObject) return@forEach
+        root.forEachField { key, localesNode ->
+            if (!localesNode.isObject) return@forEachField
             val locales = linkedMapOf<String, LangNode>()
-            localesNode.fields().forEach { (locale, node) ->
+            localesNode.forEachField { locale, node ->
                 when {
                     node.path("string").isTextual -> locales[locale] = LangNode(node.path("string").asText(), "string")
                     node.path("pattern").isTextual -> locales[locale] = LangNode(node.path("pattern").asText(), "pattern")

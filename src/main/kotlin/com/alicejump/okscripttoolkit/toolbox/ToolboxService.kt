@@ -17,6 +17,7 @@ import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.SwingUtilities
+import com.alicejump.okscripttoolkit.core.forEachField
 
 /**
  * 工具箱共享状态：调试浮层开关 + 游戏窗口连接，对应 VS Code 版 toolboxState.ts。
@@ -45,7 +46,7 @@ class ToolboxService(private val project: Project) : Disposable {
         /** 解析 .idea/ok-script-toolkit-toolbox.json 的 projects 映射（纯函数，可独立单测） */
         fun parseStore(node: JsonNode): Map<String, ToolboxState> {
             val result = linkedMapOf<String, ToolboxState>()
-            node.path("projects").fields().forEach { (dir, stateNode) ->
+            node.path("projects").forEachField { dir, stateNode ->
                 val gameNode = stateNode.path("game")
                 result[dir] = ToolboxState(
                     overlay = stateNode.path("overlay").asBoolean(false),

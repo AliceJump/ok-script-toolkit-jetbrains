@@ -31,12 +31,14 @@ class OkInlayHintsProvider : InlayHintsProvider {
             val references = OkEditorSupport.references(document, 0, document.textLength, project)
             for (reference in references) {
                 val hint = OkEditorSupport.hint(reference, project) ?: continue
-                // 位置参数传满全部形参，避免调用被标记 deprecated 的 $default 桥接
+                // 新版 InlayTreeSink：hasBackground 布尔参数被 HintFormat 取代；
+                // Default.withColorKind(TextWithoutBackground) 与旧 hasBackground=false 等价
                 sink.addPresentation(
                     InlineInlayPosition(reference.hintOffset, true),
                     null,
                     OkEditorSupport.tooltip(reference, project),
-                    false,
+                    com.intellij.codeInsight.hints.declarative.HintFormat.default
+                        .withColorKind(com.intellij.codeInsight.hints.declarative.HintColorKind.TextWithoutBackground),
                 ) {
                     text(hint)
                 }

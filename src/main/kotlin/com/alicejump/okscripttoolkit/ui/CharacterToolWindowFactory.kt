@@ -18,6 +18,7 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextField
 import com.intellij.ui.content.ContentFactory
 import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.UIUtil
 import java.awt.*
 import java.util.concurrent.CompletableFuture
 import javax.swing.*
@@ -52,7 +53,13 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
     private val statusLabel = JBLabel()
     private val statsLabel = JBLabel()
 
-    private val detailPane = com.intellij.ui.components.JBHtmlPane()
+    private val detailPane = javax.swing.JEditorPane().apply {
+        // JBHtmlPane 尚为 experimental API：用稳定 HTMLEditorKitBuilder 获得相同的
+        // 主题化 HTML 渲染（IDE 样式表 + 自动换行）
+        editorKit = com.intellij.util.ui.HTMLEditorKitBuilder().withWordWrapViewFactory().build()
+        isEditable = false
+        background = UIUtil.getPanelBackground()
+    }
     private val issuesTableModel = DefaultTableModel(
         arrayOf(
             OkScriptToolkitBundle.message("characterManager.column.severity"),
@@ -570,15 +577,12 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         }
 
         val skillNames = char.skills.map { "${it.name} (${it.skillId})" }.toTypedArray()
-        val skillIndex = com.intellij.openapi.ui.Messages.showChooseDialog(
+        val skillIndex = ChooseDialog.show(
             project,
             OkScriptToolkitBundle.message("characterManager.enhancementSkillPrompt"),
             OkScriptToolkitBundle.message("characterManager.enhancements"),
-            com.intellij.icons.AllIcons.General.Information,
-            skillNames,
-            skillNames.firstOrNull(),
-        )
-        if (skillIndex < 0) return
+            skillNames.toList(),
+        ) ?: return
         val skill = char.skills[skillIndex]
         val skillId = skill.skillId
 
@@ -587,15 +591,12 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
             OkScriptToolkitBundle.message("characterManager.editEnhancement"),
             OkScriptToolkitBundle.message("characterManager.deleteEnhancement"),
         )
-        val actionIndex = com.intellij.openapi.ui.Messages.showChooseDialog(
+        val actionIndex = ChooseDialog.show(
             project,
             OkScriptToolkitBundle.message("characterManager.enhancementActionPrompt", skill.name),
             OkScriptToolkitBundle.message("characterManager.enhancements"),
-            com.intellij.icons.AllIcons.General.Information,
-            actions,
-            actions.firstOrNull(),
-        )
-        if (actionIndex < 0) return
+            actions.toList(),
+        ) ?: return
         val action = EnhancementAction.values()[actionIndex]
 
         val enhCount = skill.enhancements.size
@@ -611,15 +612,12 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         var enhancementIndex: Int? = null
         if (action != EnhancementAction.ADD) {
             val enhNames = skill.enhancements.map { it.name }.toTypedArray()
-            val enhIdx = com.intellij.openapi.ui.Messages.showChooseDialog(
+            val enhIdx = ChooseDialog.show(
                 project,
                 OkScriptToolkitBundle.message("characterManager.enhancementPickPrompt"),
                 OkScriptToolkitBundle.message("characterManager.enhancements"),
-                com.intellij.icons.AllIcons.General.Information,
-                enhNames,
-                enhNames.firstOrNull(),
-            )
-            if (enhIdx < 0) return
+                enhNames.toList(),
+            ) ?: return
             enhancementIndex = enhIdx
         }
 

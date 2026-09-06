@@ -443,7 +443,7 @@ class CharacterDataService(private val project: Project) {
                 val locales = mutableMapOf<String, String>()
                 val localeEntry = localeData?.get(parsed.characterId)
                 if (localeEntry != null && localeEntry.isObject) {
-                    localeEntry.fields().forEach { (localeCode, node) ->
+                    localeEntry.forEachField { localeCode, node ->
                         val value = node.get("string")?.asText()?.takeIf { it.isNotBlank() }
                             ?: node.get("pattern")?.asText()?.takeIf { it.isNotBlank() }
                         if (value != null) locales[localeCode] = value
@@ -653,7 +653,7 @@ class CharacterDataService(private val project: Project) {
             val root = readJsonFile(path) ?: return null
             if (!root.isObject) return null
             val result = linkedMapOf<String, JsonNode>()
-            root.fields().forEach { (key, value) -> result[key] = value }
+            root.forEachField { key, value -> result[key] = value }
             return result
         }
 
