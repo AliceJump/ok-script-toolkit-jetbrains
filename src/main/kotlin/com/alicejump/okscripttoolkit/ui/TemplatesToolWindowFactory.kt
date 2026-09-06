@@ -52,6 +52,7 @@ import javax.swing.JLabel
 import javax.swing.ImageIcon
 import javax.swing.JComponent
 import javax.swing.JMenuItem
+import javax.swing.JPanel
 import javax.swing.JPopupMenu
 import javax.swing.SwingConstants
 import javax.swing.SwingUtilities
@@ -73,14 +74,14 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
         private val LOG = Logger.getInstance(TemplateGalleryPanel::class.java)
         private const val THUMB_HEIGHT = 96
         private const val CARD_WIDTH = 148
-        private const val CARD_HEIGHT = 148
         private const val ANNOTATION_MARGIN = 200
     }
 
     private val data = project.service<OkProjectDataService>()
     private var templates = emptyList<FeatureTemplate>()
     private val gridPanel = JBPanel<JBPanel<*>>(GridLayout(0, 5, 10, 10))
-    private val scrollPane = JBScrollPane(gridPanel)
+    private val gridWrap = JPanel(BorderLayout()).apply { isOpaque = false }
+    private val scrollPane = JBScrollPane(gridWrap)
     private val search = SearchTextField(false)
     private val count = JBLabel()
     private val emptyLabel = JBLabel(OkScriptToolkitBundle.message("gallery.empty"), SwingConstants.CENTER)
@@ -97,6 +98,8 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
 
     init {
         gridPanel.border = JBUI.Borders.empty(8)
+        gridPanel.isOpaque = false
+        gridWrap.add(gridPanel, BorderLayout.NORTH)
         emptyLabel.isVisible = false
         // 列数按视口宽度自适应，横向不允许滚动（避免卡线溢出产生水平条）
         scrollPane.horizontalScrollBarPolicy = javax.swing.ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
@@ -201,8 +204,6 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
 
         card.add(imageArea, BorderLayout.CENTER)
         card.add(nameLabel, BorderLayout.SOUTH)
-        card.preferredSize = Dimension(CARD_WIDTH, CARD_HEIGHT)
-        card.maximumSize = Dimension(CARD_WIDTH, CARD_HEIGHT)
         card.toolTipText = "${expression(template)}  ($sizeText)"
         card.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
 
