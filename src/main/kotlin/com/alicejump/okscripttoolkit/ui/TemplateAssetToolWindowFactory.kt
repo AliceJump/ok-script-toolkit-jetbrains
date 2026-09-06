@@ -60,6 +60,8 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     private var currentFilter = ""
     // loadData 在后台线程失效缓存，EDT 在渲染时读写，需要并发安全
     private val thumbCache = java.util.concurrent.ConcurrentHashMap<String, ImageIcon?>()
+    // 进行中的缩略图解码（过滤输入会高频触发 renderGrid，按路径去重避免重复读盘解码）
+    private val thumbInflight = java.util.concurrent.ConcurrentHashMap<String, CompletableFuture<ImageIcon?>>()
 
     companion object {
         private const val THUMB_HEIGHT = ThumbGridPolicy.THUMB_HEIGHT
@@ -182,15 +184,14 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             BorderFactory.createEmptyBorder(4, 4, 4, 4),
         )
 
-        // 缩略图只读盘一次并缓存（此前每次 paint 都重新 ImageIO.read）
-        val thumbIcon = thumbCache[img.file.absolutePath] ?: loadThumbIcon(img.file).also {
-            if (it != null) thumbCache[img.file.absolutePath] = it
-        }
-        val thumbLabel = JBLabel(thumbIcon).apply {
+        // 缩略图缓存命中即显示；未命中的在后台线程解码（大图 ImageIO.read 可达数秒，
+        // 此前在 EDT 同步解码导致 IDE 冻结，见 next_error 的 EDT 冻结转储），就绪后回填
+        val thumbLabel = JBLabel().apply {
             horizontalAlignment = SwingConstants.CENTER
             verticalAlignment = SwingConstants.CENTER
             preferredSize = Dimension(0, THUMB_HEIGHT)
         }
+        thumbCache[img.file.absolutePath]?.let { thumbLabel.icon = it } ?: requestThumb(img.file, thumbLabel)
 
         val annText = if (img.annotations.isNotEmpty()) " [${img.annotations.size} ann]" else ""
         val sizeText = "${img.width}×${img.height}$annText"
@@ -230,6 +231,26 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         val dialog = AnnotationDialog(project, data, img)
         dialog.show()
         loadData()
+    }
+
+    /** 缩略图解码只在后台线程做，完成后回填到仍显示中的卡片（网格重渲染会换新 label）；
+     *  解码结果写回缓存供后续渲染复用，进行中的解码按路径去重。 */
+    private fun requestThumb(file: File, label: JBLabel) {
+        val future = thumbInflight.computeIfAbsent(file.absolutePath) {
+            CompletableFuture.supplyAsync {
+                val icon = loadThumbIcon(file)
+                if (icon != null) thumbCache[file.absolutePath] = icon
+                icon
+            }.whenComplete { _, _ -> thumbInflight.remove(file.absolutePath) }
+        }
+        future.thenAccept { icon ->
+            SwingUtilities.invokeLater {
+                if (label.isShowing) {
+                    label.icon = icon
+                    label.repaint()
+                }
+            }
+        }
     }
 
     private fun loadThumbIcon(file: File): ImageIcon? {
