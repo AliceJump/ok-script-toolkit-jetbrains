@@ -29,14 +29,10 @@ import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.Insets
 import java.awt.Color
-import java.io.BufferedReader
 import java.io.File
-import java.io.InputStreamReader
-import java.io.OutputStreamWriter
+import java.util.concurrent.CompletableFuture
 import java.nio.file.Files
 import java.nio.file.Paths
-import java.util.concurrent.CompletableFuture
-import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.*
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
@@ -81,7 +77,7 @@ class TaskLauncherPanel(private val project: Project) {
     private val taskTable = JBTable(taskTableModel)
     private val refreshAction = ToolbarAction(AllIcons.Actions.Refresh, OkScriptToolkitBundle.message("taskLauncher.refresh")) { loadTasks() }
     private val runAction = ToolbarAction(AllIcons.Actions.Execute, OkScriptToolkitBundle.message("taskLauncher.run")) { runSelectedTask() }
-    private val stopAction = ToolbarAction(AllIcons.Actions.Suspend, OkScriptToolkitBundle.message("taskLauncher.stop")) { stopCurrentTask() }
+    private val stopAction = ToolbarAction(AllIcons.Actions.Suspend, OkScriptToolkitBundle.message("taskLauncher.stop")) { taskRunner.stop() }
     private val pauseAction = ToolbarAction(AllIcons.Actions.Pause, OkScriptToolkitBundle.message("taskLauncher.pause")) { sendControlCommand("pause") }
     private val resumeAction = ToolbarAction(AllIcons.Actions.Play_forward, OkScriptToolkitBundle.message("taskLauncher.resume")) { sendControlCommand("resume") }
     private lateinit var actionToolbar: com.intellij.openapi.actionSystem.ActionToolbar
@@ -93,15 +89,13 @@ class TaskLauncherPanel(private val project: Project) {
     private val timeoutSpinner = JSpinner(SpinnerNumberModel(0, 0, 7 * 24 * 60 * 60, 1))
 
     private var tasks = listOf<TaskLauncherService.TaskInfo>()
-    private var currentProcess: Process? = null
-    private var currentTask: TaskLauncherService.TaskInfo? = null
     private var configModule = "src.config"
     private var schemas = mapOf<String, TaskLauncherService.TaskSchema>()
-    private var paused = false
-    private var stdoutRemainder = ""
-    private val stopping = AtomicBoolean(false)
     private val consoleArea = JBTextArea()
     private val saveTimer = javax.swing.Timer(400, null)
+
+    /** 任务进程与运行状态由项目级服务持有：工具窗关闭不影响后台任务 */
+    private val taskRunner = TaskRunnerService.getInstance(project)
 
     // ── Toolbox（游戏连接 + 调试浮层，状态由 ToolboxService 持有）──
     private val connectGameButton = JButton(OkScriptToolkitBundle.message("toolbox.connectGame"))
@@ -111,14 +105,18 @@ class TaskLauncherPanel(private val project: Project) {
     private val overlayCheckBox = JCheckBox(OkScriptToolkitBundle.message("toolbox.overlay"))
     /** 防止 renderToolbox 回写复选框选中态时再次触发用户切换事件 */
     private var updatingOverlayCheckbox = false
-    /** 调试浮层当前是否生效（启动沿用工具箱状态，运行中经 overlay_* 标记行同步） */
-    private var overlayActive = false
 
     private val toolboxStateListener: (ToolboxService.ToolboxState, String) -> Unit = { state, _ ->
         SwingUtilities.invokeLater { renderToolbox(state) }
     }
     private val toolboxStatusListener: (String) -> Unit = { text ->
         SwingUtilities.invokeLater { toolboxStatusLabel.text = text }
+    }
+    private val runnerOutputListener: (String) -> Unit = { line ->
+        SwingUtilities.invokeLater { appendConsole(line) }
+    }
+    private val runnerStateListener: (TaskRunnerService.RunnerState) -> Unit = { state ->
+        SwingUtilities.invokeLater { syncRunnerState(state) }
     }
 
     init {
@@ -129,7 +127,25 @@ class TaskLauncherPanel(private val project: Project) {
         toolboxService.addStateListener(toolboxStateListener)
         toolboxService.addStatusListener(toolboxStatusListener)
         renderToolbox(toolboxService.loadState(detectProjectPath()))
+        // 回放后台任务的既有输出并同步运行状态（工具窗重开场景）
+        taskRunner.recentOutputLines().forEach { appendConsole(it) }
+        syncRunnerState(taskRunner.currentState())
+        taskRunner.addOutputListener(runnerOutputListener)
+        taskRunner.addStateListener(runnerStateListener)
         loadTasks()
+    }
+
+    /** 按运行器状态刷新工具栏按钮与状态栏（EDT） */
+    private fun syncRunnerState(state: TaskRunnerService.RunnerState) {
+        runAction.isEnabled2 = !state.running
+        stopAction.isEnabled2 = state.running
+        pauseAction.isEnabled2 = state.running && !state.paused
+        resumeAction.isEnabled2 = state.running && state.paused
+        actionToolbar.updateActionsImmediately()
+        state.controlError?.let { statusLabel.text = "Task control error: $it" }
+        if (!state.running) {
+            state.finishMessage?.let { statusLabel.text = it }
+        }
     }
 
     private fun initUI() {
@@ -828,6 +844,15 @@ class TaskLauncherPanel(private val project: Project) {
             )
             return
         }
+        if (taskRunner.isRunning()) {
+            JOptionPane.showMessageDialog(
+                mainPanel,
+                OkScriptToolkitBundle.message("taskLauncher.taskRunning"),
+                "Warning",
+                JOptionPane.WARNING_MESSAGE,
+            )
+            return
+        }
 
         val task = tasks[selectedRow]
         val projectDir = detectProjectPath()
@@ -869,15 +894,14 @@ class TaskLauncherPanel(private val project: Project) {
 
         // 工具箱共享配置：任务启动无感沿用调试浮层开关与游戏连接
         val toolboxState = toolboxService.loadState(projectDir)
-        overlayActive = toolboxState.overlay
-        if (overlayActive) {
+        if (toolboxState.overlay) {
             env["OK_TOOLKIT_USE_OVERLAY"] = "1"
-            appendConsole(OkScriptToolkitBundle.message("toolbox.overlayEnabledLog"))
+            taskRunner.log(OkScriptToolkitBundle.message("toolbox.overlayEnabledLog"))
         }
         toolboxState.game?.let { game ->
             // 实际复用由 connect_game.py 写入的 configs/devices.json selected_hwnd 驱动，
             // 这里仅记录连接来源，便于确认任务与工具箱操作的是同一个窗口。
-            appendConsole(
+            taskRunner.log(
                 OkScriptToolkitBundle.message(
                     "toolbox.reuseConnection",
                     game.title.ifEmpty { game.hwnd.toString() },
@@ -885,145 +909,22 @@ class TaskLauncherPanel(private val project: Project) {
                 ),
             )
         }
-        toolboxService.registerTaskCommandWriter(::writeTaskCommand)
 
-        val fullCommand = listOf(pythonPath) + command + listOf("--") + extraArgs
+        val fullCommand = command + listOf("--") + extraArgs
 
         statusLabel.text = "Running: ${task.displayName}..."
-        appendConsole("=== ${task.displayName} ===")
-        runAction.isEnabled2 = false
-        stopAction.isEnabled2 = true
-        pauseAction.isEnabled2 = true
-        actionToolbar.updateActionsImmediately()
-        paused = false
-        stdoutRemainder = ""
-        stopping.set(false)
-
-        // 进程启动涉及 IO，移出 EDT
-        CompletableFuture.runAsync {
-            try {
-                val processBuilder = ProcessBuilder(fullCommand)
-                    .directory(File(projectDir))
-                val envMap = processBuilder.environment()
-                env.forEach { (k, v) -> envMap[k] = v }
-
-                val process = processBuilder.start()
-                currentProcess = process
-                currentTask = task
-
-                val stdoutReader = BufferedReader(InputStreamReader(process.inputStream, Charsets.UTF_8))
-                val stderrReader = BufferedReader(InputStreamReader(process.errorStream, Charsets.UTF_8))
-
-                Thread {
-                    try {
-                        stdoutReader.lineSequence().forEach { line ->
-                            appendConsole(line)
-                            scanControlMarkers(line)
-                        }
-                    } catch (_: Exception) { }
-                }.start()
-
-                Thread {
-                    try {
-                        stderrReader.lineSequence().forEach { line ->
-                            appendConsole(line)
-                        }
-                    } catch (_: Exception) { }
-                }.start()
-
-            Thread {
-                try {
-                    val exitCode = process.waitFor()
-                    SwingUtilities.invokeLater {
-                        statusLabel.text = if (stopping.get()) {
-                            OkScriptToolkitBundle.message("taskLauncher.taskStopped")
-                        } else if (exitCode == 0) {
-                            OkScriptToolkitBundle.message("taskLauncher.taskCompleted")
-                        } else {
-                            OkScriptToolkitBundle.message("taskLauncher.taskFailed") + " (exit code $exitCode)"
-                        }
-                        runAction.isEnabled2 = true
-                        stopAction.isEnabled2 = false
-                        pauseAction.isEnabled2 = false
-                        resumeAction.isEnabled2 = false
-                        actionToolbar.updateActionsImmediately()
-                        currentProcess = null
-                        currentTask = null
-                        paused = false
-                        overlayActive = false
-                    }
-                } catch (e: InterruptedException) {
-                    SwingUtilities.invokeLater {
-                        statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.taskStopped")
-                        runAction.isEnabled2 = true
-                        stopAction.isEnabled2 = false
-                        pauseAction.isEnabled2 = false
-                        resumeAction.isEnabled2 = false
-                        actionToolbar.updateActionsImmediately()
-                        currentProcess = null
-                        currentTask = null
-                        paused = false
-                        overlayActive = false
-                    }
-                }
-            }.start()
-
-            val timeout = taskConfig.timeout ?: 0
-            if (timeout > 0) {
-                Thread {
-                    try {
-                        Thread.sleep(timeout * 1000L)
-                        if (currentProcess?.isAlive == true) {
-                            SwingUtilities.invokeLater {
-                                statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.taskTimeout")
-                            }
-                            stopCurrentTask()
-                        }
-                    } catch (_: InterruptedException) { }
-                }.start()
-            }
-        } catch (e: Exception) {
-            LOG.error("Failed to run task", e)
-            SwingUtilities.invokeLater {
-                statusLabel.text = "Failed: ${e.message}"
-                runAction.isEnabled2 = true
-                stopAction.isEnabled2 = false
-                pauseAction.isEnabled2 = false
-                resumeAction.isEnabled2 = false
-                actionToolbar.updateActionsImmediately()
-                JOptionPane.showMessageDialog(
-                    mainPanel,
-                    "Failed to run task: ${e.message}",
-                    "Error",
-                    JOptionPane.ERROR_MESSAGE,
-                )
-            }
-        }
-        }
-    }
-
-    /**
-     * 向运行中任务进程的 stdin 写入控制命令（无弹窗、返回是否成功）。
-     * 供工具箱浮层开关即时下发 overlay_on/off 使用。
-     */
-    private fun writeTaskCommand(command: String): Boolean {
-        val process = currentProcess
-        if (process == null || !process.isAlive) return false
-        return try {
-            val writer = OutputStreamWriter(process.outputStream, Charsets.UTF_8)
-            writer.write("$command\n")
-            writer.flush()
-            true
-        } catch (e: Exception) {
-            LOG.warn("Failed to send control command: $command", e)
-            appendConsole(OkScriptToolkitBundle.message("toolbox.sendCommandFailed", e.message ?: ""))
-            false
-        }
+        taskRunner.start(
+            task = task,
+            pythonPath = pythonPath,
+            command = fullCommand,
+            projectDir = projectDir,
+            env = env,
+            timeoutSeconds = taskConfig.timeout ?: 0,
+        )
     }
 
     private fun sendControlCommand(command: String) {
-        val process = currentProcess
-        if (process == null || !process.isAlive) {
+        if (!taskRunner.isRunning()) {
             JOptionPane.showMessageDialog(
                 mainPanel,
                 OkScriptToolkitBundle.message("taskLauncher.noTaskRunning"),
@@ -1032,54 +933,8 @@ class TaskLauncherPanel(private val project: Project) {
             )
             return
         }
-        try {
-            val writer = OutputStreamWriter(process.outputStream, Charsets.UTF_8)
-            writer.write("$command\n")
-            writer.flush()
-        } catch (e: Exception) {
-            LOG.error("Failed to send control command: $command", e)
-            statusLabel.text = "Failed to send command: ${e.message}"
-        }
-    }
-
-    private fun scanControlMarkers(line: String) {
-        when {
-            line.contains("OK_TOOLKIT_PAUSED") -> setPaused(true)
-            line.contains("OK_TOOLKIT_RESUMED") -> setPaused(false)
-            line.contains("OK_TOOLKIT_OVERLAY_ON") -> setTaskOverlayActive(true)
-            line.contains("OK_TOOLKIT_OVERLAY_OFF") -> setTaskOverlayActive(false)
-            line.contains("OK_TOOLKIT_ERROR:") -> {
-                val error = line.substringAfter("OK_TOOLKIT_ERROR:").trim()
-                if (error.isNotBlank()) {
-                    SwingUtilities.invokeLater {
-                        statusLabel.text = "Task control error: $error"
-                    }
-                }
-            }
-        }
-    }
-
-    /** 调试浮层以 run_task.py 的确认标记行为准；翻转时同步日志并回写工具箱共享状态 */
-    private fun setTaskOverlayActive(active: Boolean) {
-        if (overlayActive == active) return
-        overlayActive = active
-        appendConsole(
-            if (active) OkScriptToolkitBundle.message("toolbox.overlayEnabledLog")
-            else OkScriptToolkitBundle.message("toolbox.overlayDisabledLog"),
-        )
-        val projectDir = detectProjectPath()
-        if (projectDir.isNotBlank()) {
-            toolboxService.onTaskOverlayMarker(projectDir, active)
-        }
-    }
-
-    private fun setPaused(newPaused: Boolean) {
-        if (paused == newPaused) return
-        paused = newPaused
-        SwingUtilities.invokeLater {
-            pauseAction.isEnabled2 = newPaused.not() && currentProcess?.isAlive == true
-            resumeAction.isEnabled2 = newPaused && currentProcess?.isAlive == true
-            actionToolbar.updateActionsImmediately()
+        if (!taskRunner.sendCommand(command)) {
+            statusLabel.text = OkScriptToolkitBundle.message("toolbox.sendCommandFailed", command)
         }
     }
 
@@ -1102,49 +957,12 @@ class TaskLauncherPanel(private val project: Project) {
         return overrides
     }
 
-    private fun stopCurrentTask() {
-        currentProcess?.let { process ->
-            if (process.isAlive) {
-                stopping.set(true)
-                appendConsole("--- ${OkScriptToolkitBundle.message("taskLauncher.taskStopped")} ---")
-                // taskkill /F /T 是阻塞调用，移出 EDT
-                CompletableFuture.runAsync {
-                    try {
-                        val pid = process.pid()
-                        if (pid > 0 && System.getProperty("os.name").lowercase().contains("win")) {
-                            ProcessBuilder("taskkill", "/F", "/T", "/PID", pid.toString())
-                                .redirectErrorStream(true)
-                                .start()
-                                .waitFor()
-                        } else {
-                            process.destroyForcibly()
-                        }
-                    } catch (e: Exception) {
-                        LOG.warn("Failed to stop task process", e)
-                        process.destroyForcibly()
-                    }
-                    SwingUtilities.invokeLater {
-                        statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.taskStopped")
-                        runAction.isEnabled2 = true
-                        stopAction.isEnabled2 = false
-                        pauseAction.isEnabled2 = false
-                        resumeAction.isEnabled2 = false
-                        actionToolbar.updateActionsImmediately()
-                        currentProcess = null
-                        currentTask = null
-                        paused = false
-                        overlayActive = false
-                    }
-                }
-            }
-        }
-    }
-
     fun onDispose() {
+        // 只解绑视图：任务进程由 TaskRunnerService 持有，工具窗关闭后台任务继续运行
         toolboxService.removeStateListener(toolboxStateListener)
         toolboxService.removeStatusListener(toolboxStatusListener)
-        toolboxService.registerTaskCommandWriter(null)
-        stopCurrentTask()
+        taskRunner.removeOutputListener(runnerOutputListener)
+        taskRunner.removeStateListener(runnerStateListener)
     }
 }
 
