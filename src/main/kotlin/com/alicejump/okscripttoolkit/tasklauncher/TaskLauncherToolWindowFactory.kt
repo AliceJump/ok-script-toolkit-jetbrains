@@ -73,10 +73,8 @@ class TaskLauncherPanel(private val project: Project) {
     private val taskService = TaskLauncherService(project)
     private val toolboxService = ToolboxService.getInstance(project)
 
-    /** 卡片式任务列表（对齐 VSCode taskCard.js）：taskKey → 卡片 */
-    private val taskCards = LinkedHashMap<String, TaskCard>()
-    private val cardsHost = JPanel(GridBagLayout())
-    private var selectedTaskKey: String? = null
+    private val taskTableModel = DefaultTableModel(arrayOf("Task", "Type", "Status"), 0)
+    private val taskTable = JBTable(taskTableModel)
     private val refreshAction = ToolbarAction(AllIcons.Actions.Refresh, OkScriptToolkitBundle.message("taskLauncher.refresh")) { loadTasks() }
     private val runAction = ToolbarAction(AllIcons.Actions.Execute, OkScriptToolkitBundle.message("taskLauncher.run")) { runSelectedTask() }
     private val stopAction = ToolbarAction(AllIcons.Actions.Suspend, OkScriptToolkitBundle.message("taskLauncher.stop")) { taskRunner.stop() }
@@ -148,12 +146,11 @@ class TaskLauncherPanel(private val project: Project) {
         stopAction.isEnabled2 = state.running
         pauseAction.isEnabled2 = state.running && !state.paused
         resumeAction.isEnabled2 = state.running && state.paused
-        actionToolbar.updateActionsAsync()
+        actionToolbar.updateActionsImmediately()
         state.controlError?.let { statusLabel.text = "Task control error: $it" }
         if (!state.running) {
             state.finishMessage?.let { statusLabel.text = it }
         }
-        taskCards.values.forEach { it.updateRunningState(state) }
     }
 
     private fun initUI() {
@@ -173,8 +170,17 @@ class TaskLauncherPanel(private val project: Project) {
         val toolbar = actionToolbar.component
         toolbar.border = BorderFactory.createEmptyBorder(2, 2, 2, 6)
 
-        val tableScrollPane = JBScrollPane(cardsHost)
-        tableScrollPane.border = BorderFactory.createEmptyBorder(4, 6, 4, 6)
+        taskTable.selectionModel.selectionMode = ListSelectionModel.SINGLE_SELECTION
+        taskTable.showHorizontalLines = true
+        taskTable.showVerticalLines = false
+        taskTable.selectionModel.addListSelectionListener {
+            val selectedRow = taskTable.selectedRow
+            if (selectedRow >= 0 && selectedRow < tasks.size) {
+                loadTaskParams(tasks[selectedRow])
+            }
+        }
+
+        val tableScrollPane = JBScrollPane(taskTable)
 
         val paramScrollPane = JBScrollPane(paramPanel)
         paramScrollPane.border = BorderFactory.createTitledBorder(OkScriptToolkitBundle.message("taskLauncher.parameters"))
@@ -375,11 +381,20 @@ class TaskLauncherPanel(private val project: Project) {
                         )
                     }
 
-                    renderTaskCards()
+                    taskTableModel.rowCount = 0
+                    for (task in tasks) {
+                        val taskKey = "${task.module}::${task.className}"
+                        val schema = schemas[taskKey]
+                        val kind = schema?.kind ?: "onetime"
+                        val status = when {
+                            schema?.broken == true -> "Broken"
+                            schema?.error != null -> "Error"
+                            else -> "Ready"
+                        }
+                        taskTableModel.addRow(arrayOf(task.displayName, kind, status))
+                    }
 
-                    statusLabel.text = OkScriptToolkitBundle.message(
-                        "taskLauncher.loaded", tasks.size,
-                    )
+                    statusLabel.text = "Loaded ${tasks.size} tasks"
                 } else {
                     statusLabel.text = "Failed: ${result.error}"
                     JOptionPane.showMessageDialog(
@@ -1154,20 +1169,16 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     private fun runSelectedTask() {
-        if (taskRunner.isRunning()) {
+        val selectedRow = taskTable.selectedRow
+        if (selectedRow < 0 || selectedRow >= tasks.size) {
             JOptionPane.showMessageDialog(
                 mainPanel,
-                OkScriptToolkitBundle.message("taskLauncher.taskRunning"),
+                OkScriptToolkitBundle.message("taskLauncher.noTaskSelected"),
                 "Warning",
                 JOptionPane.WARNING_MESSAGE,
             )
             return
         }
-        val task = selectedTaskKey?.let { taskCards[it]?.task }
-        if (task != null) runTask(task)
-    }
-
-    private fun runTask(task: TaskLauncherService.TaskInfo) {
         if (taskRunner.isRunning()) {
             JOptionPane.showMessageDialog(
                 mainPanel,
@@ -1178,6 +1189,7 @@ class TaskLauncherPanel(private val project: Project) {
             return
         }
 
+        val task = tasks[selectedRow]
         val projectDir = detectProjectPath()
         if (projectDir.isBlank()) {
             statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.noProject")
@@ -1244,182 +1256,6 @@ class TaskLauncherPanel(private val project: Project) {
             env = env,
             timeoutSeconds = taskConfig.timeout ?: 0,
         )
-    }
-
-    /** 重绘全部任务卡片；保留原选中任务（对齐 VSCode renderTasks + updateRunningState） */
-    private fun renderTaskCards() {
-        taskCards.clear()
-        cardsHost.removeAll()
-
-        val previousSelection = selectedTaskKey
-        var grow = 0
-        for (task in tasks) {
-            val card = TaskCard(task)
-            taskCards["${task.module}::${task.className}"] = card
-            cardsHost.add(card, GridBagConstraints().apply {
-                gridx = 0; gridy = grow
-                fill = GridBagConstraints.HORIZONTAL
-                weightx = 1.0
-                insets = Insets(2, 0, 2, 0)
-            })
-            grow++
-        }
-        // 尾部填充：卡片列表始终顶部对齐
-        val filler = JPanel()
-        filler.isOpaque = false
-        cardsHost.add(filler, GridBagConstraints().apply {
-            gridx = 0; gridy = grow
-            fill = GridBagConstraints.BOTH
-            weightx = 1.0; weighty = 1.0
-        })
-
-        selectedTaskKey = previousSelection?.takeIf { taskCards.containsKey(it) }
-            ?: taskCards.keys.firstOrNull()
-        selectedTaskKey?.let { taskCards[it]?.setIsSelected(true) }
-        cardsHost.revalidate()
-        cardsHost.repaint()
-        syncRunnerState(taskRunner.currentState())
-    }
-
-    private fun selectCard(key: String) {
-        if (selectedTaskKey == key) return
-        taskCards[selectedTaskKey]?.setIsSelected(false)
-        selectedTaskKey = key
-        taskCards[key]?.setIsSelected(true)
-        taskCards[key]?.task?.let { loadTaskParams(it) }
-    }
-
-    /** 单张任务卡片（头部标识 + 运行/暂停/停止按钮），点击选中并加载参数 */
-    private inner class TaskCard(
-        val task: TaskLauncherService.TaskInfo,
-    ) : JPanel(BorderLayout(10, 0)) {
-
-        private val key = "${task.module}::${task.className}"
-        private val schema = schemas[key]
-
-        private val nameLabel = JBLabel(task.displayName)
-        private val classLabel = JBLabel("${task.className} · ${task.module}").apply {
-            font = font.deriveFont(font.size2D - 1f)
-            foreground = UIUtil.getContextHelpForeground()
-        }
-        private val descriptionLabel = schema?.description?.let {
-            JBLabel(it).apply {
-                font = font.deriveFont(font.size2D - 1f)
-                foreground = UIUtil.getContextHelpForeground()
-            }
-        }
-        private val launchButton = JButton(OkScriptToolkitBundle.message("taskLauncher.run"))
-        private val pauseResumeButton = JButton(OkScriptToolkitBundle.message("taskLauncher.pause"))
-        private val stopButton = JButton(OkScriptToolkitBundle.message("taskLauncher.stop"))
-
-        var selected = false
-            private set
-
-        init {
-            border = BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(JBColor.border()),
-                BorderFactory.createEmptyBorder(8, 10, 8, 10),
-            )
-
-            val titleRow = JPanel(BorderLayout(8, 0))
-            titleRow.isOpaque = false
-            nameLabel.font = nameLabel.font.deriveFont(java.awt.Font.BOLD)
-            nameLabel.toolTipText = task.module
-            titleRow.add(nameLabel, BorderLayout.CENTER)
-            titleRow.add(kindBadge(), BorderLayout.EAST)
-
-            val identity = JPanel()
-            identity.isOpaque = false
-            identity.layout = javax.swing.BoxLayout(identity, javax.swing.BoxLayout.Y_AXIS)
-            identity.add(titleRow)
-            identity.add(classLabel)
-            descriptionLabel?.let { identity.add(it) }
-
-            val actions = JPanel(java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, 4, 0))
-            actions.isOpaque = false
-            actions.add(launchButton)
-            actions.add(pauseResumeButton)
-            actions.add(stopButton)
-
-            add(identity, BorderLayout.CENTER)
-            add(actions, BorderLayout.EAST)
-
-            launchButton.addActionListener { runTask(task) }
-            pauseResumeButton.addActionListener {
-                sendControlCommand(if (pauseResumeButton.text == OkScriptToolkitBundle.message("taskLauncher.resume")) "resume" else "pause")
-            }
-            stopButton.addActionListener { taskRunner.stop() }
-
-            addMouseListener(object : java.awt.event.MouseAdapter() {
-                override fun mouseClicked(e: java.awt.event.MouseEvent) = selectCard(key)
-            })
-        }
-
-        private fun kindBadge(): JComponent {
-            val kind = schema?.kind ?: "onetime"
-            val text = OkScriptToolkitBundle.message(
-                if (kind == "trigger") "taskLauncher.kindTrigger" else "taskLauncher.kindOnetime",
-            )
-            val badge = JBLabel(text)
-            badge.font = badge.font.deriveFont(badge.font.size2D - 2f)
-            badge.foreground = UIUtil.getContextHelpForeground()
-            badge.border = BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(JBColor.border()),
-                BorderFactory.createEmptyBorder(0, 6, 0, 6),
-            )
-            return badge
-        }
-
-        private fun statusBadgeText(): String? = when {
-            schema?.broken == true -> OkScriptToolkitBundle.message("taskLauncher.statusBroken")
-            schema?.error != null -> OkScriptToolkitBundle.message("taskLauncher.statusError")
-            else -> null
-        }
-
-        fun setIsSelected(selected: Boolean) {
-            this.selected = selected
-            updateBorder(taskRunner.currentState())
-            repaint()
-        }
-
-        fun updateBorder(state: TaskRunnerService.RunnerState) {
-            val runningHere = state.running && state.task
-                ?.let { "${it.module}::${it.className}" } == key
-            val borderColor = when {
-                runningHere -> JBColor(Color(0x548235), Color(0x57965C))
-                selected -> JBColor.namedColor("Component.focusColor", Color(0x3574F0))
-                else -> JBColor.border()
-            }
-            border = BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(borderColor),
-                BorderFactory.createEmptyBorder(8, 10, 8, 10),
-            )
-        }
-
-        /** 对齐 VSCode updateRunningState：运行中卡片高亮、按钮可用性与文案切换 */
-        fun updateRunningState(state: TaskRunnerService.RunnerState) {
-            val runningHere = state.running && state.task
-                ?.let { "${it.module}::${it.className}" } == key
-            launchButton.isEnabled = !state.running
-            launchButton.text = if (state.running && runningHere) {
-                OkScriptToolkitBundle.message("taskLauncher.cardRunning")
-            } else {
-                OkScriptToolkitBundle.message("taskLauncher.run")
-            }
-            pauseResumeButton.isVisible = state.running
-            pauseResumeButton.isEnabled = state.running && runningHere && !state.stopping
-            pauseResumeButton.text = if (state.paused && runningHere) {
-                OkScriptToolkitBundle.message("taskLauncher.resume")
-            } else {
-                OkScriptToolkitBundle.message("taskLauncher.pause")
-            }
-            stopButton.isEnabled = state.running && runningHere
-            updateBorder(state)
-            // 状态徽标（Broken/Error）在名称旁提示
-            statusBadgeText()?.let {
-                nameLabel.text = "${task.displayName} ⚠ $it"
-            } ?: run { nameLabel.text = task.displayName }
-        }
     }
 
     private fun sendControlCommand(command: String) {
