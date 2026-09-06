@@ -23,6 +23,13 @@ JetBrains Platform/PyCharm port of the VS Code extension in the repository root.
 - Project settings for paths, locale, aliases, and feature toggles.
 - UI localized in en, zh_CN, zh_TW, ja, ko, es.
 
+## Agent skills
+
+Development conventions live in `agents/skills/`:
+
+- `agents/skills/jetbrains-toolwindow-icons/SKILL.md` — New UI tool-window
+  icon spec (four-variant naming, sizes, palette colors, tinting mechanics).
+
 ## Build
 
 Use the bundled Wrapper from this directory:
