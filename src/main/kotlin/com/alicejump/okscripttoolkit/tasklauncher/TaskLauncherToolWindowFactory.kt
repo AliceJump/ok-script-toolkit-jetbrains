@@ -413,7 +413,7 @@ class TaskLauncherPanel(private val project: Project) {
                 merged[key] = TaskLauncherService.TaskSchema(displayName = task.displayName)
             }
         }
-        val validKeys = parseResult.tasks.map { "${'$'}{it.module}::${'$'}{it.className}" }.toSet()
+        val validKeys = parseResult.tasks.map { "${it.module}::${it.className}" }.toSet()
         return merged.filterKeys { it in validKeys }
     }
 

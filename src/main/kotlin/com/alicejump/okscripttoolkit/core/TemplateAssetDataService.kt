@@ -212,8 +212,9 @@ class TemplateAssetDataService(private val project: Project) {
             return coco
         }
 
-        fun cocoPath(projectDir: String, assetsDir: String = "assets"): Path =
-            Paths.get(projectDir, assetsDir, "coco_annotations.json")
+        // 对齐 VSCode 版：素材面板的 COCO 是模板目录自己的 coco_annotations.json
+        fun cocoPath(projectDir: String, templatesDir: String = "ok_templates"): Path =
+            Paths.get(projectDir, templatesDir, "coco_annotations.json")
 
         fun templateDir(projectDir: String, templatesDir: String): Path =
             Paths.get(projectDir, templatesDir)
@@ -226,7 +227,7 @@ class TemplateAssetDataService(private val project: Project) {
 
     fun load(projectDir: String, templatesDir: String = "ok_templates"): CocoData {
         templateFolder = templateDir(projectDir, templatesDir)
-        cocoFile = cocoPath(projectDir)
+        cocoFile = cocoPath(projectDir, templatesDir)
 
         cocoData = CocoData()
         val file = cocoFile?.toFile()
