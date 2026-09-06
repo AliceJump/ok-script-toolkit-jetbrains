@@ -31,10 +31,12 @@ class OkInlayHintsProvider : InlayHintsProvider {
             val references = OkEditorSupport.references(document, 0, document.textLength, project)
             for (reference in references) {
                 val hint = OkEditorSupport.hint(reference, project) ?: continue
+                // 位置参数传满全部形参，避免调用被标记 deprecated 的 $default 桥接
                 sink.addPresentation(
                     InlineInlayPosition(reference.hintOffset, true),
-                    tooltip = OkEditorSupport.tooltip(reference, project),
-                    hasBackground = false,
+                    null,
+                    OkEditorSupport.tooltip(reference, project),
+                    false,
                 ) {
                     text(hint)
                 }
