@@ -1,12 +1,13 @@
-# 子仓库与主仓库功能差异审查（2026-09-06）
+# 子仓库与主仓库功能差异审查（2026-09-07 更新）
 
-对照基准：主仓库 VSCode 扩展 v0.6.11（含 assetPack/saveToAssets 最新重构）、
-子仓库 JetBrains 插件 v0.6.11（含本轮 UI 整治）。下次审查请覆盖本表并更新状态。
+对照基准：主仓库 VSCode 扩展 v0.6.15、子仓库 JetBrains 插件 v0.6.15（含本轮对齐提交）。
+下次审查请覆盖本表并更新状态。
 
 ## 结论概览
 
-编辑器语言功能（补全/hover/inlay）已完全对齐；三个工具面板主体对齐但存在
-细节缺口与个别真 bug；完全缺失的大块是 saveToAssets 导出、截图采集、角色 CRUD。
+编辑器语言功能（补全/hover/inlay）完全对齐；工具箱（游戏连接+调试浮层）、
+列表弹窗、sub_configs 子配置树、任务后台存续、批量导入、文件 watcher、
+导出取消均已对齐；剩余大块为标注编辑器进阶交互与次要 UI 项。
 
 ## ✅ 已对齐
 
@@ -14,44 +15,40 @@
   hover（全语言表格/缩略图预览/OCR 运行时说明）、行内提示 + tooltip、JSON 侧效果提示
 - 模板画廊：响应式网格、插入/复制/红框标注原图（ok_templates 反查 30s TTL）
 - 任务启动：AST 列任务、schema 探测与缓存、run_task.py 注入、timeout、taskkill、
-  暂停/恢复、输出区、配置持久化
-- 参数控件：bool/数字/下拉/多选/级联下拉/条件序列 JSON/configGroups 分组
-- 角色面板（只读部分）、素材库基础操作、标注基础操作、数据源、6 语言 UI、设置项
+  暂停/恢复、输出区、配置持久化、**任务后台存续（工具窗关闭不杀进程）**、
+  **extraArgs/env 应用**（`--` 追加、env 覆盖、键名过滤、解析失败中止）
+- 参数控件：bool/数字/下拉/多选/级联下拉/条件序列 JSON/configGroups 分组、
+  **列表字段 ModifyListDialog 弹窗**（options_available 双栏+搜索+上移下移移除+
+  allow_duplication）、**option_labels/category_labels 本地化标签**、
+  **字段描述渲染**、**sub_configs 子配置树**（boolean 条件显隐+折叠组+groupSelector 隐藏）
+- 角色面板（只读+技能 CRUD+强化组）、**状态栏/表头去硬编码英文**
+- 素材库：**批量导入+数字序号自动命名（nextImageName）**、
+  **saveToAssets 导出可取消**、截图采集、标注基础操作、数据源、
+  **数据文件 watcher 自动刷新面板**（VFS 监听+300ms 防抖+相关性过滤）
+- **工具箱：游戏连接/断开（connect_game.py，未运行自动启动）、调试浮层开关
+  （任务启动沿用 OK_TOOLKIT_USE_OVERLAY、运行中 stdin overlay_on/off 即时下发、
+  overlay_host.py 常驻宿主）**，状态持久化 .idea/ok-script-toolkit-toolbox.json
+- 6 语言 UI、设置项、PythonScriptLocator 只从插件 JAR 提取脚本（7 个脚本全量打包）
 
-## ⚠️ 部分实现（真 bug / 缺口）
+## ⚠️ 待办
 
 | # | 问题 | 严重度 | 状态 |
 |---|---|---|---|
-| 1 | list 类型参数落入 else 分支变 JTextField，数组被存成字符串（buildTaskConfig） | 高 | ✅ 已修 |
-| 2 | inferEffectIds/parseEffectTermMap 已定义但 load() 从未调用，inferred 恒 false | 中 | 待修 |
-| 3 | 大部分 issue 构造未填 source，跳转 UI 有、数据没有 | 中 | ✅ 已修 |
-| 4 | schema 缓存命中时不跑 parse_config_tasks，新增任务刷新后不出现；probeTaskSchemas 未传设置的 poDirectory（写死 i18n） | 中 | ✅ 已修 |
-| 5 | 任务配置 extraArgs/env 能读不应用 | 低 | 待办 |
-| 6 | 角色面板状态栏硬编码英文 | 低 | 待办 |
-| 7 | 无文件 watcher（数据变化需手动刷新；主仓库 watcher+300ms 防抖） | 低 | 待办 |
-| 8 | 工具窗关闭即杀任务进程（主仓库任务后台存续） | 低 | 待办 |
-| 9 | 标注编辑器缺 undo/redo、copy/paste、8 向 resize、拖动移框、缩放平移（仅 fit 不放大）、跨图导航、双击数值编辑、改动即存 | 中 | 待办 |
-| 10 | 素材导入仅单文件，无 nextImageName 自动编号；drop_down/级联本地化标签（option_labels）未用；字段描述未渲染 | 低 | 待办 |
+| 1 | 标注编辑器进阶交互（undo/redo、copy/paste、8 向 resize、拖动移框、缩放平移、跨图导航、双击数值编辑、改动即存） | 中 | 待办（2026-09-07 用户指示跳过） |
+| 2 | 编辑器大画廊双入口（编辑器内嵌大画廊视图） | 低 | 待办 |
+| 3 | 任务卡片式 UI（VSCode 任务列表为卡片布局） | 低 | 待办 |
+| 4 | lastPythonEditor 跟踪（插入表达式定位最近编辑器） | 低 | 待办 |
+| 5 | 注释面板命令（VSCode annotationPanel 独立面板命令） | 低 | 待办 |
 
-## ❌ 完全缺失（主仓库独有，按建议优先级）
+## 已修复（本轮提交）
 
-1. ✅ saveToAssets 打包导出：素材面板导出按钮（目标 assets/ok_tasks/assets 二选一、
-   可选 LabelEnum.py），Kotlin 实现 bin-packing 多页合成（尺寸分组+重叠检测+白底
-   画布原坐标粘贴）+ COCO 重写（分类清理）+ Task.Backgroundable 进度
-2. ✅ 游戏窗口截图采集：素材面板新增截图按钮（probe 自动探测窗口配置，
-   失败回退手输正则；capture_game_window.py 截图并自动注册进 COCO；
-   PythonScriptLocator 解压白名单扩到 5 个脚本）
-3. ◐ 角色技能 CRUD：已交付（添加/编辑/删除技能，原子写入+备份，同步技能锁定；
-   effects.py 加分类/效果、强化组编辑待后续）
-4. ✅ 角色头像：表格头像列（avatarTemplateRegex 匹配模板 -> bbox 裁剪 24px，居中适配）
-5. sub_configs 子配置树（折叠树 + boolean 条件显隐 + groupSelector；schema 已返回，纯 UI 缺失）
-6. 标注快捷键配置 annotationKeybindings（依赖标注编辑器进阶交互）
-7. 次要：编辑器大画廊双入口、任务卡片式 UI、lastPythonEditor 跟踪、注释面板命令
-
-## 行动顺序
-
-1. 修 4 个真 bug（上表 1-4）
-2. 截图采集 UI（脚本已打包）
-3. saveToAssets 导出
-4. 角色 CRUD + 头像 + 术语推断
-5. 标注编辑器进阶交互 + sub_configs 树
+- 脚本定位只从插件 JAR 提取（78885dd，与父仓 c7ac05d 配对）
+- 工具箱游戏连接+调试浮层（091065d）
+- 列表弹窗 ModifyListDialog 语义（3e676b3，含对象数组 toString 破坏数据回归修复）
+- extraArgs/env 应用 + option_labels/描述 + 角色面板去硬编码（c805b90）
+- TaskRunnerService 任务后台存续（0634706）
+- 素材批量导入+数字序号命名（982b785）
+- 数据文件 watcher（eaca68a）
+- sub_configs 子配置树（91c5dd5）
+- 素材导出取消（b78b76f）
+- 父仓 6 语言过期键 okLangHints→okScriptToolkit（父仓 60ded3e）
