@@ -58,6 +58,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     private val countLabel = JBLabel()
     private val progressBar = JProgressBar()
     private var images = listOf<TemplateImage>()
+    private var visibleImages = listOf<TemplateImage>()
     private var currentFilter = ""
     // loadData 在后台线程失效缓存，EDT 在渲染时读写，需要并发安全
     private val thumbCache = java.util.concurrent.ConcurrentHashMap<String, ImageIcon?>()
@@ -157,6 +158,8 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         val filtered = if (currentFilter.isEmpty()) images else {
             images.filter { it.name.lowercase().contains(currentFilter) }
         }
+        // 标注编辑器的 ←/→ 导航跟随当前过滤结果
+        visibleImages = filtered
 
         for (img in filtered) {
             gridPanel.add(createImageCard(img))
@@ -233,9 +236,11 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         return card
     }
 
-    /** 双击打开 COCO 标注编辑器（对齐 VSCode 版标注编辑器入口），关闭后刷新网格。 */
+    /** 双击打开 COCO 标注编辑器（对齐 VSCode 版标注编辑器入口），关闭后刷新网格。
+     *  传入当前过滤列表，编辑器内 ←/→ 可在列表内连续标注。 */
     private fun openAnnotator(img: TemplateImage) {
-        val dialog = AnnotationDialog(project, data, img)
+        val list = visibleImages.ifEmpty { listOf(img) }
+        val dialog = AnnotationDialog(project, data, img, list, list.indexOf(img).coerceAtLeast(0))
         dialog.show()
         loadData()
     }
