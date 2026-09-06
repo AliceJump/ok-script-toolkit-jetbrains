@@ -41,8 +41,9 @@
 2. ✅ 游戏窗口截图采集：素材面板新增截图按钮（probe 自动探测窗口配置，
    失败回退手输正则；capture_game_window.py 截图并自动注册进 COCO；
    PythonScriptLocator 解压白名单扩到 5 个脚本）
-3. 角色/效果 CRUD（技能/强化增删改、effects.py 加分类/效果、.bak 备份原子写入）
-4. 角色头像（characterAvatarTemplateRegex 设置已就位、实现为零）
+3. ◐ 角色技能 CRUD：已交付（添加/编辑/删除技能，原子写入+备份，同步技能锁定；
+   effects.py 加分类/效果、强化组编辑待后续）
+4. ✅ 角色头像：表格头像列（avatarTemplateRegex 匹配模板 -> bbox 裁剪 24px，居中适配）
 5. sub_configs 子配置树（折叠树 + boolean 条件显隐 + groupSelector；schema 已返回，纯 UI 缺失）
 6. 标注快捷键配置 annotationKeybindings（依赖标注编辑器进阶交互）
 7. 次要：编辑器大画廊双入口、任务卡片式 UI、lastPythonEditor 跟踪、注释面板命令

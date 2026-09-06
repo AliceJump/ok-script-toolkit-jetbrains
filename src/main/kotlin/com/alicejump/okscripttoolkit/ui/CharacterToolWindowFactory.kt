@@ -8,6 +8,7 @@ import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.components.service
+import javax.imageio.ImageIO
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
@@ -36,7 +37,7 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
     val mainPanel: JPanel
     private val data = project.service<CharacterDataService>()
 
-    private val characterTableModel = DefaultTableModel(arrayOf("Name", "Star", "Element", "Skills"), 0)
+    private val characterTableModel = DefaultTableModel(arrayOf("", "Name", "Star", "Element", "Skills"), 0)
     private val characterTable = JTable(characterTableModel)
     private val searchField = JBTextField()
     private val statusLabel = JBLabel()
@@ -50,6 +51,8 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
 
     private var snapshot: CharacterManagerSnapshot? = null
     private var currentCharacters = listOf<CharacterView>()
+    private val avatars = mutableMapOf<String, Icon?>()
+    private val skillFilePaths = mutableMapOf<String, String>()
 
     init {
         mainPanel = JPanel(BorderLayout())
@@ -69,7 +72,12 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         searchPanel.add(searchField, BorderLayout.CENTER)
 
         val refreshAction = ToolbarAction(AllIcons.Actions.Refresh, OkScriptToolkitBundle.message("characterManager.refresh")) { loadData() }
-        val actionGroup = com.intellij.openapi.actionSystem.DefaultActionGroup(refreshAction)
+        val addSkillAction = ToolbarAction(AllIcons.General.Add, OkScriptToolkitBundle.message("characterManager.addSkill")) { runSkillDialog(mode = SkillDialogMode.ADD) }
+        val editSkillAction = ToolbarAction(AllIcons.Actions.Edit, OkScriptToolkitBundle.message("characterManager.editSkill")) { runSkillDialog(mode = SkillDialogMode.EDIT) }
+        val deleteSkillAction = ToolbarAction(AllIcons.Actions.GC, OkScriptToolkitBundle.message("characterManager.deleteSkill")) { deleteSelectedSkill() }
+        val actionGroup = com.intellij.openapi.actionSystem.DefaultActionGroup(
+            refreshAction, addSkillAction, editSkillAction, deleteSkillAction,
+        )
         val actionToolbar = com.intellij.openapi.actionSystem.ActionManager.getInstance()
             .createActionToolbar("ok-script-characters", actionGroup, true)
         actionToolbar.targetComponent = mainPanel
@@ -80,10 +88,23 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         characterTable.showHorizontalLines = true
         characterTable.showVerticalLines = false
         characterTable.autoResizeMode = JTable.AUTO_RESIZE_ALL_COLUMNS
-        characterTable.columnModel.getColumn(0).preferredWidth = 150
-        characterTable.columnModel.getColumn(1).preferredWidth = 40
-        characterTable.columnModel.getColumn(2).preferredWidth = 60
-        characterTable.columnModel.getColumn(3).preferredWidth = 50
+        characterTable.rowHeight = 28
+        characterTable.columnModel.getColumn(0).preferredWidth = 32
+        characterTable.columnModel.getColumn(0).maxWidth = 36
+        characterTable.columnModel.getColumn(1).preferredWidth = 150
+        characterTable.columnModel.getColumn(2).preferredWidth = 40
+        characterTable.columnModel.getColumn(3).preferredWidth = 60
+        characterTable.columnModel.getColumn(4).preferredWidth = 50
+        characterTable.columnModel.getColumn(0).cellRenderer = object : javax.swing.table.DefaultTableCellRenderer() {
+            override fun getTableCellRendererComponent(
+                table: JTable, value: Any?, isSelected: Boolean, hasFocus: Boolean, row: Int, column: Int,
+            ): Component {
+                super.getTableCellRendererComponent(table, null, isSelected, hasFocus, row, column)
+                icon = value as? Icon
+                horizontalAlignment = SwingConstants.CENTER
+                return this
+            }
+        }
         characterTable.selectionModel.addListSelectionListener {
             val row = characterTable.selectedRow
             if (row >= 0 && row < currentCharacters.size) {
@@ -169,9 +190,32 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
                 localeFile = settings.characterLocaleFile(),
                 effectsFile = settings.effectsFile(),
             ))
-            CharacterDataService.load(paths, settings.displayLocale().ifBlank { "zh_CN" })
-        }.thenAccept { result ->
+            val loadResult = CharacterDataService.load(paths, settings.displayLocale().ifBlank { "zh_CN" })
+            // 头像：avatarTemplateRegex 匹配模板名（去前缀后与 characterId/en 名比对）
+            val gallery = project.service<OkProjectDataService>()
+            val avatarRegex = runCatching { Regex(settings.characterAvatarTemplateRegex()) }.getOrNull()
+            val avatarMap = mutableMapOf<String, Icon?>()
+            if (avatarRegex != null) {
+                for (char in loadResult.snapshot.characters) {
+                    val candidate = char.master?.en ?: char.characterId
+                    gallery.features().firstOrNull { tpl ->
+                        val stripped = avatarRegex.find(tpl.name)?.let { tpl.name.replaceFirst(it.value, "") } ?: tpl.name
+                        stripped.equals(candidate, ignoreCase = true) || tpl.name.equals(candidate, ignoreCase = true)
+                    }?.let { template ->
+                        avatarMap[char.characterId] = loadAvatarIcon(template)
+                    }
+                }
+            }
+            val skillPathMap = mutableMapOf<String, String>()
+            loadResult.snapshot.characters.forEach { c ->
+                val f = java.nio.file.Paths.get(paths.skillsDir, c.characterId + ".json").toFile()
+                if (f.exists()) skillPathMap[c.characterId] = f.absolutePath
+            }
+            Triple(loadResult, avatarMap, skillPathMap)
+        }.thenAccept { (result, avatarMap, skillPathMap) ->
             SwingUtilities.invokeLater {
+                avatars.clear(); avatars.putAll(avatarMap)
+                skillFilePaths.clear(); skillFilePaths.putAll(skillPathMap)
                 snapshot = result.snapshot
                 currentCharacters = result.snapshot.characters
                 updateUI()
@@ -189,7 +233,7 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
 
         characterTableModel.rowCount = 0
         for (char in currentCharacters) {
-            characterTableModel.addRow(arrayOf(char.name, char.star, char.element, char.skills.size))
+            characterTableModel.addRow(arrayOf(avatars[char.characterId], char.name, char.star, char.element, char.skills.size))
         }
 
         issuesTableModel.rowCount = 0
@@ -231,7 +275,7 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         }
         characterTableModel.rowCount = 0
         for (char in currentCharacters) {
-            characterTableModel.addRow(arrayOf(char.name, char.star, char.element, char.skills.size))
+            characterTableModel.addRow(arrayOf(avatars[char.characterId], char.name, char.star, char.element, char.skills.size))
         }
     }
 
@@ -352,8 +396,119 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         descriptor.navigate(true)
     }
 
+    private fun loadAvatarIcon(template: FeatureTemplate): Icon? {
+        return try {
+            val file = template.imagePath.toFile()
+            if (!file.exists()) return null
+            val original = ImageIO.read(file) ?: return null
+            val x = template.bbox[0].coerceIn(0, original.width - 1)
+            val y = template.bbox[1].coerceIn(0, original.height - 1)
+            val w = template.bbox[2].coerceAtMost(original.width - x)
+            val h = template.bbox[3].coerceAtMost(original.height - y)
+            if (w <= 0 || h <= 0) return null
+            val crop = original.getSubimage(x, y, w, h)
+            val side = 24
+            val thumb = java.awt.image.BufferedImage(side, side, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+            val g = thumb.createGraphics() as java.awt.Graphics2D
+            g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR)
+            val scale = side.toDouble() / minOf(w, h)
+            val dw = (w * scale).toInt().coerceAtLeast(1)
+            val dh = (h * scale).toInt().coerceAtLeast(1)
+            g.drawImage(crop, (side - dw) / 2, (side - dh) / 2, dw, dh, null)
+            g.dispose()
+            ImageIcon(thumb)
+        } catch (e: Exception) {
+            com.intellij.openapi.diagnostic.Logger.getInstance(CharacterManagerPanel::class.java)
+                .warn("avatar render failed for " + template.name, e)
+            null
+        }
+    }
+
+    // ── 技能 CRUD ──────────────────────────────────────────────
+
+    /** 编辑默认取该角色最后一个技能（详情面板按顺序展示，最后一个是当前浏览到的）。 */
+    private fun selectedSkillId(): String? {
+        val row = characterTable.selectedRow
+        if (row < 0 || row >= currentCharacters.size) return null
+        return currentCharacters[row].skills.lastOrNull()?.skillId
+    }
+
+    private fun runSkillDialog(mode: SkillDialogMode) {
+        val row = characterTable.selectedRow
+        if (row < 0 || row >= currentCharacters.size) {
+            com.intellij.openapi.ui.Messages.showInfoMessage(
+                project,
+                OkScriptToolkitBundle.message("characterManager.selectCharacterFirst"),
+                OkScriptToolkitBundle.message("characterManager.addSkill"),
+            )
+            return
+        }
+        val char = currentCharacters[row]
+        val path = skillFilePaths[char.characterId]
+        if (path == null) {
+            com.intellij.openapi.ui.Messages.showInfoMessage(
+                project,
+                OkScriptToolkitBundle.message("characterManager.noSkillFile", char.name),
+                OkScriptToolkitBundle.message("characterManager.addSkill"),
+            )
+            return
+        }
+        val editSkillId = if (mode == SkillDialogMode.EDIT) selectedSkillId() else null
+        val dialog = SkillDialog(project, mode, char, editSkillId)
+        if (!dialog.showAndGet()) return
+        val form = dialog.formValues()
+        val skillId = if (mode == SkillDialogMode.ADD) dialog.enteredSkillId() else (editSkillId ?: return)
+        CompletableFuture.runAsync {
+            try {
+                if (mode == SkillDialogMode.ADD) {
+                    com.alicejump.okscripttoolkit.core.CharacterDataMutations.addSkill(path, skillId, form)
+                } else {
+                    com.alicejump.okscripttoolkit.core.CharacterDataMutations.updateSkill(path, skillId, form)
+                }
+                SwingUtilities.invokeLater { loadData() }
+            } catch (e: Exception) {
+                SwingUtilities.invokeLater {
+                    com.intellij.openapi.ui.Messages.showErrorDialog(
+                        project, e.message ?: e.toString(),
+                        OkScriptToolkitBundle.message("characterManager.mutationFailed"),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun deleteSelectedSkill() {
+        val row = characterTable.selectedRow
+        if (row < 0 || row >= currentCharacters.size) return
+        val char = currentCharacters[row]
+        val path = skillFilePaths[char.characterId] ?: return
+        val skillId = selectedSkillId() ?: return
+        val confirm = com.intellij.openapi.ui.Messages.showYesNoDialog(
+            project,
+            OkScriptToolkitBundle.message("characterManager.deleteSkillConfirm", skillId, char.name),
+            OkScriptToolkitBundle.message("characterManager.deleteSkill"),
+            com.intellij.openapi.ui.Messages.getWarningIcon(),
+        )
+        if (confirm != com.intellij.openapi.ui.Messages.YES) return
+        CompletableFuture.runAsync {
+            try {
+                com.alicejump.okscripttoolkit.core.CharacterDataMutations.deleteSkill(path, skillId)
+                SwingUtilities.invokeLater { loadData() }
+            } catch (e: Exception) {
+                SwingUtilities.invokeLater {
+                    com.intellij.openapi.ui.Messages.showErrorDialog(
+                        project, e.message ?: e.toString(),
+                        OkScriptToolkitBundle.message("characterManager.mutationFailed"),
+                    )
+                }
+            }
+        }
+    }
+
     override fun dispose() {}
 }
+
+enum class SkillDialogMode { ADD, EDIT }
 
 class ShowCharacterManagerAction : AnAction() {
     override fun actionPerformed(e: AnActionEvent) {
@@ -364,4 +519,82 @@ class ShowCharacterManagerAction : AnAction() {
     }
 
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
+}
+
+
+/** 技能新增/编辑表单（对齐 CharacterSkillView 的核心字段）。 */
+class SkillDialog(
+    private val project: Project,
+    private val mode: SkillDialogMode,
+    char: CharacterView,
+    editSkillId: String?,
+) : com.intellij.openapi.ui.DialogWrapper(project) {
+
+    private val skillIdField = com.intellij.ui.components.JBTextField(editSkillId ?: "")
+    private val nameField = com.intellij.ui.components.JBTextField()
+    private val skillTypeField = com.intellij.ui.components.JBTextField()
+    private val elementField = com.intellij.ui.components.JBTextField()
+    private val descriptionArea = com.intellij.ui.components.JBTextArea(3, 24)
+    private val damageField = com.intellij.ui.components.JBTextField()
+    private val staggerField = com.intellij.ui.components.JBTextField()
+    private val cooldownField = com.intellij.ui.components.JBTextField()
+    private val spiritField = com.intellij.ui.components.JBTextField()
+
+    init {
+        title = OkScriptToolkitBundle.message(
+            if (mode == SkillDialogMode.ADD) "characterManager.addSkill" else "characterManager.editSkill",
+        )
+        setOKButtonText(OkScriptToolkitBundle.message("annotation.ok"))
+        val existing = editSkillId?.let { id -> char.skills.firstOrNull { it.skillId == id } }
+        existing?.let { s ->
+            nameField.text = s.name
+            skillTypeField.text = s.skillType
+            elementField.text = s.element
+            descriptionArea.text = s.description
+            damageField.text = s.damageMultiplier.toString()
+            staggerField.text = s.staggerValue.toString()
+            cooldownField.text = s.cooldown.toString()
+            spiritField.text = s.spiritCost.toString()
+        }
+        init()
+    }
+
+    override fun createCenterPanel(): JComponent {
+        val form = JPanel(java.awt.GridBagLayout())
+        var row = 0
+        fun addRow(label: String, component: JComponent) {
+            form.add(JLabel(label), java.awt.GridBagConstraints().apply {
+                gridx = 0; gridy = row; anchor = java.awt.GridBagConstraints.WEST
+                insets = java.awt.Insets(3, 4, 3, 6)
+            })
+            form.add(component, java.awt.GridBagConstraints().apply {
+                gridx = 1; gridy = row; fill = java.awt.GridBagConstraints.HORIZONTAL
+                weightx = 1.0; insets = java.awt.Insets(3, 0, 3, 4)
+            })
+            row++
+        }
+        addRow("skill_id", skillIdField)
+        addRow("name", nameField)
+        addRow("skill_type", skillTypeField)
+        addRow("element", elementField)
+        addRow("description", com.intellij.ui.components.JBScrollPane(descriptionArea).apply { preferredSize = java.awt.Dimension(240, 60) })
+        addRow("damage_multiplier", damageField)
+        addRow("stagger_value", staggerField)
+        addRow("cooldown", cooldownField)
+        addRow("spirit_cost", spiritField)
+        return form
+    }
+
+    fun enteredSkillId(): String = skillIdField.text.trim()
+
+    fun formValues(): Map<String, String> = mapOf(
+        "name" to nameField.text.trim(),
+        "skill_type" to skillTypeField.text.trim(),
+        "element" to elementField.text.trim(),
+        "description" to descriptionArea.text.trim(),
+        "damage_multiplier" to damageField.text.trim(),
+        "stagger_value" to staggerField.text.trim(),
+        "cooldown" to cooldownField.text.trim(),
+        "spirit_cost" to spiritField.text.trim(),
+    ).filterValues { it.isNotEmpty() }
 }
