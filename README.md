@@ -2,6 +2,8 @@
 
 JetBrains Platform/PyCharm port of the VS Code extension in the repository root.
 
+[![JetBrains Plugin](https://img.shields.io/badge/JetBrains%20Marketplace-OK%20Script%20Toolkit-000000?logo=jetbrains&logoColor=white)](https://plugins.jetbrains.com/plugin/34091-ok-script-toolkit)
+
 ## Implemented features
 
 - `self.lang.<module>.<key>` completion and quick documentation (full
