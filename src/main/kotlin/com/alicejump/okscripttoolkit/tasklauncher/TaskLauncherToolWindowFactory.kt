@@ -2,9 +2,13 @@ package com.alicejump.okscripttoolkit.tasklauncher
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
+import com.alicejump.okscripttoolkit.ui.ToolbarAction
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.ui.JBColor
 import com.intellij.icons.AllIcons
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
@@ -70,11 +74,12 @@ class TaskLauncherPanel(private val project: Project) {
 
     private val taskTableModel = DefaultTableModel(arrayOf("Task", "Type", "Status"), 0)
     private val taskTable = JBTable(taskTableModel)
-    private val refreshButton = JButton()
-    private val runButton = JButton()
-    private val stopButton = JButton()
-    private val pauseButton = JButton()
-    private val resumeButton = JButton()
+    private val refreshAction = ToolbarAction(AllIcons.Actions.Refresh, OkScriptToolkitBundle.message("taskLauncher.refresh")) { loadTasks() }
+    private val runAction = ToolbarAction(AllIcons.Actions.Execute, OkScriptToolkitBundle.message("taskLauncher.run")) { runSelectedTask() }
+    private val stopAction = ToolbarAction(AllIcons.Actions.Suspend, OkScriptToolkitBundle.message("taskLauncher.stop")) { stopCurrentTask() }
+    private val pauseAction = ToolbarAction(AllIcons.Actions.Pause, OkScriptToolkitBundle.message("taskLauncher.pause")) { sendControlCommand("pause") }
+    private val resumeAction = ToolbarAction(AllIcons.Actions.Play_forward, OkScriptToolkitBundle.message("taskLauncher.resume")) { sendControlCommand("resume") }
+    private lateinit var actionToolbar: com.intellij.openapi.actionSystem.ActionToolbar
     private val statusLabel = JBLabel()
     private val progressBar = JProgressBar()
 
@@ -102,48 +107,21 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     private fun initUI() {
-        val toolbar = JPanel()
-        toolbar.layout = BoxLayout(toolbar, BoxLayout.X_AXIS)
-        toolbar.border = BorderFactory.createEmptyBorder(4, 4, 4, 4)
+        val clearConsoleAction = ToolbarAction(AllIcons.Actions.GC, OkScriptToolkitBundle.message("taskLauncher.clearConsole")) {
+            consoleArea.text = ""
+        }
+        stopAction.isEnabled2 = false
+        pauseAction.isEnabled2 = false
+        resumeAction.isEnabled2 = false
 
-        refreshButton.icon = AllIcons.Actions.Refresh
-        refreshButton.toolTipText = OkScriptToolkitBundle.message("taskLauncher.refresh")
-        refreshButton.addActionListener { loadTasks() }
-
-        runButton.icon = AllIcons.Actions.Execute
-        runButton.toolTipText = OkScriptToolkitBundle.message("taskLauncher.run")
-        runButton.addActionListener { runSelectedTask() }
-
-        stopButton.icon = AllIcons.Actions.Suspend
-        stopButton.toolTipText = OkScriptToolkitBundle.message("taskLauncher.stop")
-        stopButton.addActionListener { stopCurrentTask() }
-        stopButton.isEnabled = false
-
-        pauseButton.icon = AllIcons.Actions.Pause
-        pauseButton.toolTipText = OkScriptToolkitBundle.message("taskLauncher.pause")
-        pauseButton.addActionListener { sendControlCommand("pause") }
-        pauseButton.isEnabled = false
-
-        resumeButton.icon = AllIcons.Actions.Play_forward
-        resumeButton.toolTipText = OkScriptToolkitBundle.message("taskLauncher.resume")
-        resumeButton.addActionListener { sendControlCommand("resume") }
-        resumeButton.isEnabled = false
-
-        val clearConsoleButton = JButton(AllIcons.Actions.GC)
-        clearConsoleButton.toolTipText = OkScriptToolkitBundle.message("taskLauncher.clearConsole")
-        clearConsoleButton.addActionListener { consoleArea.text = "" }
-
-        toolbar.add(refreshButton)
-        toolbar.add(Box.createHorizontalStrut(4))
-        toolbar.add(runButton)
-        toolbar.add(Box.createHorizontalStrut(4))
-        toolbar.add(stopButton)
-        toolbar.add(Box.createHorizontalStrut(4))
-        toolbar.add(pauseButton)
-        toolbar.add(Box.createHorizontalStrut(4))
-        toolbar.add(resumeButton)
-        toolbar.add(Box.createHorizontalStrut(4))
-        toolbar.add(clearConsoleButton)
+        val actionGroup = com.intellij.openapi.actionSystem.DefaultActionGroup(
+            refreshAction, runAction, stopAction, pauseAction, resumeAction, clearConsoleAction,
+        )
+        actionToolbar = com.intellij.openapi.actionSystem.ActionManager.getInstance()
+            .createActionToolbar("ok-script-tasks", actionGroup, true)
+        actionToolbar.targetComponent = mainPanel
+        val toolbar = actionToolbar.component
+        toolbar.border = BorderFactory.createEmptyBorder(2, 2, 2, 6)
 
         taskTable.selectionModel.selectionMode = ListSelectionModel.SINGLE_SELECTION
         taskTable.showHorizontalLines = true
@@ -167,8 +145,9 @@ class TaskLauncherPanel(private val project: Project) {
         progressBar.isVisible = false
         statusBar.add(progressBar, BorderLayout.EAST)
 
-        val splitPane = JSplitPane(JSplitPane.VERTICAL_SPLIT, tableScrollPane, paramScrollPane)
-        splitPane.resizeWeight = 0.5
+        val splitPane = com.intellij.openapi.ui.Splitter(true, 0.5f)
+        splitPane.firstComponent = tableScrollPane
+        splitPane.secondComponent = paramScrollPane
 
         // 输出控制台：对齐 VSCode 版的专属输出频道，展示任务 stdout/stderr
         consoleArea.isEditable = false
@@ -177,8 +156,9 @@ class TaskLauncherPanel(private val project: Project) {
         val consoleScrollPane = JBScrollPane(consoleArea)
         consoleScrollPane.border = BorderFactory.createTitledBorder(OkScriptToolkitBundle.message("taskLauncher.console"))
 
-        val centerPane = JSplitPane(JSplitPane.VERTICAL_SPLIT, splitPane, consoleScrollPane)
-        centerPane.resizeWeight = 0.62
+        val centerPane = com.intellij.openapi.ui.Splitter(true, 0.62f)
+        centerPane.firstComponent = splitPane
+        centerPane.secondComponent = consoleScrollPane
 
         mainPanel.add(toolbar, BorderLayout.NORTH)
         mainPanel.add(centerPane, BorderLayout.CENTER)
@@ -662,9 +642,10 @@ class TaskLauncherPanel(private val project: Project) {
 
         statusLabel.text = "Running: ${task.displayName}..."
         appendConsole("=== ${task.displayName} ===")
-        runButton.isEnabled = false
-        stopButton.isEnabled = true
-        pauseButton.isEnabled = true
+        runAction.isEnabled2 = false
+        stopAction.isEnabled2 = true
+        pauseAction.isEnabled2 = true
+        actionToolbar.updateActionsImmediately()
         paused = false
         stdoutRemainder = ""
         stopping.set(false)
@@ -712,10 +693,11 @@ class TaskLauncherPanel(private val project: Project) {
                         } else {
                             OkScriptToolkitBundle.message("taskLauncher.taskFailed") + " (exit code $exitCode)"
                         }
-                        runButton.isEnabled = true
-                        stopButton.isEnabled = false
-                        pauseButton.isEnabled = false
-                        resumeButton.isEnabled = false
+                        runAction.isEnabled2 = true
+                        stopAction.isEnabled2 = false
+                        pauseAction.isEnabled2 = false
+                        resumeAction.isEnabled2 = false
+                        actionToolbar.updateActionsImmediately()
                         currentProcess = null
                         currentTask = null
                         paused = false
@@ -723,10 +705,11 @@ class TaskLauncherPanel(private val project: Project) {
                 } catch (e: InterruptedException) {
                     SwingUtilities.invokeLater {
                         statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.taskStopped")
-                        runButton.isEnabled = true
-                        stopButton.isEnabled = false
-                        pauseButton.isEnabled = false
-                        resumeButton.isEnabled = false
+                        runAction.isEnabled2 = true
+                        stopAction.isEnabled2 = false
+                        pauseAction.isEnabled2 = false
+                        resumeAction.isEnabled2 = false
+                        actionToolbar.updateActionsImmediately()
                         currentProcess = null
                         currentTask = null
                         paused = false
@@ -752,10 +735,11 @@ class TaskLauncherPanel(private val project: Project) {
             LOG.error("Failed to run task", e)
             SwingUtilities.invokeLater {
                 statusLabel.text = "Failed: ${e.message}"
-                runButton.isEnabled = true
-                stopButton.isEnabled = false
-                pauseButton.isEnabled = false
-                resumeButton.isEnabled = false
+                runAction.isEnabled2 = true
+                stopAction.isEnabled2 = false
+                pauseAction.isEnabled2 = false
+                resumeAction.isEnabled2 = false
+                actionToolbar.updateActionsImmediately()
                 JOptionPane.showMessageDialog(
                     mainPanel,
                     "Failed to run task: ${e.message}",
@@ -807,8 +791,9 @@ class TaskLauncherPanel(private val project: Project) {
         if (paused == newPaused) return
         paused = newPaused
         SwingUtilities.invokeLater {
-            pauseButton.isEnabled = newPaused.not() && currentProcess?.isAlive == true
-            resumeButton.isEnabled = newPaused && currentProcess?.isAlive == true
+            pauseAction.isEnabled2 = newPaused.not() && currentProcess?.isAlive == true
+            resumeAction.isEnabled2 = newPaused && currentProcess?.isAlive == true
+            actionToolbar.updateActionsImmediately()
         }
     }
 
@@ -853,10 +838,11 @@ class TaskLauncherPanel(private val project: Project) {
                     }
                     SwingUtilities.invokeLater {
                         statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.taskStopped")
-                        runButton.isEnabled = true
-                        stopButton.isEnabled = false
-                        pauseButton.isEnabled = false
-                        resumeButton.isEnabled = false
+                        runAction.isEnabled2 = true
+                        stopAction.isEnabled2 = false
+                        pauseAction.isEnabled2 = false
+                        resumeAction.isEnabled2 = false
+                        actionToolbar.updateActionsImmediately()
                         currentProcess = null
                         currentTask = null
                         paused = false
@@ -870,3 +856,5 @@ class TaskLauncherPanel(private val project: Project) {
         stopCurrentTask()
     }
 }
+
+

@@ -78,17 +78,14 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         })
         toolbar.add(searchField, BorderLayout.CENTER)
 
-        val btnPanel = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
-
-        val importBtn = JButton(AllIcons.Actions.AddFile)
-        importBtn.toolTipText = OkScriptToolkitBundle.message("templateAsset.import")
-        importBtn.addActionListener { handleImport() }
-        btnPanel.add(importBtn)
-
-        val refreshBtn = JButton(AllIcons.Actions.Refresh)
-        refreshBtn.toolTipText = OkScriptToolkitBundle.message("templateAsset.refresh")
-        refreshBtn.addActionListener { loadData() }
-        btnPanel.add(refreshBtn)
+        val importAction = ToolbarAction(AllIcons.Actions.AddFile, OkScriptToolkitBundle.message("templateAsset.import")) { handleImport() }
+        val refreshAction = ToolbarAction(AllIcons.Actions.Refresh, OkScriptToolkitBundle.message("templateAsset.refresh")) { loadData() }
+        val actionGroup = com.intellij.openapi.actionSystem.DefaultActionGroup(importAction, refreshAction)
+        val actionToolbar = com.intellij.openapi.actionSystem.ActionManager.getInstance()
+            .createActionToolbar("ok-script-assets", actionGroup, true)
+        actionToolbar.targetComponent = mainPanel
+        val btnPanel = actionToolbar.component
+        btnPanel.border = javax.swing.BorderFactory.createEmptyBorder(0, 4, 0, 0)
 
         toolbar.add(btnPanel, BorderLayout.EAST)
 

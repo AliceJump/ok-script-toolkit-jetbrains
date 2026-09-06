@@ -68,10 +68,12 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         })
         searchPanel.add(searchField, BorderLayout.CENTER)
 
-        val refreshBtn = JButton(AllIcons.Actions.Refresh)
-        refreshBtn.toolTipText = OkScriptToolkitBundle.message("characterManager.refresh")
-        refreshBtn.addActionListener { loadData() }
-        searchPanel.add(refreshBtn, BorderLayout.EAST)
+        val refreshAction = ToolbarAction(AllIcons.Actions.Refresh, OkScriptToolkitBundle.message("characterManager.refresh")) { loadData() }
+        val actionGroup = com.intellij.openapi.actionSystem.DefaultActionGroup(refreshAction)
+        val actionToolbar = com.intellij.openapi.actionSystem.ActionManager.getInstance()
+            .createActionToolbar("ok-script-characters", actionGroup, true)
+        actionToolbar.targetComponent = mainPanel
+        searchPanel.add(actionToolbar.component, BorderLayout.EAST)
         leftPanel.add(searchPanel, BorderLayout.NORTH)
 
         characterTable.selectionModel.selectionMode = ListSelectionModel.SINGLE_SELECTION
@@ -147,8 +149,9 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
 
         rightPanel.add(tabbedPane, BorderLayout.CENTER)
 
-        val splitPane = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, leftPanel, rightPanel)
-        splitPane.resizeWeight = 0.4
+        val splitPane = com.intellij.openapi.ui.Splitter(false, 0.4f)
+        splitPane.firstComponent = leftPanel
+        splitPane.secondComponent = rightPanel
 
         mainPanel.add(splitPane, BorderLayout.CENTER)
     }

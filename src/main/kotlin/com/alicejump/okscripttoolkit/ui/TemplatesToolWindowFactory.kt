@@ -144,9 +144,9 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
     private fun applyFilter() = renderGrid()
 
     private fun applyGridLayout() {
-        val viewportWidth = scrollPane.viewport.width
+        val viewportWidth = scrollPane.width.takeIf { it > 0 } ?: scrollPane.viewport.width
         if (viewportWidth <= 0) return
-        val cols = ((viewportWidth - 24) / (CARD_WIDTH + 10)).coerceIn(3, 12)
+        val cols = ((viewportWidth - 44) / (CARD_WIDTH + 10)).coerceIn(2, 12)
         if (cols != gridCols) {
             gridCols = cols
             gridPanel.layout = GridLayout(0, cols, 10, 10)
