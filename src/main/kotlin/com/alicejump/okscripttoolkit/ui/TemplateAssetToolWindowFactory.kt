@@ -83,8 +83,9 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         toolbar.add(searchField, BorderLayout.CENTER)
 
         val importAction = ToolbarAction(AllIcons.Actions.AddFile, OkScriptToolkitBundle.message("templateAsset.import")) { handleImport() }
+        val screenshotAction = ToolbarAction(AllIcons.Actions.Preview, OkScriptToolkitBundle.message("templateAsset.screenshot")) { handleScreenshot() }
         val refreshAction = ToolbarAction(AllIcons.Actions.Refresh, OkScriptToolkitBundle.message("templateAsset.refresh")) { loadData() }
-        val actionGroup = com.intellij.openapi.actionSystem.DefaultActionGroup(importAction, refreshAction)
+        val actionGroup = com.intellij.openapi.actionSystem.DefaultActionGroup(importAction, screenshotAction, refreshAction)
         val actionToolbar = com.intellij.openapi.actionSystem.ActionManager.getInstance()
             .createActionToolbar("ok-script-assets", actionGroup, true)
         actionToolbar.targetComponent = mainPanel
@@ -299,6 +300,110 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
                 loadData()
             } else {
                 notify("Failed to import image", NotificationType.ERROR)
+            }
+        }
+    }
+
+    /**
+     * 截图采集（对齐 VSCode 版 handleScreenshot）：自动探测窗口配置，
+     * 失败回退手输标题正则；截图落盘 ok_templates 并自动注册进 COCO。
+     */
+    private fun handleScreenshot() {
+        val capture = com.alicejump.okscripttoolkit.core.ScreenshotCapture(project)
+        val projectDir = com.alicejump.okscripttoolkit.core.ScreenshotCapture.detectProjectDir(project)
+        val pythonPath = com.alicejump.okscripttoolkit.core.ScreenshotCapture.detectPythonPath(projectDir, project)
+
+        statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotProbing")
+        CompletableFuture.supplyAsync { capture.probeWindowConfig(projectDir, pythonPath) }
+            .thenAccept { windowConfig ->
+                javax.swing.SwingUtilities.invokeLater {
+                    var titleRegex: String? = null
+                    var config: com.alicejump.okscripttoolkit.core.WindowConfig? = windowConfig
+                    if (windowConfig != null &&
+                        (!windowConfig.exe.isNullOrEmpty() || !windowConfig.title.isNullOrBlank() || !windowConfig.hwndClass.isNullOrBlank())
+                    ) {
+                        statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotDetected", windowConfig.describe())
+                    } else {
+                        config = null
+                        val input = com.intellij.openapi.ui.Messages.showInputDialog(
+                            project,
+                            OkScriptToolkitBundle.message("templateAsset.screenshotPrompt"),
+                            OkScriptToolkitBundle.message("templateAsset.screenshot"),
+                            com.intellij.openapi.ui.Messages.getInformationIcon(),
+                            "",
+                            null,
+                        ) ?: return@invokeLater
+                        titleRegex = input.trim()
+                        statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotCapturing")
+                    }
+                    doCapture(capture, projectDir, pythonPath, config, titleRegex)
+                }
+            }
+            .exceptionally { throwable ->
+                SwingUtilities.invokeLater {
+                    statusLabel.text = "Error: ${throwable.message}"
+                }
+                null
+            }
+    }
+
+    private fun doCapture(
+        capture: com.alicejump.okscripttoolkit.core.ScreenshotCapture,
+        projectDir: String,
+        pythonPath: String,
+        windowConfig: com.alicejump.okscripttoolkit.core.WindowConfig?,
+        titleRegex: String?,
+    ) {
+        val templatesDirName = OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory()
+        CompletableFuture.supplyAsync {
+            val projectRoot = projectDir.ifBlank { project.basePath ?: "" }
+            if (projectRoot.isBlank()) return@supplyAsync null to "no project dir"
+            val outputDir = java.nio.file.Paths.get(
+                if (projectRoot.isNotBlank() &&
+                    java.nio.file.Files.exists(java.nio.file.Paths.get(projectRoot, templatesDirName))
+                ) projectRoot else (project.basePath ?: projectRoot),
+                templatesDirName,
+            )
+            java.nio.file.Files.createDirectories(outputDir)
+            val ts = java.time.LocalDateTime.now().format(
+                java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"),
+            )
+            val outputPath = outputDir.resolve("screenshot_$ts.png")
+            val error = StringBuilder()
+            val result = capture.capture(projectRoot, pythonPath, outputPath, windowConfig, titleRegex, error)
+            result to error.toString()
+        }.thenAccept { (result, err) ->
+            SwingUtilities.invokeLater {
+                if (result == null) {
+                    statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotFailed", err)
+                    com.intellij.notification.NotificationGroupManager.getInstance()
+                        .getNotificationGroup("okScriptToolkit")
+                        .createNotification(
+                            OkScriptToolkitBundle.message("templateAsset.screenshotFailed", err),
+                            com.intellij.notification.NotificationType.ERROR,
+                        )
+                        .notify(project)
+                    return@invokeLater
+                }
+                try {
+                    data.load(
+                        OkScriptToolkitSettings.getInstance(project).okScriptProjectPath().ifBlank { project.basePath ?: "" },
+                        OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory(),
+                    )
+                    val cocoImage = data.getImageEntryForFile(result.toFile().name)
+                        ?: data.addImageEntry(result.toFile().name, 0, 0)
+                    val (w, h) = data.readImageDimensions(result.toFile())
+                    if (w > 0 && cocoImage.width == 0) {
+                        data.removeImageEntry(cocoImage.id)
+                        data.addImageEntry(result.toFile().name, w, h)
+                    }
+                    data.save()
+                    statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotSaved", result.toFile().name)
+                    notify(OkScriptToolkitBundle.message("templateAsset.screenshotSaved", result.toFile().name), NotificationType.INFORMATION)
+                    loadData()
+                } catch (e: Exception) {
+                    statusLabel.text = "Error: ${e.message}"
+                }
             }
         }
     }

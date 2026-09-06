@@ -122,6 +122,82 @@ class PythonScriptRunner(private val project: Project) {
 }
 
 /**
+ * Python 打包脚本的目录定位：项目内 python/ -> 父/祖目录 -> 同级目录 -> 从插件 JAR 解压。
+ * 打包脚本全集见 [BUNDLED_SCRIPTS]（与 VSCode 版 python/ 目录一致）。
+ */
+object PythonScriptLocator {
+
+    private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance(PythonScriptLocator::class.java)
+
+    val BUNDLED_SCRIPTS = listOf(
+        "parse_config_tasks.py",
+        "probe_task_schemas.py",
+        "run_task.py",
+        "capture_game_window.py",
+        "probe_window_config.py",
+    )
+
+    /** 定位打包脚本目录；都找不到时回退 <projectRoot>/python。 */
+    fun findScriptDir(projectRoot: String): String {
+        val projectDir = java.nio.file.Paths.get(projectRoot, "python")
+        if (projectDir.toFile().exists()) return projectDir.normalize().toString()
+
+        for (path in listOf(
+            java.nio.file.Paths.get(projectRoot, "..", "python"),
+            java.nio.file.Paths.get(projectRoot, "..", "..", "python"),
+        )) {
+            if (path.toFile().exists()) return path.normalize().toString()
+        }
+
+        val parentDir = java.nio.file.Paths.get(projectRoot, "..").toFile()
+        val sibling = parentDir.listFiles()
+            ?.filter { it.isDirectory && it.name != java.io.File(projectRoot).name }
+            ?.map { java.nio.file.Paths.get(it.absolutePath, "python") }
+            ?.firstOrNull { it.toFile().exists() }
+        if (sibling != null) return sibling.normalize().toString()
+
+        extractBundledScripts()?.let { return it.normalize().toString() }
+        return projectDir.normalize().toString()
+    }
+
+    /** 从插件 JAR 的 classpath 解压打包脚本到临时目录（带版本戳避免旧脚本残留）。 */
+    fun extractBundledScripts(): java.nio.file.Path? {
+        return try {
+            val resource = PythonScriptLocator::class.java.classLoader
+                .getResourceAsStream("python/${BUNDLED_SCRIPTS.first()}") ?: return null
+            resource.close()
+
+            val stamp = try {
+                PythonScriptLocator::class.java.classLoader.getResource("python/${BUNDLED_SCRIPTS.first()}")
+                    ?.openConnection()?.lastModified ?: 0L
+            } catch (_: Exception) { 0L }
+            val extractDir = java.nio.file.Paths.get(
+                System.getProperty("java.io.tmpdir"),
+                "ok-script-toolkit-scripts-$stamp",
+            )
+            if (BUNDLED_SCRIPTS.all { java.nio.file.Files.exists(extractDir.resolve(it)) }) return extractDir
+
+            java.nio.file.Files.createDirectories(extractDir)
+            for (name in BUNDLED_SCRIPTS) {
+                val input = PythonScriptLocator::class.java.classLoader
+                    .getResourceAsStream("python/$name") ?: continue
+                java.nio.file.Files.copy(
+                    input,
+                    extractDir.resolve(name),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                )
+                input.close()
+            }
+            LOG.info("Extracted bundled Python scripts to $extractDir")
+            extractDir
+        } catch (e: Exception) {
+            LOG.warn("Failed to extract bundled Python scripts", e)
+            null
+        }
+    }
+}
+
+/**
  * 无平台依赖的 Python 脚本输出解析工具（可独立单测）。
  */
 object PythonScriptUtils {

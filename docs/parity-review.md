@@ -37,8 +37,9 @@
 
 1. saveToAssets 打包导出（尺寸分组 + bbox 重叠 bin-packing 多页合成 + worker 池 +
    进度/取消 + LabelEnum.py 生成）——素材工作流收口，子仓库零命中
-2. 游戏窗口截图采集（capture_game_window.py + probe_window_config.py 自动读窗口配置）；
-   python 脚本已随插件打包，只差 UI 入口，性价比最高
+2. ✅ 游戏窗口截图采集：素材面板新增截图按钮（probe 自动探测窗口配置，
+   失败回退手输正则；capture_game_window.py 截图并自动注册进 COCO；
+   PythonScriptLocator 解压白名单扩到 5 个脚本）
 3. 角色/效果 CRUD（技能/强化增删改、effects.py 加分类/效果、.bak 备份原子写入）
 4. 角色头像（characterAvatarTemplateRegex 设置已就位、实现为零）
 5. sub_configs 子配置树（折叠树 + boolean 条件显隐 + groupSelector；schema 已返回，纯 UI 缺失）

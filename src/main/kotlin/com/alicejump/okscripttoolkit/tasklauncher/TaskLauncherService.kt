@@ -1,5 +1,6 @@
 package com.alicejump.okscripttoolkit.tasklauncher
 
+import com.alicejump.okscripttoolkit.core.PythonScriptLocator
 import com.alicejump.okscripttoolkit.core.PythonScriptRunner
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.JsonNode
@@ -101,70 +102,8 @@ class TaskLauncherService(private val project: Project) {
         return project.basePath ?: throw IllegalStateException("Project base path is null")
     }
 
-    fun getPythonScriptDir(): String {
-        // 1. 项目自身目录
-        val projectDir = Paths.get(getProjectRoot(), PYTHON_SCRIPT_DIR)
-        if (projectDir.toFile().exists()) return projectDir.normalize().toString()
-
-        // 2. 上级 / 上上级
-        val parentChecks = listOf(
-            Paths.get(getProjectRoot(), "..", PYTHON_SCRIPT_DIR),
-            Paths.get(getProjectRoot(), "..", "..", PYTHON_SCRIPT_DIR),
-        )
-        for (path in parentChecks) {
-            if (path.toFile().exists()) return path.normalize().toString()
-        }
-
-        // 3. 搜索同级目录（如 ok-script-toolkit 与 ok-end-field 同级）
-        val parentDir = Paths.get(getProjectRoot(), "..").toFile()
-        val sibling = parentDir.listFiles()
-            ?.filter { it.isDirectory && it.name != File(getProjectRoot()).name }
-            ?.map { Paths.get(it.absolutePath, PYTHON_SCRIPT_DIR) }
-            ?.firstOrNull { it.toFile().exists() }
-        if (sibling != null) return sibling.normalize().toString()
-
-        // 4. 插件内置资源（打包后 python/ 在 classpath 内）：解压到临时目录
-        val extracted = extractBundledPythonScripts()
-        if (extracted != null) return extracted.normalize().toString()
-
-        // 5. 回退
-        return projectDir.normalize().toString()
-    }
-
-    /**
-     * 从插件 JAR 的 classpath 中提取打包的 python/ 脚本到临时目录。
-     * 解压后文件名带 hash 避免冲突，每次只解压一次。
-     */
-    private fun extractBundledPythonScripts(): Path? {
-        return try {
-            val scripts = listOf(PARSE_CONFIG_SCRIPT, PROBE_SCHEMA_SCRIPT, RUN_TASK_SCRIPT)
-            // 检查 classpath 中是否有任意一个脚本
-            val resource = TaskLauncherService::class.java.classLoader
-                .getResourceAsStream("python/$PARSE_CONFIG_SCRIPT") ?: return null
-            resource.close()
-
-            val extractDir = Paths.get(
-                System.getProperty("java.io.tmpdir"),
-                "ok-script-toolkit-scripts",
-            )
-            // 如果已解压且脚本都在，直接返回
-            if (scripts.all { Files.exists(extractDir.resolve(it)) }) return extractDir
-
-            Files.createDirectories(extractDir)
-            for (name in scripts) {
-                val input = TaskLauncherService::class.java.classLoader
-                    .getResourceAsStream("python/$name") ?: continue
-                val target = extractDir.resolve(name)
-                Files.copy(input, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
-                input.close()
-            }
-            LOG.info("Extracted bundled Python scripts to $extractDir")
-            extractDir
-        } catch (e: Exception) {
-            LOG.warn("Failed to extract bundled Python scripts", e)
-            null
-        }
-    }
+    fun getPythonScriptDir(): String =
+        PythonScriptLocator.findScriptDir(getProjectRoot())
 
     // ── Task list ─────────────────────────────────────────────────────
 
