@@ -293,7 +293,10 @@ class TaskLauncherService(private val project: Project) {
                     extraArgs = taskNode.get("extraArgs")?.asText(null),
                     env = taskNode.get("env")?.takeIf { it.isObject }?.let { envNode ->
                         val env = linkedMapOf<String, String>()
-                        envNode.fields().forEach { (k, v) -> if (v.isTextual) env[k] = v.asText() }
+                        // 对齐 VSCode：只保留合法环境变量键
+                        envNode.fields().forEach { (k, v) ->
+                            if (v.isTextual && k.matches(Regex("[A-Za-z_][A-Za-z0-9_]*"))) env[k] = v.asText()
+                        }
                         env
                     },
                     timeout = taskNode.get("timeout")?.takeIf { it.isInt }?.asInt(),

@@ -37,14 +37,30 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
     val mainPanel: JPanel
     private val data = project.service<CharacterDataService>()
 
-    private val characterTableModel = DefaultTableModel(arrayOf("", "Name", "Star", "Element", "Skills"), 0)
+    private val characterTableModel = DefaultTableModel(
+        arrayOf(
+            "",
+            OkScriptToolkitBundle.message("characterManager.column.name"),
+            OkScriptToolkitBundle.message("characterManager.column.star"),
+            OkScriptToolkitBundle.message("characterManager.column.element"),
+            OkScriptToolkitBundle.message("characterManager.column.skills"),
+        ),
+        0,
+    )
     private val characterTable = JTable(characterTableModel)
     private val searchField = JBTextField()
     private val statusLabel = JBLabel()
     private val statsLabel = JBLabel()
 
     private val detailPane = com.intellij.ui.components.JBHtmlPane()
-    private val issuesTableModel = DefaultTableModel(arrayOf("Sev", "Code", "Message"), 0)
+    private val issuesTableModel = DefaultTableModel(
+        arrayOf(
+            OkScriptToolkitBundle.message("characterManager.column.severity"),
+            OkScriptToolkitBundle.message("characterManager.column.code"),
+            OkScriptToolkitBundle.message("characterManager.column.message"),
+        ),
+        0,
+    )
     private val issuesTable = JTable(issuesTableModel)
     private val effectsListModel = DefaultListModel<String>()
     private val effectsList = JList(effectsListModel)
@@ -223,7 +239,7 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
             }
         }.exceptionally { throwable ->
             SwingUtilities.invokeLater {
-                statusLabel.text = "Error: ${throwable.message}"
+                statusLabel.text = OkScriptToolkitBundle.message("characterManager.error", throwable.message ?: "")
             }
             null
         }
@@ -257,8 +273,16 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         }
 
         val s = snap.summary
-        statsLabel.text = "${s.characters} chars, ${s.skills} skills, ${s.definedEffects} effects, ${s.errors}E/${s.warnings}W/${s.infos}I"
-        statusLabel.text = "Loaded ${s.characters} characters"
+        statsLabel.text = OkScriptToolkitBundle.message(
+            "characterManager.stats",
+            s.characters,
+            s.skills,
+            s.definedEffects,
+            s.errors,
+            s.warnings,
+            s.infos,
+        )
+        statusLabel.text = OkScriptToolkitBundle.message("characterManager.loaded", s.characters)
     }
 
     private fun applyFilter() {

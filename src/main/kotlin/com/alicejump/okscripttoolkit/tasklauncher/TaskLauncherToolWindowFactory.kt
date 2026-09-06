@@ -453,7 +453,7 @@ class TaskLauncherPanel(private val project: Project) {
                     var grow = 0
                     for (field in groupFields) {
                         val label = JBLabel("${field.displayKey ?: field.key}:")
-                        val component = createFieldComponent(field, task)
+                        val component = withFieldDescription(field, createFieldComponent(field, task))
                         groupPanel.add(label, GridBagConstraints().apply {
                             gridx = 0; gridy = grow
                             anchor = GridBagConstraints.WEST
@@ -510,13 +510,38 @@ class TaskLauncherPanel(private val project: Project) {
         return merged.filterKeys { it in validKeys }
     }
 
+    /** 字段描述（displayDesc 优先）渲染在控件下方的小字说明；无描述时原样返回（对齐 VSCode） */
+    private fun withFieldDescription(
+        field: TaskLauncherService.TaskParamField,
+        component: JComponent,
+    ): JComponent {
+        val text = field.displayDesc ?: field.desc ?: return component
+        val description = JBLabel(text)
+        description.foreground = UIUtil.getContextHelpForeground()
+        description.font = description.font.deriveFont(description.font.size2D - 1f)
+        description.verticalAlignment = javax.swing.SwingConstants.TOP
+        return JPanel(BorderLayout()).apply {
+            isOpaque = false
+            add(component, BorderLayout.CENTER)
+            add(description, BorderLayout.SOUTH)
+        }
+    }
+
+    /** 下拉/多选列表的显示渲染器：option_labels 按索引对应，无标签时显示原始值 */
+    private fun optionLabelRenderer(options: List<*>, labels: List<*>): javax.swing.ListCellRenderer<Any?> =
+        com.intellij.ui.SimpleListCellRenderer.create<Any?>("") { value ->
+            val index = options.indexOf(value)
+            if (index >= 0) labels.getOrNull(index)?.toString() ?: value.toString()
+            else value.toString()
+        }
+
     private fun appendFieldRow(
         field: TaskLauncherService.TaskParamField,
         task: TaskLauncherService.TaskInfo,
         row: Int,
     ): Int {
         val label = JBLabel("${field.displayKey ?: field.key}:")
-        val component = createFieldComponent(field, task)
+        val component = withFieldDescription(field, createFieldComponent(field, task))
 
         paramPanel.add(label, GridBagConstraints().apply {
             gridx = 0; gridy = row
@@ -540,6 +565,10 @@ class TaskLauncherPanel(private val project: Project) {
         val savedValue = taskConfig.params?.get(field.key)
         val currentValue = savedValue ?: field.value ?: field.default
 
+        val typeName = field.type?.get("type")?.toString().orEmpty()
+        val options = (field.type?.get("options") as? List<*>).takeIf { !it.isNullOrEmpty() }
+        val optionLabels = field.type?.get("option_labels") as? List<*> ?: emptyList<Any>()
+
         val component = when {
             field.type?.get("type") == "bool" || currentValue is Boolean -> {
                 JCheckBox("", currentValue as? Boolean ?: false).also { cb ->
@@ -547,17 +576,19 @@ class TaskLauncherPanel(private val project: Project) {
                 }
             }
 
-            field.type?.get("type") == "drop_down" -> {
-                val options = field.type?.get("options") as? List<*> ?: emptyList<Any>()
-                val comboBox = JComboBox(options.toTypedArray())
+            typeName == "drop_down" || (typeName.isEmpty() && options != null && currentValue !is List<*>) -> {
+                // 对齐 VSCode buildDropDown：option_labels 按索引做显示标签，保存原始值
+                val comboBox = JComboBox(options!!.toTypedArray())
+                comboBox.renderer = optionLabelRenderer(options, optionLabels)
                 comboBox.selectedItem = currentValue
                 comboBox.addActionListener { autoSaveTaskConfig(task) }
                 comboBox
             }
 
-            field.type?.get("type") == "multi_selection" -> {
-                val options = field.type?.get("options") as? List<*> ?: emptyList<Any>()
+            typeName == "multi_selection" || (typeName.isEmpty() && options != null && currentValue is List<*>) -> {
+                val options = options ?: emptyList<Any>()
                 val list = JList(options.toTypedArray())
+                list.cellRenderer = optionLabelRenderer(options, optionLabels)
                 list.selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
                 if (currentValue is List<*>) {
                     val selectedIndices = currentValue.mapNotNull { options.indexOf(it).takeIf { i -> i >= 0 } }
@@ -570,10 +601,22 @@ class TaskLauncherPanel(private val project: Project) {
             field.type?.get("type") == "cascade_drop_down" -> {
                 // 级联下拉：组 → 叶子两级联动（对齐 VSCode 版），值存叶子
                 val options = field.type?.get("options") as? Map<*, *> ?: emptyMap<Any, Any>()
+                val categoryLabels = field.type?.get("category_labels") as? Map<*, *>
+                val leafLabels = field.type?.get("option_labels") as? Map<*, *>
                 val leafField = JTextField(currentValue?.toString() ?: "")
                 leafField.isVisible = false
                 val groupCombo = JComboBox(options.keys.toTypedArray())
+                // 对齐 VSCode buildCascadeSelect：组名/叶子用本地化标签，保存原始值
+                groupCombo.renderer = com.intellij.ui.SimpleListCellRenderer.create("") { group ->
+                    (categoryLabels?.get(group) ?: group)?.toString() ?: ""
+                }
                 val leafCombo = JComboBox<String>()
+                leafCombo.renderer = com.intellij.ui.SimpleListCellRenderer.create("") { leaf ->
+                    val values = options[groupCombo.selectedItem] as? List<*>
+                    val idx = values?.indexOfFirst { it?.toString() == leaf } ?: -1
+                    val labelsForGroup = (groupCombo.selectedItem as? String)?.let { leafLabels?.get(it) } as? List<*>
+                    labelsForGroup?.getOrNull(idx)?.toString() ?: leaf
+                }
                 fun fillLeaves(group: Any?) {
                     leafCombo.removeAllItems()
                     (options[group] as? List<*>)?.forEach { leafCombo.addItem(it.toString()) }
@@ -797,9 +840,24 @@ class TaskLauncherPanel(private val project: Project) {
         val taskConfig = taskService.getTaskConfig("${task.module}::${task.className}")
         val command = taskService.buildRunTaskCommand(task, configModule)
 
+        // 对齐 VSCode：额外参数在 "--" 之后追加；解析失败报错并中止启动
+        val extraArgs = try {
+            taskService.parseExtraArgs(taskConfig.extraArgs)
+        } catch (e: Exception) {
+            JOptionPane.showMessageDialog(
+                mainPanel,
+                OkScriptToolkitBundle.message("taskLauncher.launchFailed", e.message ?: ""),
+                "Error",
+                JOptionPane.ERROR_MESSAGE,
+            )
+            return
+        }
+
         val env = mutableMapOf<String, String>()
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
+        // 任务独立 env 覆盖基础变量（参数注入/工具箱键在其后写入、不会被覆盖）
+        taskConfig.env?.forEach { (k, v) -> env[k] = v }
 
         val paramOverrides = getParamOverrides()
         if (paramOverrides.isNotEmpty()) {
@@ -829,7 +887,7 @@ class TaskLauncherPanel(private val project: Project) {
         }
         toolboxService.registerTaskCommandWriter(::writeTaskCommand)
 
-        val fullCommand = listOf(pythonPath) + command
+        val fullCommand = listOf(pythonPath) + command + listOf("--") + extraArgs
 
         statusLabel.text = "Running: ${task.displayName}..."
         appendConsole("=== ${task.displayName} ===")
