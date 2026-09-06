@@ -106,6 +106,11 @@ class TaskLauncherPanel(private val project: Project) {
     /** 防止 renderToolbox 回写复选框选中态时再次触发用户切换事件 */
     private var updatingOverlayCheckbox = false
 
+    /** 参数树折叠组展开状态（跨重渲染保留，对齐 VSCode state.openConfigGroups） */
+    private val openConfigGroups = HashSet<String>()
+    /** 当前参数树的显隐/重复行同步器（loadTaskParams 装配，字段变更时先同步可见性再落盘） */
+    private var visibilityRefresher: (() -> Unit)? = null
+
     private val toolboxStateListener: (ToolboxService.ToolboxState, String) -> Unit = { state, _ ->
         SwingUtilities.invokeLater { renderToolbox(state) }
     }
@@ -414,6 +419,7 @@ class TaskLauncherPanel(private val project: Project) {
     private fun loadTaskParams(task: TaskLauncherService.TaskInfo) {
         paramPanel.removeAll()
         paramFields.clear()
+        visibilityRefresher = null
 
         val taskKey = "${task.module}::${task.className}"
         val schema = schemas[taskKey]
@@ -452,50 +458,13 @@ class TaskLauncherPanel(private val project: Project) {
             })
             row++
 
-            val groups = schema.configGroups
-            if (groups.isNullOrEmpty()) {
-                for (field in schema.fields) {
-                    row = appendFieldRow(field, task, row)
-                }
-            } else {
-                // 对齐 VSCode 版：按 configGroups 分组渲染（每组一个 titled 子面板），
-                // 不属于任何组的字段平铺在"通用"下
-                val groupedKeys = groups.values.flatten().toSet()
-                for ((groupName, fieldKeys) in groups) {
-                    val groupFields = fieldKeys.mapNotNull { key -> schema.fields.firstOrNull { it.key == key } }
-                    if (groupFields.isEmpty()) continue
-                    val groupPanel = JPanel(GridBagLayout())
-                    groupPanel.border = BorderFactory.createTitledBorder(groupName)
-                    var grow = 0
-                    for (field in groupFields) {
-                        val label = JBLabel("${field.displayKey ?: field.key}:")
-                        val component = withFieldDescription(field, createFieldComponent(field, task))
-                        groupPanel.add(label, GridBagConstraints().apply {
-                            gridx = 0; gridy = grow
-                            anchor = GridBagConstraints.WEST
-                            insets = Insets(3, 6, 3, 4)
-                        })
-                        groupPanel.add(component, GridBagConstraints().apply {
-                            gridx = 1; gridy = grow
-                            fill = GridBagConstraints.HORIZONTAL
-                            weightx = 1.0
-                            insets = Insets(3, 4, 3, 6)
-                        })
-                        paramFields[field.key] = component
-                        grow++
-                    }
-                    paramPanel.add(groupPanel, GridBagConstraints().apply {
-                        gridx = 0; gridy = row; gridwidth = 2
-                        fill = GridBagConstraints.HORIZONTAL
-                        weightx = 1.0
-                        insets = Insets(4, 2, 4, 2)
-                    })
-                    row++
-                }
-                val others = schema.fields.filter { it.key !in groupedKeys }
-                for (field in others) {
-                    row = appendFieldRow(field, task, row)
-                }
+            // 树形渲染：boolean 条件显隐 + sub_configs 折叠组 + configGroups/groupSelector
+            // （对齐 VSCode 版 configPanel.js renderSchema）
+            val renderer = SchemaTreeRenderer(task, schema)
+            renderer.render(paramPanel)
+            visibilityRefresher = {
+                renderer.syncDuplicateRows()
+                renderer.applyVisibility()
             }
         } else if (schema == null) {
             val gbc = GridBagConstraints().apply {
@@ -551,27 +520,392 @@ class TaskLauncherPanel(private val project: Project) {
             else value.toString()
         }
 
-    private fun appendFieldRow(
-        field: TaskLauncherService.TaskParamField,
-        task: TaskLauncherService.TaskInfo,
-        row: Int,
-    ): Int {
-        val label = JBLabel("${field.displayKey ?: field.key}:")
-        val component = withFieldDescription(field, createFieldComponent(field, task))
+    // ── sub_configs 参数树（对齐 VSCode 版 configPanel.js）──
 
-        paramPanel.add(label, GridBagConstraints().apply {
-            gridx = 0; gridy = row
-            anchor = GridBagConstraints.WEST
-            insets = Insets(4, 8, 4, 4)
-        })
-        paramPanel.add(component, GridBagConstraints().apply {
-            gridx = 1; gridy = row
-            fill = GridBagConstraints.HORIZONTAL
-            weightx = 1.0
-            insets = Insets(4, 4, 4, 8)
-        })
-        paramFields[field.key] = component
-        return row + 1
+    private data class OptionGroupSpec(val key: String, val label: String, val children: List<String>)
+
+    /**
+     * 字段 sub_configs 解析：boolean 字段取 "true"/"false" 子键做行内显隐规则；
+     * 其余字段每个选项变成一个可折叠子配置组（标签取 sub_config_labels）。
+     */
+    private data class SubConfigRuleSet(
+        val booleanRules: Map<String, List<String>>?,
+        val optionGroups: List<OptionGroupSpec>,
+    )
+
+    /**
+     * schema 参数树渲染器：
+     * - configGroups/groupSelector：选择器字段隐藏；全部注册组渲染为可折叠组，
+     *   组键命中的字段作为组头（不重复渲染为行）；
+     * - boolean sub_configs：子字段紧跟父字段行内渲染（缩进），随父开关值显隐（递归、防环）；
+     * - 非 boolean sub_configs：每个选项一个永久折叠组（默认收起），跨组共享字段可重复渲染，
+     *   变更时同步各重复行取值。
+     */
+    private inner class SchemaTreeRenderer(
+        private val task: TaskLauncherService.TaskInfo,
+        private val schema: TaskLauncherService.TaskSchema,
+    ) {
+        private val taskKey = "${task.module}::${task.className}"
+        private val fieldsByKey = schema.fields.associateBy { it.key }
+        private val groups: Map<String, List<String>> = schema.configGroups.orEmpty()
+        private val selectorKey = schema.groupSelector?.takeIf { fieldsByKey.containsKey(it) }.orEmpty()
+        private val groupLabels: Map<String, String> = schema.groupLabels.orEmpty()
+
+        private val renderedFields = HashSet<String>()
+        private val renderedGroups = HashSet<String>()
+        private val rowsByKey = HashMap<String, MutableList<Pair<JComponent, JComponent>>>()
+        private val inlineRules = HashMap<String, Map<String, List<String>>>()
+        private val parentsByChild = HashMap<String, MutableList<String>>()
+
+        /** 每个容器的下一行号（宿主面板混有 timeout/separator，不能按组件数推算） */
+        private val rowCounter = HashMap<JPanel, Int>()
+
+        private fun nextRow(container: JPanel): Int {
+            val current = rowCounter[container] ?: 0
+            rowCounter[container] = current + 1
+            return current
+        }
+
+        fun render(host: JPanel) {
+            for (field in schema.fields) {
+                subConfigRules(field)?.booleanRules?.let { rules ->
+                    inlineRules[field.key] = rules
+                    for (children in rules.values) {
+                        for (child in children) {
+                            parentsByChild.getOrPut(child) { mutableListOf() }.add(field.key)
+                        }
+                    }
+                }
+            }
+
+            val optionControlled = HashSet<String>()
+            val inlineControlled = HashSet<String>()
+            for (field in schema.fields) {
+                for (group in subConfigRules(field)?.optionGroups.orEmpty()) {
+                    optionControlled.addAll(group.children)
+                }
+            }
+            for (rules in inlineRules.values) {
+                for (keys in rules.values) inlineControlled.addAll(keys)
+            }
+            val groupNames = groups.keys.toSet()
+            val groupChildren = groups.values.flatten().toSet()
+
+            for (field in schema.fields) {
+                if (field.key == selectorKey || field.key in optionControlled ||
+                    field.key in inlineControlled || field.key in groupNames || field.key in groupChildren
+                ) {
+                    continue
+                }
+                renderFieldTree(field.key, host, emptySet())
+            }
+
+            val nestedGroups = HashSet<String>()
+            for ((parent, children) in groups) {
+                for (child in children) {
+                    if (child != parent && groups.containsKey(child)) nestedGroups.add(child)
+                }
+            }
+            val renderRegisteredGroup = { key: String ->
+                renderGroup(
+                    key = key,
+                    label = groupLabels[key] ?: key,
+                    children = groups[key].orEmpty(),
+                    container = host,
+                    path = listOf("config-group", key),
+                    duplicateChildren = true,
+                    headerField = key.takeIf { fieldsByKey.containsKey(key) },
+                )
+            }
+            groups.keys.filter { it !in nestedGroups }.forEach { renderRegisteredGroup(it) }
+            groups.keys.filter { it !in renderedGroups }.forEach { renderRegisteredGroup(it) }
+
+            for (field in schema.fields) {
+                if (field.key == selectorKey || field.key in renderedFields || field.key in optionControlled ||
+                    field.key in groupNames || field.key in groupChildren
+                ) {
+                    continue
+                }
+                renderFieldTree(field.key, host, emptySet(), subConfig = field.key in inlineControlled)
+            }
+
+            syncDuplicateRows()
+            applyVisibility()
+        }
+
+        private fun renderFieldTree(
+            key: String,
+            container: JPanel,
+            checking: Set<String>,
+            subConfig: Boolean = false,
+            duplicate: Boolean = false,
+            path: List<String> = listOf("field", key),
+        ): Boolean {
+            if (key in checking || !fieldsByKey.containsKey(key)) return false
+            val next = checking + key
+            if (!renderFieldRow(key, container, subConfig, duplicate)) return false
+
+            inlineRules[key]?.let { rules ->
+                for (child in rules.values.flatten().distinct()) {
+                    renderFieldTree(child, container, next, subConfig = true, duplicate = duplicate, path = path + child)
+                }
+            }
+            for (group in subConfigRules(fieldsByKey.getValue(key))?.optionGroups.orEmpty()) {
+                renderGroup(
+                    key = "$key:${group.key}",
+                    label = group.label,
+                    children = group.children,
+                    container = container,
+                    path = path + "sub-config" + group.key,
+                    duplicateChildren = true,
+                    headerField = null,
+                )
+            }
+            return true
+        }
+
+        /** 渲染单字段行（label + 控件两格）；返回是否实际渲染 */
+        private fun renderFieldRow(
+            key: String,
+            container: JPanel,
+            subConfig: Boolean,
+            duplicate: Boolean,
+        ): Boolean {
+            val field = fieldsByKey[key] ?: return false
+            if (!duplicate && key in renderedFields) return false
+            if (!duplicate) renderedFields.add(key)
+
+            val label = JBLabel("${field.displayKey ?: field.key}:")
+            val component = withFieldDescription(field, createFieldComponent(field, task))
+            val indent = if (subConfig) 24 else 0
+            val grow = nextRow(container)
+            container.add(label, GridBagConstraints().apply {
+                gridx = 0; gridy = grow
+                anchor = GridBagConstraints.WEST
+                insets = Insets(3, 8 + indent, 3, 4)
+            })
+            container.add(component, GridBagConstraints().apply {
+                gridx = 1; gridy = grow
+                fill = GridBagConstraints.HORIZONTAL
+                weightx = 1.0
+                insets = Insets(3, 4 + indent, 3, 6)
+            })
+            paramFields[key] = component
+            rowsByKey.getOrPut(key) { mutableListOf() }.add(label to component)
+            return true
+        }
+
+        /** 可折叠子配置组：组键命中的字段作为组头，组体默认收起（展开状态跨重渲染保留） */
+        private fun renderGroup(
+            key: String,
+            label: String,
+            children: List<String>,
+            container: JPanel,
+            path: List<String>,
+            duplicateChildren: Boolean,
+            headerField: String?,
+        ): Boolean {
+            if (key in renderedGroups) return false
+            renderedGroups.add(key)
+
+            val body = JPanel(GridBagLayout())
+            val stateKey = "$taskKey::${path.joinToString(">")}"
+
+            // 组头字段（始终可见）；其 boolean 行内子字段留在组体内
+            if (headerField != null && fieldsByKey.containsKey(headerField)) {
+                val field = fieldsByKey.getValue(headerField)
+                val fieldLabel = JBLabel("${field.displayKey ?: field.key}:")
+                val component = withFieldDescription(field, createFieldComponent(field, task))
+                paramFields[headerField] = component
+                rowsByKey.getOrPut(headerField) { mutableListOf() }.add(fieldLabel to component)
+                inlineRules[headerField]?.let { rules ->
+                    for (child in rules.values.flatten().distinct()) {
+                        renderFieldTree(child, body, setOf(headerField), subConfig = true, path = path + child)
+                    }
+                }
+                val headerPanel = JPanel(BorderLayout(6, 0))
+                headerPanel.isOpaque = false
+                headerPanel.add(fieldLabel, BorderLayout.WEST)
+                headerPanel.add(component, BorderLayout.CENTER)
+                val toggle = buildToggle(body, stateKey)
+                headerPanel.add(toggle, BorderLayout.EAST)
+                val groupPanel = buildGroupPanel(labelOf = null, header = headerPanel, body = body)
+                addToContainer(container, groupPanel)
+                return true
+            }
+
+            val toggle = buildToggle(body, stateKey)
+            val groupPanel = buildGroupPanel(labelOf = label, header = null, body = body, toggle = toggle)
+            addToContainer(container, groupPanel)
+
+            val childKeys = children.distinct().filter { it != headerField }
+            for (child in childKeys) {
+                if (groups.containsKey(child)) {
+                    renderGroup(
+                        key = child,
+                        label = groupLabels[child] ?: child,
+                        children = groups[child].orEmpty(),
+                        container = body,
+                        path = path + child,
+                        duplicateChildren = duplicateChildren,
+                        headerField = child.takeIf { fieldsByKey.containsKey(child) },
+                    )
+                } else {
+                    renderFieldTree(child, body, emptySet(), duplicate = duplicateChildren, path = path + child)
+                }
+            }
+
+            if (body.componentCount == 0) {
+                toggle.isVisible = false
+                body.isVisible = true
+            }
+            return true
+        }
+
+        private fun buildToggle(body: JPanel, stateKey: String): JButton {
+            val toggle = JButton("▼")
+            toggle.margin = Insets(0, 4, 0, 4)
+            toggle.isContentAreaFilled = false
+            toggle.isFocusable = false
+            toggle.addActionListener {
+                val open = !body.isVisible
+                body.isVisible = open
+                toggle.text = if (open) "▲" else "▼"
+                if (open) openConfigGroups.add(stateKey) else openConfigGroups.remove(stateKey)
+                paramPanel.revalidate()
+                paramPanel.repaint()
+            }
+            if (stateKey in openConfigGroups) {
+                body.isVisible = true
+                toggle.text = "▲"
+            }
+            return toggle
+        }
+
+        private fun buildGroupPanel(
+            labelOf: String?,
+            header: JComponent?,
+            body: JPanel,
+            toggle: JButton? = null,
+        ): JPanel {
+            val north = JPanel(BorderLayout(6, 0))
+            north.isOpaque = false
+            if (header != null) {
+                north.add(header, BorderLayout.CENTER)
+            } else {
+                val east = JPanel(java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, 4, 0))
+                east.isOpaque = false
+                toggle?.let { east.add(it) }
+                north.add(east, BorderLayout.EAST)
+            }
+            body.isOpaque = false
+            return JPanel(BorderLayout()).apply {
+                border = BorderFactory.createTitledBorder(labelOf ?: "")
+                isOpaque = false
+                add(north, BorderLayout.NORTH)
+                add(body, BorderLayout.CENTER)
+            }
+        }
+
+        private fun addToContainer(container: JPanel, component: JComponent) {
+            container.add(component, GridBagConstraints().apply {
+                gridx = 0; gridy = nextRow(container); gridwidth = 2
+                fill = GridBagConstraints.HORIZONTAL
+                weightx = 1.0
+                insets = Insets(4, 2, 4, 2)
+            })
+        }
+
+        /** 重复渲染的同一字段（跨组共享）变更时，以第一行为准同步其余行的控件值 */
+        fun syncDuplicateRows() {
+            for ((key, rows) in rowsByKey) {
+                if (rows.size < 2) continue
+                val source = rows.first().second
+                for ((_, target) in rows.drop(1)) {
+                    syncControlValue(key, source, target)
+                }
+            }
+        }
+
+        private fun syncControlValue(key: String, source: JComponent, target: JComponent) {
+            when (source) {
+                is JCheckBox -> (target as? JCheckBox)?.let { if (it.isSelected != source.isSelected) it.isSelected = source.isSelected }
+                is JSpinner -> (target as? JSpinner)?.let { if (it.value != source.value) it.value = source.value }
+                is JTextField -> (target as? JTextField)?.let { if (it.text != source.text) it.text = source.text }
+                is JTextArea -> (target as? JTextArea)?.let { if (it.text != source.text) it.text = source.text }
+                is JComboBox<*> -> (target as? JComboBox<*>)?.let { if (it.selectedItem != source.selectedItem) it.selectedItem = source.selectedItem }
+                is ListEditorComponent -> (target as? ListEditorComponent)?.let {
+                    if (it.value != source.value) it.replaceValue(source.value)
+                }
+                else -> LOG.debug("No value sync for duplicated field $key of ${source.javaClass.simpleName}")
+            }
+        }
+
+        /** boolean 行内显隐：所有 boolean 父级自身可见且当前取值映射包含该子字段（防环） */
+        private fun visible(key: String, checking: Set<String> = emptySet()): Boolean {
+            val parents = parentsByChild[key] ?: return true
+            if (key in checking) return false
+            val next = checking + key
+            return parents.all { parentKey ->
+                val parent = fieldsByKey[parentKey] ?: return@all false
+                visible(parentKey, next) &&
+                    inlineRules[parentKey]?.get(booleanValueOf(parent).toString())?.contains(key) == true
+            }
+        }
+
+        fun applyVisibility() {
+            for ((key, rows) in rowsByKey) {
+                val v = visible(key)
+                for ((label, component) in rows) {
+                    label.isVisible = v
+                    component.isVisible = v
+                }
+            }
+            paramPanel.revalidate()
+            paramPanel.repaint()
+        }
+
+        private fun booleanValueOf(field: TaskLauncherService.TaskParamField): Boolean {
+            val taskConfig = taskService.getTaskConfig("${task.module}::${task.className}")
+            return when (val v = taskConfig.params?.get(field.key) ?: field.value ?: field.default) {
+                is Boolean -> v
+                is String -> v.trim().equals("true", ignoreCase = true)
+                is Int -> v != 0
+                is Long -> v != 0L
+                is Double -> v != 0.0
+                null -> false
+                else -> true
+            }
+        }
+
+        private fun subConfigRules(field: TaskLauncherService.TaskParamField): SubConfigRuleSet? {
+            val rules = field.type?.get("sub_configs") as? Map<*, *> ?: return null
+            val labels = field.type?.get("sub_config_labels") as? Map<*, *> ?: emptyMap<Any, Any>()
+            if (field.default is Boolean || field.value is Boolean) {
+                val result = linkedMapOf<String, List<String>>()
+                for ((choice, controlled) in rules) {
+                    val normalized = choice.toString().lowercase()
+                    if (normalized == "true" || normalized == "false") {
+                        result[normalized] = normalizeConfigKeys(controlled)
+                    }
+                }
+                return if (result.isEmpty()) null else SubConfigRuleSet(result, emptyList())
+            }
+            val optionGroups = rules.entries.map { (choice, controlled) ->
+                OptionGroupSpec(
+                    key = choice.toString(),
+                    label = labels[choice]?.toString() ?: choice.toString(),
+                    children = normalizeConfigKeys(controlled),
+                )
+            }
+            return if (optionGroups.isEmpty()) null else SubConfigRuleSet(null, optionGroups)
+        }
+
+        private fun normalizeConfigKeys(value: Any?): List<String> = when (value) {
+            is String -> listOf(value)
+            is List<*> -> value.filterIsInstance<String>()
+            else -> emptyList()
+        }
     }
 
     @Suppress("UNCHECKED_CAST")
@@ -779,6 +1113,7 @@ class TaskLauncherPanel(private val project: Project) {
 
     private fun autoSaveTaskConfig(task: TaskLauncherService.TaskInfo) {
         // 参数变更在 EDT 上高频触发：先构建快照，文件 IO 经 400ms 防抖后放到后台执行
+        visibilityRefresher?.invoke()
         val taskKey = "${task.module}::${task.className}"
         val config = buildTaskConfig(task)
         pendingSave = taskKey to config

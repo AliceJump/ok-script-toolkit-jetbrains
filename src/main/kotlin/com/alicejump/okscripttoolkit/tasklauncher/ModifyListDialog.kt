@@ -261,6 +261,12 @@ class ListEditorComponent(
     var value: List<Any?> = initialValue
         private set
 
+    /** 供重复行值同步：更新取值并刷新摘要（不触发回调，避免回环） */
+    fun replaceValue(next: List<Any?>) {
+        value = next
+        refreshSummary()
+    }
+
     private val typeMeta = typeMeta
     private val summaryLabel = JBLabel()
 
