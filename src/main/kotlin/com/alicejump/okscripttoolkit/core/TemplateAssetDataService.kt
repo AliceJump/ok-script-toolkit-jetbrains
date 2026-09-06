@@ -112,6 +112,91 @@ class TemplateAssetDataService(private val project: Project) {
     companion object {
         private val LOG = Logger.getInstance(TemplateAssetDataService::class.java)
 
+        /** 序列化整份 COCO（可独立单测）。 */
+        fun serializeCoco(coco: CocoData): ObjectNode {
+            val root = JSON.createObjectNode()
+            val imagesArray = JSON.createArrayNode()
+            for (img in coco.images) {
+                val imgNode = JSON.createObjectNode()
+                imgNode.put("id", img.id)
+                imgNode.put("file_name", img.fileName)
+                imgNode.put("width", img.width)
+                imgNode.put("height", img.height)
+                imagesArray.add(imgNode)
+            }
+            root.set<JsonNode>("images", imagesArray)
+
+            val categoriesArray = JSON.createArrayNode()
+            for (cat in coco.categories) {
+                val catNode = JSON.createObjectNode()
+                catNode.put("id", cat.id)
+                catNode.put("name", cat.name)
+                categoriesArray.add(catNode)
+            }
+            root.set<JsonNode>("categories", categoriesArray)
+
+            val annotationsArray = JSON.createArrayNode()
+            for (ann in coco.annotations) {
+                val annNode = JSON.createObjectNode()
+                annNode.put("id", ann.id)
+                annNode.put("image_id", ann.imageId)
+                annNode.put("category_id", ann.categoryId)
+                val bboxArray = JSON.createArrayNode()
+                bboxArray.add(ann.bbox[0])
+                bboxArray.add(ann.bbox[1])
+                bboxArray.add(ann.bbox[2])
+                bboxArray.add(ann.bbox[3])
+                annNode.set<JsonNode>("bbox", bboxArray)
+                annNode.put("area", ann.area)
+                annNode.put("iscrowd", 0)
+                annotationsArray.add(annNode)
+            }
+            root.set<JsonNode>("annotations", annotationsArray)
+            return root
+        }
+
+        /** 从 JSON 反序列化 COCO（可独立单测）。 */
+        fun parseCoco(root: JsonNode): CocoData {
+            val coco = CocoData()
+            root.get("images")?.forEach { imgNode ->
+                coco.images.add(
+                    CocoImage(
+                        imgNode.get("id").asInt(),
+                        imgNode.get("file_name").asText(),
+                        imgNode.get("width").asInt(),
+                        imgNode.get("height").asInt(),
+                    ),
+                )
+            }
+            root.get("categories")?.forEach { catNode ->
+                coco.categories.add(
+                    CocoCategory(
+                        catNode.get("id").asInt(),
+                        catNode.get("name").asText(),
+                    ),
+                )
+            }
+            root.get("annotations")?.forEach { annNode ->
+                val bboxNode = annNode.get("bbox")
+                val bbox = if (bboxNode != null && bboxNode.isArray && bboxNode.size() >= 4) {
+                    intArrayOf(bboxNode[0].asInt(), bboxNode[1].asInt(), bboxNode[2].asInt(), bboxNode[3].asInt())
+                } else {
+                    intArrayOf(0, 0, 0, 0)
+                }
+                coco.annotations.add(
+                    CocoAnnotation(
+                        annNode.get("id").asInt(),
+                        annNode.get("image_id").asInt(),
+                        annNode.get("category_id").asInt(),
+                        bbox,
+                        annNode.get("area")?.asInt() ?: (bbox[2] * bbox[3]),
+                    ),
+                )
+            }
+            coco.initIds()
+            return coco
+        }
+
         fun cocoPath(projectDir: String, assetsDir: String = "assets"): Path =
             Paths.get(projectDir, assetsDir, "coco_annotations.json")
 
@@ -132,42 +217,10 @@ class TemplateAssetDataService(private val project: Project) {
         val file = cocoFile?.toFile()
         if (file != null && file.exists()) {
             try {
-                val root = JSON.readTree(file)
-                // Parse images
-                root.get("images")?.forEach { imgNode ->
-                    cocoData.images.add(CocoImage(
-                        imgNode.get("id").asInt(),
-                        imgNode.get("file_name").asText(),
-                        imgNode.get("width").asInt(),
-                        imgNode.get("height").asInt(),
-                    ))
-                }
-                // Parse categories
-                root.get("categories")?.forEach { catNode ->
-                    cocoData.categories.add(CocoCategory(
-                        catNode.get("id").asInt(),
-                        catNode.get("name").asText(),
-                    ))
-                }
-                // Parse annotations
-                root.get("annotations")?.forEach { annNode ->
-                    val bboxNode = annNode.get("bbox")
-                    val bbox = if (bboxNode != null && bboxNode.isArray && bboxNode.size() >= 4) {
-                        intArrayOf(bboxNode[0].asInt(), bboxNode[1].asInt(), bboxNode[2].asInt(), bboxNode[3].asInt())
-                    } else {
-                        intArrayOf(0, 0, 0, 0)
-                    }
-                    cocoData.annotations.add(CocoAnnotation(
-                        annNode.get("id").asInt(),
-                        annNode.get("image_id").asInt(),
-                        annNode.get("category_id").asInt(),
-                        bbox,
-                        annNode.get("area")?.asInt() ?: (bbox[2] * bbox[3]),
-                    ))
-                }
-                cocoData.initIds()
+                cocoData = parseCoco(JSON.readTree(file))
             } catch (e: Exception) {
                 LOG.warn("Failed to load COCO data", e)
+                cocoData = CocoData()
             }
         }
         return cocoData
@@ -177,49 +230,9 @@ class TemplateAssetDataService(private val project: Project) {
         val file = cocoFile?.toFile() ?: return
         try {
             file.parentFile?.mkdirs()
-            val root = JSON.createObjectNode()
-
-            val imagesArray = JSON.createArrayNode()
-            for (img in cocoData.images) {
-                val imgNode = JSON.createObjectNode()
-                imgNode.put("id", img.id)
-                imgNode.put("file_name", img.fileName)
-                imgNode.put("width", img.width)
-                imgNode.put("height", img.height)
-                imagesArray.add(imgNode)
-            }
-            root.set<JsonNode>("images", imagesArray)
-
-            val categoriesArray = JSON.createArrayNode()
-            for (cat in cocoData.categories) {
-                val catNode = JSON.createObjectNode()
-                catNode.put("id", cat.id)
-                catNode.put("name", cat.name)
-                categoriesArray.add(catNode)
-            }
-            root.set<JsonNode>("categories", categoriesArray)
-
-            val annotationsArray = JSON.createArrayNode()
-            for (ann in cocoData.annotations) {
-                val annNode = JSON.createObjectNode()
-                annNode.put("id", ann.id)
-                annNode.put("image_id", ann.imageId)
-                annNode.put("category_id", ann.categoryId)
-                val bboxArray = JSON.createArrayNode()
-                bboxArray.add(ann.bbox[0])
-                bboxArray.add(ann.bbox[1])
-                bboxArray.add(ann.bbox[2])
-                bboxArray.add(ann.bbox[3])
-                annNode.set<JsonNode>("bbox", bboxArray)
-                annNode.put("area", ann.area)
-                annNode.put("iscrowd", 0)
-                annotationsArray.add(annNode)
-            }
-            root.set<JsonNode>("annotations", annotationsArray)
-
             // 直接写 root 节点；此前写 root.toPrettyString() 会把整份 COCO 当字符串
             // 再包一层引号，产生损坏的 JSON
-            JSON.writerWithDefaultPrettyPrinter().writeValue(file, root)
+            JSON.writerWithDefaultPrettyPrinter().writeValue(file, serializeCoco(cocoData))
         } catch (e: Exception) {
             LOG.error("Failed to save COCO data", e)
         }
