@@ -324,15 +324,26 @@ class TaskLauncherService(private val project: Project) {
 
     // ── Task config persistence ───────────────────────────────────────
 
+    // getTaskConfig 在参数面板每次渲染/取值时都会被调用（EDT），
+    // 缓存整份 store，写入时同步更新，避免每次都读盘
+    @Volatile
+    private var configStoreCache: TaskConfigStore? = null
+
     fun loadTaskConfigs(): TaskConfigStore {
+        configStoreCache?.let { return it }
         val configFile = Paths.get(getProjectRoot(), TASKS_CONFIG_FILE).toFile()
-        if (!configFile.exists()) return TaskConfigStore()
-        return try {
-            parseTaskConfigStore(objectMapper.readTree(configFile))
-        } catch (e: Exception) {
-            LOG.warn("Failed to load task configs", e)
+        val store = if (!configFile.exists()) {
             TaskConfigStore()
+        } else {
+            try {
+                parseTaskConfigStore(objectMapper.readTree(configFile))
+            } catch (e: Exception) {
+                LOG.warn("Failed to load task configs", e)
+                TaskConfigStore()
+            }
         }
+        configStoreCache = store
+        return store
     }
 
     private fun parseTaskConfigStore(node: JsonNode): TaskConfigStore {
@@ -380,8 +391,9 @@ class TaskLauncherService(private val project: Project) {
         val projectConfig = projects[getProjectRoot()] ?: TaskConfigStore.ProjectConfig()
         val tasks = projectConfig.tasks.toMutableMap()
         tasks[taskKey] = config
-        projects[getProjectRoot()] = projectConfig.copy(tasks = tasks)
-        saveTaskConfigs(store.copy(projects = projects))
+        val updated = store.copy(projects = projects.apply { put(getProjectRoot(), projectConfig.copy(tasks = tasks)) })
+        saveTaskConfigs(updated)
+        configStoreCache = updated
     }
 
     // ── Schema cache ──────────────────────────────────────────────────
