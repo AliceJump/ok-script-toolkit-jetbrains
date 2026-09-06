@@ -137,27 +137,17 @@ object PythonScriptLocator {
         "probe_window_config.py",
     )
 
-    /** 定位打包脚本目录；都找不到时回退 <projectRoot>/python。 */
-    fun findScriptDir(projectRoot: String): String {
-        val projectDir = java.nio.file.Paths.get(projectRoot, "python")
-        if (projectDir.toFile().exists()) return projectDir.normalize().toString()
-
-        for (path in listOf(
-            java.nio.file.Paths.get(projectRoot, "..", "python"),
-            java.nio.file.Paths.get(projectRoot, "..", "..", "python"),
-        )) {
-            if (path.toFile().exists()) return path.normalize().toString()
-        }
-
-        val parentDir = java.nio.file.Paths.get(projectRoot, "..").toFile()
-        val sibling = parentDir.listFiles()
-            ?.filter { it.isDirectory && it.name != java.io.File(projectRoot).name }
-            ?.map { java.nio.file.Paths.get(it.absolutePath, "python") }
-            ?.firstOrNull { it.toFile().exists() }
-        if (sibling != null) return sibling.normalize().toString()
-
-        extractBundledScripts()?.let { return it.normalize().toString() }
-        return projectDir.normalize().toString()
+    /**
+     * 定位插件自带的 python 脚本目录。
+     * 只从插件 JAR 资源提取，不搜索项目文件系统（项目数据与插件脚本严格隔离）。
+     * 找不到时抛异常，调用方无需兜底。
+     */
+    fun findScriptDir(): String {
+        return extractBundledScripts()?.normalize()?.toString()
+            ?: throw IllegalStateException(
+                "Bundled Python scripts not found in plugin JAR. " +
+                    "Ensure the plugin is built with copyPythonScripts task.",
+            )
     }
 
     /** 从插件 JAR 的 classpath 解压打包脚本到临时目录（带版本戳避免旧脚本残留）。 */

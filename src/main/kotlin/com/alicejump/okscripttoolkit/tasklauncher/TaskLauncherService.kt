@@ -22,7 +22,6 @@ class TaskLauncherService(private val project: Project) {
         private val LOG = Logger.getInstance(TaskLauncherService::class.java)
         private val objectMapper = ObjectMapper()
 
-        private const val PYTHON_SCRIPT_DIR = "python"
         private const val PARSE_CONFIG_SCRIPT = "parse_config_tasks.py"
         private const val PROBE_SCHEMA_SCRIPT = "probe_task_schemas.py"
         private const val RUN_TASK_SCRIPT = "run_task.py"
@@ -103,7 +102,7 @@ class TaskLauncherService(private val project: Project) {
     }
 
     fun getPythonScriptDir(): String =
-        PythonScriptLocator.findScriptDir(getProjectRoot())
+        PythonScriptLocator.findScriptDir()
 
     // ── Task list ─────────────────────────────────────────────────────
 

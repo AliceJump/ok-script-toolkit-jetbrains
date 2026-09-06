@@ -51,9 +51,6 @@ class ScreenshotCapture(private val project: Project) {
             }
             return "python"
         }
-
-        fun findScriptDir(projectRoot: String): String =
-            PythonScriptLocator.findScriptDir(projectRoot)
     }
 
     /**
@@ -61,7 +58,7 @@ class ScreenshotCapture(private val project: Project) {
      * 返回 null 表示不可用（脚本缺失/解析失败/ok=false）。
      */
     fun probeWindowConfig(projectDir: String, pythonPath: String): WindowConfig? {
-        val scriptDir = PythonScriptLocator.findScriptDir(projectDir)
+        val scriptDir = PythonScriptLocator.findScriptDir()
         val script = Paths.get(scriptDir, "probe_window_config.py").toFile()
         if (!script.exists()) {
             LOG.warn("probe_window_config.py not found in $scriptDir")
@@ -104,7 +101,7 @@ class ScreenshotCapture(private val project: Project) {
         titleRegex: String?,
         error: StringBuilder,
     ): Path? {
-        val scriptDir = PythonScriptLocator.findScriptDir(projectDir)
+        val scriptDir = PythonScriptLocator.findScriptDir()
         val script = Paths.get(scriptDir, "capture_game_window.py").toFile()
         if (!script.exists()) {
             error.append(OkScriptToolkitBundle0.message("screenshot.scriptNotFound"))
