@@ -3,6 +3,7 @@ package com.alicejump.okscripttoolkit.tasklauncher
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
+import com.intellij.ui.JBColor
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
@@ -60,6 +61,8 @@ class TaskLauncherPanel(private val project: Project) {
         private val LOG = Logger.getInstance(TaskLauncherPanel::class.java)
         private const val DEFAULT_PYTHON_PATH = "python"
         private const val MAX_CONSOLE_CHARS = 400_000
+        private val OK_BORDER = JBColor(Color(40, 120, 40), Color(76, 175, 80))
+        private val BAD_BORDER = JBColor(Color(180, 40, 40), Color(239, 83, 80))
     }
 
     val mainPanel: JPanel
@@ -155,7 +158,7 @@ class TaskLauncherPanel(private val project: Project) {
         val tableScrollPane = JBScrollPane(taskTable)
 
         val paramScrollPane = JBScrollPane(paramPanel)
-        paramScrollPane.border = BorderFactory.createTitledBorder("Parameters")
+        paramScrollPane.border = BorderFactory.createTitledBorder(OkScriptToolkitBundle.message("taskLauncher.parameters"))
 
         val statusBar = JPanel(BorderLayout())
         statusBar.border = BorderFactory.createEmptyBorder(2, 4, 2, 4)
@@ -520,7 +523,7 @@ class TaskLauncherPanel(private val project: Project) {
                 fun validateJson() {
                     val text = area.text.trim()
                     val valid = text.isEmpty() || runCatching { mapper.readTree(text) }.isSuccess
-                    area.border = BorderFactory.createLineBorder(if (valid) Color(40, 120, 40) else Color(180, 40, 40))
+                    area.border = BorderFactory.createLineBorder(if (valid) OK_BORDER else BAD_BORDER)
                 }
                 area.document.addDocumentListener(object : DocumentListener {
                     override fun insertUpdate(e: DocumentEvent?) { validateJson(); autoSaveTaskConfig(task) }

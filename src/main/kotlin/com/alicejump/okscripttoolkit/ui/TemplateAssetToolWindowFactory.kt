@@ -15,6 +15,7 @@ import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
+import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextField
@@ -163,7 +164,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
 
     private fun createImageCard(img: TemplateImage): JPanel {
         val card = JPanel(BorderLayout())
-        card.border = BorderFactory.createLineBorder(Color.LIGHT_GRAY)
+        card.border = BorderFactory.createLineBorder(JBColor.border())
         card.preferredSize = Dimension(140, THUMB_HEIGHT + 40)
         card.maximumSize = Dimension(140, THUMB_HEIGHT + 40)
 

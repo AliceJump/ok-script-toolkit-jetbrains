@@ -20,18 +20,25 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
+import com.intellij.ui.JBColor
 import com.intellij.ui.SearchTextField
-import com.intellij.ui.SimpleTextAttributes
-import com.intellij.ui.ToolbarDecorator
 import com.intellij.ui.components.JBLabel
-import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBPanel
+import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
 import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
 import java.awt.BasicStroke
 import java.awt.Color
+import java.awt.Container
+import java.awt.Cursor
+import java.awt.Dimension
+import java.awt.FlowLayout
+import java.awt.GridLayout
+import java.awt.Graphics
 import java.awt.datatransfer.StringSelection
+import java.awt.event.ComponentAdapter
+import java.awt.event.ComponentEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
@@ -40,12 +47,14 @@ import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import javax.imageio.ImageIO
-import javax.swing.DefaultListModel
 import javax.swing.Icon
+import javax.swing.JLabel
 import javax.swing.ImageIcon
 import javax.swing.JComponent
-import javax.swing.JPanel
-import javax.swing.ListSelectionModel
+import javax.swing.JMenuItem
+import javax.swing.JPopupMenu
+import javax.swing.SwingConstants
+import javax.swing.SwingUtilities
 
 class TemplatesToolWindowFactory : ToolWindowFactory, DumbAware {
     override suspend fun isApplicableAsync(project: Project): Boolean =
@@ -62,47 +71,36 @@ class TemplatesToolWindowFactory : ToolWindowFactory, DumbAware {
 private class TemplateGalleryPanel(private val project: Project) : com.intellij.openapi.Disposable {
     companion object {
         private val LOG = Logger.getInstance(TemplateGalleryPanel::class.java)
-        private const val THUMB_HEIGHT = 48
+        private const val THUMB_HEIGHT = 96
+        private const val CARD_WIDTH = 148
+        private const val CARD_HEIGHT = 148
         private const val ANNOTATION_MARGIN = 200
     }
 
     private val data = project.service<OkProjectDataService>()
     private var templates = emptyList<FeatureTemplate>()
-    private val visibleModel = DefaultListModel<FeatureTemplate>()
-    private val list = JBList<FeatureTemplate>(visibleModel)
+    private val gridPanel = JBPanel<JBPanel<*>>(GridLayout(0, 5, 10, 10))
+    private val scrollPane = JBScrollPane(gridPanel)
     private val search = SearchTextField(false)
     private val count = JBLabel()
+    private val emptyLabel = JBLabel(OkScriptToolkitBundle.message("gallery.empty"), SwingConstants.CENTER)
     private val thumbs = ConcurrentHashMap<String, Icon?>()
     private val requestedThumbs = ConcurrentHashMap.newKeySet<String>()
     private val thumbExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "ok-script-template-thumb").apply { isDaemon = true }
     }
+    private val renderGeneration = java.util.concurrent.atomic.AtomicInteger(0)
+    private var gridCols = 5
+    // 缩略图异步加载完成后回填到已渲染的卡片图标
+    private val pendingThumbLabels = ConcurrentHashMap<String, MutableList<JLabel>>()
     val component: JComponent
 
     init {
-        list.selectionMode = ListSelectionModel.SINGLE_SELECTION
-        list.emptyText.text = OkScriptToolkitBundle.message("gallery.empty")
-        list.cellRenderer = object : com.intellij.ui.ColoredListCellRenderer<FeatureTemplate>() {
-            override fun customizeCellRenderer(
-                list: javax.swing.JList<out FeatureTemplate>,
-                value: FeatureTemplate,
-                index: Int,
-                selected: Boolean,
-                hasFocus: Boolean,
-            ) {
-                if (!requestedThumbs.contains(value.name)) requestThumb(value)
-                icon = thumbs[value.name]
-                append(value.name, SimpleTextAttributes.REGULAR_ATTRIBUTES)
-                append("  ${value.width}×${value.height}", SimpleTextAttributes.GRAYED_ATTRIBUTES)
-            }
-        }
-        list.addMouseListener(object : MouseAdapter() {
-            override fun mouseClicked(event: MouseEvent) {
-                if (event.clickCount == 2 && event.button == MouseEvent.BUTTON1) {
-                    list.selectedValue?.let(::insertExpression)
-                }
-            }
-        })
+        gridPanel.border = JBUI.Borders.empty(8)
+        emptyLabel.isVisible = false
+        // 列数按视口宽度自适应，横向不允许滚动（避免卡线溢出产生水平条）
+        scrollPane.horizontalScrollBarPolicy = javax.swing.ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+
         search.textEditor.emptyText.text = OkScriptToolkitBundle.message("gallery.search")
         search.addDocumentListener(object : javax.swing.event.DocumentListener {
             override fun insertUpdate(e: javax.swing.event.DocumentEvent?) = applyFilter()
@@ -110,38 +108,24 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
             override fun changedUpdate(e: javax.swing.event.DocumentEvent?) = applyFilter()
         })
 
-        val toolbar = ToolbarDecorator.createDecorator(list)
-            .setAddAction(null)
-            .setRemoveAction(null)
-            .disableUpDownActions()
-            .addExtraAction(object : AnAction(OkScriptToolkitBundle.message("gallery.insert")) {
-                override fun actionPerformed(e: AnActionEvent) {
-                    list.selectedValue?.let(::insertExpression)
-                }
-            })
-            .addExtraAction(object : AnAction(OkScriptToolkitBundle.message("gallery.copy")) {
-                override fun actionPerformed(e: AnActionEvent) {
-                    list.selectedValue?.let(::copyExpression)
-                }
-            })
-            .addExtraAction(object : AnAction(OkScriptToolkitBundle.message("gallery.open")) {
-                override fun actionPerformed(e: AnActionEvent) {
-                    list.selectedValue?.let(::openAnnotatedSource)
-                }
-            })
-            .addExtraAction(object : AnAction(OkScriptToolkitBundle.message("gallery.refresh")) {
-                override fun actionPerformed(e: AnActionEvent) = reload(true)
-            })
-            .createPanel()
+        val header = JBPanel<JBPanel<*>>(BorderLayout(8, 0)).apply {
+            border = JBUI.Borders.empty(6, 8)
+            add(search, BorderLayout.CENTER)
+            add(count, BorderLayout.EAST)
+        }
 
         component = JBPanel<JBPanel<*>>(BorderLayout()).apply {
-            border = JBUI.Borders.empty(6)
-            add(JPanel(BorderLayout(8, 0)).apply {
-                add(search, BorderLayout.CENTER)
-                add(count, BorderLayout.EAST)
-            }, BorderLayout.NORTH)
-            add(toolbar, BorderLayout.CENTER)
+            add(header, BorderLayout.NORTH)
+            add(scrollPane, BorderLayout.CENTER)
         }
+
+        // 视口宽度变化时重算列数，保证网格铺满且不出横向滚动条
+        scrollPane.addComponentListener(object : ComponentAdapter() {
+            override fun componentResized(e: ComponentEvent?) {
+                applyGridLayout()
+            }
+        })
+
         reload(false)
     }
 
@@ -150,29 +134,122 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
         CompletableFuture.runAsync {
             data.refresh(force)
             val features = data.features()
-            javax.swing.SwingUtilities.invokeLater {
+            SwingUtilities.invokeLater {
                 templates = features
-                applyFilter()
+                renderGrid()
             }
         }
     }
 
-    private fun applyFilter() {
-        val query = search.text.trim().lowercase()
-        visibleModel.clear()
-        templates
-            .filter { query.isEmpty() || it.name.lowercase().contains(query) }
-            .forEach(visibleModel::addElement)
-        count.text = OkScriptToolkitBundle.message("gallery.count", visibleModel.size)
+    private fun applyFilter() = renderGrid()
+
+    private fun applyGridLayout() {
+        val viewportWidth = scrollPane.viewport.width
+        if (viewportWidth <= 0) return
+        val cols = ((viewportWidth - 24) / (CARD_WIDTH + 10)).coerceIn(3, 12)
+        if (cols != gridCols) {
+            gridCols = cols
+            gridPanel.layout = GridLayout(0, cols, 10, 10)
+            gridPanel.revalidate()
+            gridPanel.repaint()
+        }
     }
 
-    /** 异步生成列表缩略图（bbox 裁剪），完成后重绘列表。 */
-    private fun requestThumb(template: FeatureTemplate) {
+    private fun renderGrid() {
+        val generation = renderGeneration.incrementAndGet()
+        val query = search.text.trim().lowercase()
+        val filtered = templates
+            .filter { query.isEmpty() || it.name.lowercase().contains(query) }
+        count.text = OkScriptToolkitBundle.message("gallery.count", filtered.size)
+
+        applyGridLayout()
+        pendingThumbLabels.clear()
+        gridPanel.removeAll()
+        gridPanel.layout = GridLayout(0, gridCols, 10, 10)
+        for (img in filtered) {
+            gridPanel.add(createCard(img, generation))
+        }
+        emptyLabel.isVisible = filtered.isEmpty()
+        gridPanel.add(emptyLabel)
+        gridPanel.revalidate()
+        gridPanel.repaint()
+    }
+
+    private fun createCard(template: FeatureTemplate, generation: Int): JComponent {
+        val card = JBPanel<JBPanel<*>>(BorderLayout())
+        card.isOpaque = false
+
+        val icon = thumbs[template.name]
+        val imageArea = JBLabel(icon, SwingConstants.CENTER)
+        imageArea.isOpaque = false
+        imageArea.verticalAlignment = SwingConstants.CENTER
+        imageArea.preferredSize = Dimension(CARD_WIDTH - 16, THUMB_HEIGHT + 4)
+        if (icon == null && !requestedThumbs.contains(template.name)) {
+            requestThumb(template, generation)
+        }
+        pendingThumbLabels.getOrPut(template.name) { java.util.Collections.synchronizedList(mutableListOf()) }.add(imageArea)
+
+        val sizeText = "${template.width}×${template.height}"
+        val nameLabel = JBLabel(
+            "<html><div style=\"text-align:center;width:${CARD_WIDTH - 20}px;\">" +
+                escapeHtml(template.name) +
+                "<span style=\"color:#8a8a8a\">&nbsp;$sizeText</span></div></html>",
+            SwingConstants.CENTER,
+        )
+        nameLabel.verticalAlignment = SwingConstants.TOP
+        nameLabel.isOpaque = false
+
+        card.add(imageArea, BorderLayout.CENTER)
+        card.add(nameLabel, BorderLayout.SOUTH)
+        card.preferredSize = Dimension(CARD_WIDTH, CARD_HEIGHT)
+        card.maximumSize = Dimension(CARD_WIDTH, CARD_HEIGHT)
+        card.toolTipText = "${expression(template)}  ($sizeText)"
+        card.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+
+        card.addMouseListener(object : MouseAdapter() {
+            override fun mouseClicked(e: MouseEvent) {
+                when {
+                    e.clickCount == 2 -> copyExpression(template)
+                    SwingUtilities.isRightMouseButton(e) -> showCardMenu(e, template)
+                    e.clickCount == 1 -> insertExpression(template)
+                }
+            }
+
+            override fun mousePressed(e: MouseEvent) {
+                if (SwingUtilities.isRightMouseButton(e)) showCardMenu(e, template)
+            }
+        })
+        return card
+    }
+
+    private fun showCardMenu(e: MouseEvent, template: FeatureTemplate) {
+        val popup = JPopupMenu()
+        val insertItem = JMenuItem(OkScriptToolkitBundle.message("gallery.insert"))
+        insertItem.addActionListener { insertExpression(template) }
+        popup.add(insertItem)
+        val copyItem = JMenuItem(OkScriptToolkitBundle.message("gallery.copy"))
+        copyItem.addActionListener { copyExpression(template) }
+        popup.add(copyItem)
+        popup.addSeparator()
+        val openItem = JMenuItem(OkScriptToolkitBundle.message("gallery.open"))
+        openItem.addActionListener { openAnnotatedSource(template) }
+        popup.add(openItem)
+        popup.show(e.component, e.x, e.y)
+    }
+
+    /** 异步生成网格缩略图（bbox 裁剪），完成后回填到已渲染的卡片，避免旧数据回流。 */
+    private fun requestThumb(template: FeatureTemplate, generation: Int) {
         requestedThumbs.add(template.name)
         thumbExecutor.submit {
             val icon = loadThumb(template)
             thumbs[template.name] = icon
-            javax.swing.SwingUtilities.invokeLater { list.repaint() }
+            SwingUtilities.invokeLater {
+                if (renderGeneration.get() != generation) return@invokeLater
+                pendingThumbLabels.remove(template.name)?.forEach { label ->
+                    label.icon = icon
+                    label.repaint()
+                }
+            }
         }
     }
 
@@ -187,7 +264,7 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
             val h = template.bbox[3].coerceAtMost(original.height - y)
             if (w <= 0 || h <= 0) return null
             val crop = original.getSubimage(x, y, w, h)
-            val targetW = (w * THUMB_HEIGHT.toDouble() / h).toInt().coerceIn(1, 160)
+            val targetW = (w * THUMB_HEIGHT.toDouble() / h).toInt().coerceIn(1, CARD_WIDTH - 16)
             val thumb = BufferedImage(targetW, THUMB_HEIGHT, BufferedImage.TYPE_INT_ARGB)
             val g = thumb.createGraphics()
             g.drawImage(crop, 0, 0, targetW, THUMB_HEIGHT, null)
@@ -198,6 +275,9 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
             null
         }
     }
+
+    private fun escapeHtml(value: String): String =
+        value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
     private fun expression(template: FeatureTemplate): String {
         val alias = OkScriptToolkitSettings.getInstance(project).featureAliases().firstOrNull() ?: "fL"
@@ -233,11 +313,10 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
     private fun openAnnotatedSource(template: FeatureTemplate) {
         CompletableFuture.supplyAsync { renderAnnotatedImage(template) }.thenAccept { path ->
             if (path == null) {
-                // 渲染失败回退为直接打开源图
                 openRawSource(template)
                 return@thenAccept
             }
-            javax.swing.SwingUtilities.invokeLater {
+            SwingUtilities.invokeLater {
                 val file = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path)
                 if (file != null) {
                     OpenFileDescriptor(project, file).navigate(true)

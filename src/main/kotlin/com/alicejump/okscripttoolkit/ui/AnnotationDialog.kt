@@ -2,13 +2,18 @@ package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.CocoAnnotation
+import com.alicejump.okscripttoolkit.core.CocoCategory
 import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
 import com.alicejump.okscripttoolkit.core.TemplateImage
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
+import com.intellij.openapi.ui.Messages
+import com.intellij.ui.JBColor
+import com.intellij.util.ui.UIUtil
 import java.awt.BorderLayout
 import java.awt.Color
+import java.awt.BasicStroke
 import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.Graphics
@@ -24,17 +29,11 @@ import java.awt.image.BufferedImage
 import javax.imageio.ImageIO
 import javax.swing.AbstractAction
 import javax.swing.BorderFactory
-import javax.swing.Box
-import javax.swing.DefaultComboBoxModel
-import javax.swing.JButton
-import javax.swing.JComboBox
 import javax.swing.JComponent
-import javax.swing.JDialog
 import javax.swing.JLabel
 import javax.swing.JPanel
 import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
-import java.util.Vector
 
 /**
  * COCO 标注编辑器（对齐 VSCode 版 AnnotationPanel 的基础能力）：
@@ -49,17 +48,14 @@ class AnnotationDialog(
 
     companion object {
         private val LOG = Logger.getInstance(AnnotationDialog::class.java)
+
+        // 语义色：红=普通框、黄=选中；深浅主题分别取对比度合适的值
+        private val BOX_COLOR = JBColor(0xE53935, 0xFF5252)
+        private val SELECTED_COLOR = JBColor(0xB8860B, 0xFFD24A)
     }
 
     private val canvas = AnnotationCanvas()
-
-    private data class BoxItem(
-        val categoryId: Int,
-        val categoryName: String,
-        // 相对原图像素的坐标
-        val rect: Rectangle,
-    )
-    private val categoryPanel = JPanel(GridLayout(1, 2, 6, 0))
+    private val hintLabel = JLabel(OkScriptToolkitBundle.message("annotation.hint"))
     private var cocoImageId: Int = -1
 
     init {
@@ -75,10 +71,10 @@ class AnnotationDialog(
         canvas.preferredSize = Dimension(900, 560)
         root.add(canvas, BorderLayout.CENTER)
 
-        categoryPanel.border = BorderFactory.createEmptyBorder(4, 4, 4, 4)
-        val hint = JLabel(OkScriptToolkitBundle.message("annotation.hint"))
-        categoryPanel.add(hint)
-        root.add(categoryPanel, BorderLayout.SOUTH)
+        val footer = JPanel(GridLayout(1, 1))
+        footer.border = BorderFactory.createEmptyBorder(4, 4, 0, 4)
+        footer.add(hintLabel)
+        root.add(footer, BorderLayout.SOUTH)
         return root
     }
 
@@ -116,6 +112,13 @@ class AnnotationDialog(
         super.doOKAction()
     }
 
+    private data class BoxItem(
+        val categoryId: Int,
+        val categoryName: String,
+        // 相对原图像素的坐标
+        val rect: Rectangle,
+    )
+
     private inner class AnnotationCanvas : JComponent() {
 
         private var source: BufferedImage? = null
@@ -129,6 +132,8 @@ class AnnotationDialog(
 
         init {
             isFocusable = true
+            isOpaque = true
+            background = UIUtil.getPanelBackground()
             val inputMap = getInputMap(WHEN_FOCUSED)
             val actionMap = getActionMap()
             inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_DELETE, 0), "delete-selected")
@@ -146,6 +151,7 @@ class AnnotationDialog(
             addMouseListener(object : MouseAdapter() {
                 override fun mousePressed(e: MouseEvent) {
                     requestFocusInWindow()
+                    if (SwingUtilities.isRightMouseButton(e)) return
                     val p = toImage(e.point)
                     selected = boxes.lastOrNull { it.rect.contains(p) }
                     if (selected == null) dragStart = e.point
@@ -155,11 +161,11 @@ class AnnotationDialog(
                 override fun mouseReleased(e: MouseEvent) {
                     val start = dragStart
                     dragStart = null
-                    if (start != null) {
+                    if (start != null && !SwingUtilities.isRightMouseButton(e)) {
                         val rect = normalizeRect(start, e.point)
                         val imgRect = toImageRect(rect)
                         if (imgRect.width >= 4 && imgRect.height >= 4) {
-                            promptCategory { categoryName ->
+                            promptCategory(null) { categoryName ->
                                 if (categoryName != null) {
                                     val category = data.getOrCreateCategory(categoryName)
                                     if (categoryNames.none { it == categoryName }) {
@@ -182,7 +188,7 @@ class AnnotationDialog(
                         val hit = boxes.lastOrNull { it.rect.contains(p) }
                         if (hit != null) {
                             promptCategory(hit.categoryName) { newName ->
-                                if (newName != null) {
+                                if (!newName.isNullOrBlank()) {
                                     val category = data.getOrCreateCategory(newName)
                                     val index = boxes.indexOf(hit)
                                     boxes[index] = hit.copy(categoryId = category.id, categoryName = newName)
@@ -207,7 +213,7 @@ class AnnotationDialog(
             })
         }
 
-        fun setImage(buffered: BufferedImage, annotations: List<CocoAnnotation>, categories: List<com.alicejump.okscripttoolkit.core.CocoCategory>) {
+        fun setImage(buffered: BufferedImage, annotations: List<CocoAnnotation>, categories: List<CocoCategory>) {
             source = buffered
             categoryNames.clear()
             categoryNames.addAll(categories.map { it.name })
@@ -228,23 +234,25 @@ class AnnotationDialog(
         fun exportAnnotations(): List<Pair<Int, IntArray>> =
             boxes.map { it.categoryId to intArrayOf(it.rect.x, it.rect.y, it.rect.width, it.rect.height) }
 
-        private fun promptCategory(initial: String? = null, onDone: (String?) -> Unit) {
-            val combo = JComboBox(Vector(categoryNames))
-            combo.isEditable = true
-            initial?.let { combo.selectedItem = it }
-            val option = JOptionPaneOption(combo, OkScriptToolkitBundle.message("annotation.categoryPrompt")) { result ->
-                val value = combo.selectedItem as? String
-                onDone(if (result && !value.isNullOrBlank()) value.trim() else null)
-            }
-            option.show()
+        private fun promptCategory(initial: String?, onDone: (String?) -> Unit) {
+            // 主题适配的输入弹窗（替代此前白底的裸 JDialog）
+            val input = Messages.showInputDialog(
+                project,
+                OkScriptToolkitBundle.message("annotation.categoryPrompt"),
+                OkScriptToolkitBundle.message("annotation.title", image.name),
+                Messages.getInformationIcon(),
+                initial,
+                null,
+            )
+            onDone(input?.trim()?.takeIf { it.isNotEmpty() })
         }
 
         override fun paintComponent(g: Graphics) {
             super.paintComponent(g)
             val img = source ?: return
             val g2 = g as Graphics2D
-            g2.color = Color.DARK_GRAY
-            g2.fillRect(0, 0, width, height)
+            g2.background = background
+            g2.clearRect(0, 0, width, height)
 
             val scale = minOf(width.toDouble() / img.width, (height - 40).toDouble() / img.height).coerceAtMost(1.0)
             drawScale = scale
@@ -256,14 +264,17 @@ class AnnotationDialog(
             for (box in boxes) {
                 val r = toScreenRect(box.rect)
                 val isSelected = box === selected
-                g2.color = if (isSelected) Color(255, 210, 40) else Color(255, 40, 40)
-                g2.stroke = java.awt.BasicStroke(if (isSelected) 2.5f else 1.8f)
+                g2.color = if (isSelected) SELECTED_COLOR else BOX_COLOR
+                g2.stroke = BasicStroke(if (isSelected) 2.5f else 1.8f)
                 g2.drawRect(r.x, r.y, r.width, r.height)
-                g2.color = Color.WHITE
-                g2.background = Color(0, 0, 0, 140)
                 val label = box.categoryName
+                val metrics = g2.fontMetrics
                 val labelX = r.x
-                val labelY = r.y - 4
+                val labelY = (r.y - 4).coerceAtLeast(metrics.height)
+                // 标签底色半透明，深浅主题下都可读
+                g2.color = Color(0, 0, 0, 110)
+                g2.fillRect(labelX - 1, labelY - metrics.height + 2, metrics.stringWidth(label) + 3, metrics.height)
+                g2.color = JBColor.foreground()
                 g2.drawString(label, labelX, labelY)
             }
 
@@ -271,8 +282,8 @@ class AnnotationDialog(
             val current = dragCurrent
             if (start != null && current != null) {
                 val r = normalizeRect(start, current)
-                g2.color = Color(255, 210, 40)
-                g2.stroke = java.awt.BasicStroke(1.5f, 0, 0, 8f, floatArrayOf(6f, 6f), 0f)
+                g2.color = SELECTED_COLOR
+                g2.stroke = BasicStroke(1.5f, 0, 0, 8f, floatArrayOf(6f, 6f), 0f)
                 g2.drawRect(r.x, r.y, r.width, r.height)
             }
         }
@@ -299,46 +310,5 @@ class AnnotationDialog(
 
         private fun normalizeRect(a: Point, b: Point): Rectangle =
             Rectangle(minOf(a.x, b.x), minOf(a.y, b.y), Math.abs(a.x - b.x), Math.abs(a.y - b.y))
-    }
-
-    /** 极简可复用确认弹窗（editable combo + OK/Cancel）。 */
-    private class JOptionPaneOption(
-        content: JComponent,
-        titleText: String,
-        private val onDone: (Boolean) -> Unit,
-    ) {
-        private val dialog: JDialog
-
-        init {
-            val dialogHolder = arrayOfNulls<JDialog>(1)
-            val ok = JButton(OkScriptToolkitBundle.message("annotation.ok"))
-            val cancel = JButton(OkScriptToolkitBundle.message("annotation.cancel"))
-            fun finish(result: Boolean) {
-                dialogHolder[0]?.dispose()
-                onDone(result)
-            }
-            ok.addActionListener { finish(true) }
-            cancel.addActionListener { finish(false) }
-
-            dialog = JDialog().apply {
-                title = titleText
-                isModal = true
-                layout = BorderLayout(8, 8)
-                add(content, BorderLayout.CENTER)
-                val buttons = JPanel(GridLayout(1, 2, 6, 0))
-                buttons.add(ok)
-                buttons.add(cancel)
-                add(buttons, BorderLayout.SOUTH)
-                rootPane.defaultButton = ok
-                pack()
-                size = Dimension(320, preferredSize.height)
-                setLocationRelativeTo(null)
-            }
-            dialogHolder[0] = dialog
-        }
-
-        fun show() {
-            dialog.isVisible = true
-        }
     }
 }
