@@ -101,6 +101,65 @@ object CharacterDataMutations {
         atomicWriteJson(file.toPath(), root)
     }
 
+    // ── 强化组编辑（enhancement 增删改，兼容单数/复数字段）────────────
+
+    /** form 键：name / trigger_text / enhancement_effect。 */
+    private fun enhancementNode(form: Map<String, String>): ObjectNode {
+        val node = JSON.createObjectNode()
+        node.put("name", form["name"] ?: "")
+        node.put("enhancement_effect", form["enhancement_effect"] ?: "")
+        node.put("enhancement_visible_pulse", false)
+        val trigger = JSON.createObjectNode()
+        trigger.put("text", form["trigger_text"] ?: "")
+        val effects = JSON.createArrayNode()
+        (form["effects"] ?: "").lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.forEach { effects.add(it as JsonNode) }
+        trigger.set<JsonNode>("effects", effects)
+        node.set<JsonNode>("trigger_condition", trigger)
+        return node
+    }
+
+    fun addEnhancement(path: String, skillId: String, form: Map<String, String>) {
+        val (root, skills, file) = skillFile(path)
+        val skill = findSkill(skills, skillId)
+            ?: throw MutationException("Skill not found: $skillId")
+        val enhancements = skill.get("enhancements") as? ArrayNode
+        if (enhancements != null) {
+            enhancements.add(enhancementNode(form))
+        } else {
+            skill.putNull("enhancement")
+            skill.set<JsonNode>("enhancements", JSON.createArrayNode().add(enhancementNode(form)))
+            skill.remove("enhancement")
+        }
+        skill.put("has_enhancement", true)
+        atomicWriteJson(file.toPath(), root)
+    }
+
+    fun updateEnhancement(path: String, skillId: String, index: Int, form: Map<String, String>) {
+        val (root, skills, file) = skillFile(path)
+        val skill = findSkill(skills, skillId)
+            ?: throw MutationException("Skill not found: $skillId")
+        val enhancements = skill.get("enhancements") as? ArrayNode
+        if (enhancements == null || index < 0 || index >= enhancements.size()) {
+            throw MutationException("Invalid enhancement index: $index")
+        }
+        enhancements.set(index, enhancementNode(form))
+        skill.put("has_enhancement", true)
+        atomicWriteJson(file.toPath(), root)
+    }
+
+    fun deleteEnhancement(path: String, skillId: String, index: Int) {
+        val (root, skills, file) = skillFile(path)
+        val skill = findSkill(skills, skillId)
+            ?: throw MutationException("Skill not found: $skillId")
+        val enhancements = skill.get("enhancements") as? ArrayNode
+        if (enhancements == null || index < 0 || index >= enhancements.size()) {
+            throw MutationException("Invalid enhancement index: $index")
+        }
+        enhancements.remove(index)
+        if (enhancements.isEmpty) skill.put("has_enhancement", false)
+        atomicWriteJson(file.toPath(), root)
+    }
+
     /** 删除技能：仅允许删除自定义技能。 */
     fun deleteSkill(path: String, skillId: String) {
         val (root, skills, file) = skillFile(path)

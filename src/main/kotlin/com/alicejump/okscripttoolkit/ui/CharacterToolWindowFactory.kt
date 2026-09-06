@@ -75,8 +75,9 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         val addSkillAction = ToolbarAction(AllIcons.General.Add, OkScriptToolkitBundle.message("characterManager.addSkill")) { runSkillDialog(mode = SkillDialogMode.ADD) }
         val editSkillAction = ToolbarAction(AllIcons.Actions.Edit, OkScriptToolkitBundle.message("characterManager.editSkill")) { runSkillDialog(mode = SkillDialogMode.EDIT) }
         val deleteSkillAction = ToolbarAction(AllIcons.Actions.GC, OkScriptToolkitBundle.message("characterManager.deleteSkill")) { deleteSelectedSkill() }
+        val enhancementAction = ToolbarAction(AllIcons.Actions.Diff, OkScriptToolkitBundle.message("characterManager.enhancements")) { runEnhancementFlow() }
         val actionGroup = com.intellij.openapi.actionSystem.DefaultActionGroup(
-            refreshAction, addSkillAction, editSkillAction, deleteSkillAction,
+            refreshAction, addSkillAction, editSkillAction, deleteSkillAction, enhancementAction,
         )
         val actionToolbar = com.intellij.openapi.actionSystem.ActionManager.getInstance()
             .createActionToolbar("ok-script-characters", actionGroup, true)
@@ -505,7 +506,175 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         }
     }
 
+    // ---- Enhancement editing ----
+
+    private enum class EnhancementAction { ADD, EDIT, DELETE }
+
+    private fun runEnhancementFlow() {
+        val row = characterTable.selectedRow
+        if (row < 0 || row >= currentCharacters.size) {
+            com.intellij.openapi.ui.Messages.showInfoMessage(
+                project,
+                OkScriptToolkitBundle.message("characterManager.selectCharacterFirst"),
+                OkScriptToolkitBundle.message("characterManager.enhancements"),
+            )
+            return
+        }
+        val char = currentCharacters[row]
+        val path = skillFilePaths[char.characterId]
+        if (path == null) {
+            com.intellij.openapi.ui.Messages.showInfoMessage(
+                project,
+                OkScriptToolkitBundle.message("characterManager.noSkillFile", char.name),
+                OkScriptToolkitBundle.message("characterManager.enhancements"),
+            )
+            return
+        }
+        if (char.skills.isEmpty()) {
+            com.intellij.openapi.ui.Messages.showInfoMessage(
+                project,
+                OkScriptToolkitBundle.message("characterManager.noSkills", char.name),
+                OkScriptToolkitBundle.message("characterManager.enhancements"),
+            )
+            return
+        }
+
+        val skillNames = char.skills.map { "${it.name} (${it.skillId})" }.toTypedArray()
+        val skillIndex = com.intellij.openapi.ui.Messages.showChooseDialog(
+            project,
+            OkScriptToolkitBundle.message("characterManager.enhancementSkillPrompt"),
+            OkScriptToolkitBundle.message("characterManager.enhancements"),
+            com.intellij.icons.AllIcons.General.Information,
+            skillNames,
+            skillNames.firstOrNull(),
+        )
+        if (skillIndex < 0) return
+        val skill = char.skills[skillIndex]
+        val skillId = skill.skillId
+
+        val actions = arrayOf(
+            OkScriptToolkitBundle.message("characterManager.addEnhancement"),
+            OkScriptToolkitBundle.message("characterManager.editEnhancement"),
+            OkScriptToolkitBundle.message("characterManager.deleteEnhancement"),
+        )
+        val actionIndex = com.intellij.openapi.ui.Messages.showChooseDialog(
+            project,
+            OkScriptToolkitBundle.message("characterManager.enhancementActionPrompt", skill.name),
+            OkScriptToolkitBundle.message("characterManager.enhancements"),
+            com.intellij.icons.AllIcons.General.Information,
+            actions,
+            actions.firstOrNull(),
+        )
+        if (actionIndex < 0) return
+        val action = EnhancementAction.values()[actionIndex]
+
+        val enhCount = skill.enhancements.size
+        if (action != EnhancementAction.ADD && enhCount == 0) {
+            com.intellij.openapi.ui.Messages.showInfoMessage(
+                project,
+                OkScriptToolkitBundle.message("characterManager.noEnhancements", skill.name),
+                OkScriptToolkitBundle.message("characterManager.enhancements"),
+            )
+            return
+        }
+
+        var enhancementIndex: Int? = null
+        if (action != EnhancementAction.ADD) {
+            val enhNames = skill.enhancements.map { it.name }.toTypedArray()
+            val enhIdx = com.intellij.openapi.ui.Messages.showChooseDialog(
+                project,
+                OkScriptToolkitBundle.message("characterManager.enhancementPickPrompt"),
+                OkScriptToolkitBundle.message("characterManager.enhancements"),
+                com.intellij.icons.AllIcons.General.Information,
+                enhNames,
+                enhNames.firstOrNull(),
+            )
+            if (enhIdx < 0) return
+            enhancementIndex = enhIdx
+        }
+
+        var form: Map<String, String> = emptyMap()
+        if (action != EnhancementAction.DELETE) {
+            val existing = skill.enhancements.getOrNull(enhancementIndex ?: -1)
+            val dialog = EnhancementDialog(project, existing?.name, existing?.triggerText)
+            if (!dialog.showAndGet()) return
+            form = dialog.formValues()
+        } else {
+            val confirm = com.intellij.openapi.ui.Messages.showYesNoDialog(
+                project,
+                OkScriptToolkitBundle.message("characterManager.deleteEnhancementConfirm", skill.enhancements[enhancementIndex!!].name),
+                OkScriptToolkitBundle.message("characterManager.deleteEnhancement"),
+                com.intellij.openapi.ui.Messages.getWarningIcon(),
+            )
+            if (confirm != com.intellij.openapi.ui.Messages.YES) return
+        }
+
+        CompletableFuture.runAsync {
+            try {
+                when (action) {
+                    EnhancementAction.ADD -> com.alicejump.okscripttoolkit.core.CharacterDataMutations.addEnhancement(path, skillId, form)
+                    EnhancementAction.EDIT -> com.alicejump.okscripttoolkit.core.CharacterDataMutations.updateEnhancement(path, skillId, enhancementIndex!!, form)
+                    EnhancementAction.DELETE -> com.alicejump.okscripttoolkit.core.CharacterDataMutations.deleteEnhancement(path, skillId, enhancementIndex!!)
+                }
+                SwingUtilities.invokeLater { loadData() }
+            } catch (e: Exception) {
+                SwingUtilities.invokeLater {
+                    com.intellij.openapi.ui.Messages.showErrorDialog(
+                        project, e.message ?: e.toString(),
+                        OkScriptToolkitBundle.message("characterManager.mutationFailed"),
+                    )
+                }
+            }
+        }
+    }
+
     override fun dispose() {}
+}
+/**
+ * Enhancement editing form (name / trigger_text / enhancement_effect).
+ */
+class EnhancementDialog(
+    project: Project,
+    initialName: String?,
+    initialTrigger: String?,
+) : com.intellij.openapi.ui.DialogWrapper(project) {
+
+    private val nameField = javax.swing.JTextField(initialName ?: "")
+    private val triggerField = javax.swing.JTextField(initialTrigger ?: "")
+    private val effectField = javax.swing.JTextField()
+
+    init {
+        title = OkScriptToolkitBundle.message("characterManager.enhancements")
+        init()
+    }
+
+    override fun createCenterPanel(): JComponent {
+        val form = JPanel(java.awt.GridBagLayout())
+        var row = 0
+        fun addField(label: String, comp: JComponent) {
+            form.add(JLabel(label), java.awt.GridBagConstraints().apply {
+                gridx = 0; gridy = row; anchor = java.awt.GridBagConstraints.WEST
+                insets = java.awt.Insets(3, 6, 3, 4)
+            })
+            form.add(comp, java.awt.GridBagConstraints().apply {
+                gridx = 1; gridy = row; fill = java.awt.GridBagConstraints.HORIZONTAL
+                weightx = 1.0
+                insets = java.awt.Insets(3, 4, 3, 6)
+            })
+            row++
+        }
+        addField(OkScriptToolkitBundle.message("characterManager.fieldEnhName"), nameField)
+        addField(OkScriptToolkitBundle.message("characterManager.fieldTriggerText"), triggerField)
+        addField(OkScriptToolkitBundle.message("characterManager.fieldEnhEffect"), effectField)
+        return form
+    }
+
+    fun formValues(): Map<String, String> = mapOf(
+        "name" to nameField.text.trim(),
+        "trigger_text" to triggerField.text.trim(),
+        "enhancement_effect" to effectField.text.trim(),
+        "effects" to "",
+    )
 }
 
 enum class SkillDialogMode { ADD, EDIT }
