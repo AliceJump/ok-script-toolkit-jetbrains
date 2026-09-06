@@ -1,6 +1,7 @@
 package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
+import com.alicejump.okscripttoolkit.core.OkDataChangeService
 import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
 import com.alicejump.okscripttoolkit.core.TemplateImage
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
@@ -71,6 +72,12 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         mainPanel = JPanel(BorderLayout())
         initUI()
         loadData()
+
+        // 数据文件变化自动刷新（对齐 VSCode 版 watcher 派发）
+        project.messageBus.connect(this).subscribe(
+            OkDataChangeService.TOPIC,
+            com.alicejump.okscripttoolkit.core.OkDataChangeListener { loadData() },
+        )
     }
 
     private fun initUI() {

@@ -74,6 +74,12 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         mainPanel = JPanel(BorderLayout())
         initUI()
         loadData()
+
+        // 数据文件变化自动刷新（对齐 VSCode 版 watcher 派发）
+        project.messageBus.connect(this).subscribe(
+            OkDataChangeService.TOPIC,
+            OkDataChangeListener { loadData() },
+        )
     }
 
     private fun initUI() {
