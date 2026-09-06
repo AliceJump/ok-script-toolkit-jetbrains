@@ -57,6 +57,7 @@ class AnnotationDialog(
     private val canvas = AnnotationCanvas()
     private val hintLabel = JLabel(OkScriptToolkitBundle.message("annotation.hint"))
     private var cocoImageId: Int = -1
+    private var newImageSize: Pair<Int, Int>? = null
 
     init {
         title = OkScriptToolkitBundle.message("annotation.title", image.name)
@@ -85,11 +86,13 @@ class AnnotationDialog(
                 val cocoImage = data.getImageEntryForFile(image.file.name)
                 val annotations = cocoImage?.let { data.getAnnotationsForImage(it.id) } ?: emptyList()
                 SwingUtilities.invokeLater {
-                    if (buffered != null && cocoImage != null) {
-                        cocoImageId = cocoImage.id
-                        canvas.setImage(buffered, annotations, data.categories())
-                    } else {
+                    if (buffered == null) {
                         close(CANCEL_EXIT_CODE)
+                    } else {
+                        // 尚未注册进 COCO 的图（如新截图）也可标注：记住尺寸，保存时自动注册
+                        cocoImageId = cocoImage?.id ?: -1
+                        newImageSize = buffered.width to buffered.height
+                        canvas.setImage(buffered, annotations, data.categories())
                     }
                 }
             } catch (e: Exception) {
@@ -100,14 +103,16 @@ class AnnotationDialog(
     }
 
     override fun doOKAction() {
-        if (cocoImageId >= 0) {
-            val items = canvas.exportAnnotations()
-            try {
-                data.replaceAnnotationsForImage(cocoImageId, items)
-                data.save()
-            } catch (e: Exception) {
-                LOG.error("Failed to save annotations for ${image.name}", e)
+        try {
+            if (cocoImageId < 0) {
+                val (w, h) = newImageSize ?: return super.doOKAction()
+                cocoImageId = data.addImageEntry(image.file.name, w, h).id
             }
+            val items = canvas.exportAnnotations()
+            data.replaceAnnotationsForImage(cocoImageId, items)
+            data.save()
+        } catch (e: Exception) {
+            LOG.error("Failed to save annotations for ${image.name}", e)
         }
         super.doOKAction()
     }

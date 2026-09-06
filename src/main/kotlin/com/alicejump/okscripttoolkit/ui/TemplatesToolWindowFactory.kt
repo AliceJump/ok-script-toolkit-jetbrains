@@ -265,10 +265,13 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
             val h = template.bbox[3].coerceAtMost(original.height - y)
             if (w <= 0 || h <= 0) return null
             val crop = original.getSubimage(x, y, w, h)
-            val targetW = (w * THUMB_HEIGHT.toDouble() / h).toInt().coerceIn(1, CARD_WIDTH - 16)
-            val thumb = BufferedImage(targetW, THUMB_HEIGHT, BufferedImage.TYPE_INT_ARGB)
+            // 等比适配预览框（高 72、宽不超格子内区），绝不拉伸
+            val scale = minOf(THUMB_HEIGHT.toDouble() / h, (CARD_WIDTH - 16).toDouble() / w)
+            val targetW = (w * scale).toInt().coerceAtLeast(1)
+            val targetH = (h * scale).toInt().coerceAtLeast(1)
+            val thumb = BufferedImage(targetW, targetH, BufferedImage.TYPE_INT_ARGB)
             val g = thumb.createGraphics()
-            g.drawImage(crop, 0, 0, targetW, THUMB_HEIGHT, null)
+            g.drawImage(crop, 0, 0, targetW, targetH, null)
             g.dispose()
             ImageIcon(thumb)
         } catch (e: Exception) {
@@ -308,11 +311,16 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
     }
 
     /**
-     * 对齐 VSCode 版 openAnnotatedImage：打开原图 bbox 外扩 200px 的裁剪，
-     * 画红框 + 白色外圈标注后作为临时图片在 IDE 内打开。
+     * 对齐 VSCode 版 openAnnotatedImage：优先从 ok_templates 素材库 COCO
+     * 反查原图与原始 bbox（30s TTL），查不到回退画廊数据；
+     * bbox 外扩 200px 裁剪，画红框 + 白色外圈标注后在 IDE 内打开。
      */
     private fun openAnnotatedSource(template: FeatureTemplate) {
-        CompletableFuture.supplyAsync { renderAnnotatedImage(template) }.thenAccept { path ->
+        CompletableFuture.supplyAsync {
+            val (imagePath, bbox) = data.findOkTemplateCocoEntry(template.name)
+                ?: (template.imagePath to template.bbox)
+            renderAnnotatedImage(template.name, imagePath, bbox.toList())
+        }.thenAccept { path ->
             if (path == null) {
                 openRawSource(template)
                 return@thenAccept
@@ -333,12 +341,16 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
         OpenFileDescriptor(project, file).navigate(true)
     }
 
-    private fun renderAnnotatedImage(template: FeatureTemplate): java.nio.file.Path? {
+    private fun renderAnnotatedImage(
+        templateName: String,
+        imagePath: java.nio.file.Path,
+        bbox: List<Int>,
+    ): java.nio.file.Path? {
         return try {
-            val file = template.imagePath.toFile()
+            val file = imagePath.toFile()
             if (!file.exists()) return null
             val original = ImageIO.read(file) ?: return null
-            val (bx, by, bw, bh) = template.bbox.toList()
+            val (bx, by, bw, bh) = bbox
             val margin = ANNOTATION_MARGIN
             val x0 = (bx - margin).coerceAtLeast(0)
             val y0 = (by - margin).coerceAtLeast(0)
@@ -359,11 +371,11 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
             g.dispose()
 
             val outDir = Files.createTempDirectory("ok-script-toolkit")
-            val out = outDir.resolve("annotated_${template.name}.png")
+            val out = outDir.resolve("annotated_${templateName}.png")
             ImageIO.write(crop, "png", out.toFile())
             out
         } catch (e: Exception) {
-            LOG.warn("Failed to render annotated image for ${template.name}", e)
+            LOG.warn("Failed to render annotated image for $templateName", e)
             null
         }
     }

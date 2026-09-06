@@ -187,13 +187,22 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         }
 
         val annText = if (img.annotations.isNotEmpty()) " [${img.annotations.size} ann]" else ""
-        val infoText = "<html><center><b>${img.name}</b><br>${img.width}x${img.height}$annText</center></html>"
+        val sizeText = "${img.width}×${img.height}$annText"
+        // 长文件名中段截断，避免把卡片/网格撑宽；全名放 tooltip
+        val displayName = if (img.name.length > 22) {
+            img.name.take(12) + "…" + img.name.takeLast(9)
+        } else {
+            img.name
+        }
+        val infoText = "<html><div style=\"text-align:center;\"><b>$displayName</b><br>" +
+            "<span style=\"color:#8a8a8a\">$sizeText</span></div></html>"
         val infoLabel = JBLabel(infoText)
         infoLabel.horizontalAlignment = SwingConstants.CENTER
         infoLabel.font = infoLabel.font.deriveFont(10f)
 
         card.add(thumbLabel, BorderLayout.CENTER)
         card.add(infoLabel, BorderLayout.SOUTH)
+        card.toolTipText = img.name
 
         card.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
@@ -220,11 +229,13 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     private fun loadThumbIcon(file: File): ImageIcon? {
         return try {
             val bi = javax.imageio.ImageIO.read(file) ?: return null
-            val scale = THUMB_HEIGHT.toDouble() / bi.height
-            val w = (bi.width * scale).toInt().coerceIn(1, 120)
-            val thumb = java.awt.image.BufferedImage(w, THUMB_HEIGHT, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+            // 等比适配预览框（高 72、宽不超 120），绝不拉伸
+            val scale = minOf(THUMB_HEIGHT.toDouble() / bi.height, 120.0 / bi.width)
+            val w = (bi.width * scale).toInt().coerceAtLeast(1)
+            val h = (bi.height * scale).toInt().coerceAtLeast(1)
+            val thumb = java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_ARGB)
             val g = thumb.createGraphics()
-            g.drawImage(bi, 0, 0, w, THUMB_HEIGHT, null)
+            g.drawImage(bi, 0, 0, w, h, null)
             g.dispose()
             ImageIcon(thumb)
         } catch (_: Exception) {

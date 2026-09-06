@@ -70,6 +70,63 @@ class OkProjectDataService(private val project: Project) {
 
     fun features(): List<FeatureTemplate> = current().features.values.sortedBy { it.name }
     fun feature(name: String): FeatureTemplate? = current().features[name]
+
+    private data class OkTemplateCocoResult(
+        val imagePath: Path,
+        val bbox: IntArray,
+        val resolvedAt: Long,
+    )
+
+    // 与 VSCode 版 findOkTemplateCocoEntry 对齐：从 ok_templates 素材库 COCO
+    // 按模板名反查原图与原始 bbox，带 30 秒 TTL 缓存
+    private val okTemplateCocoCache = ConcurrentHashMap<String, OkTemplateCocoResult>()
+    private val okTemplateCocoMissCache = ConcurrentHashMap<String, Long>()
+
+    fun findOkTemplateCocoEntry(name: String): Pair<Path, IntArray>? {
+        okTemplateCocoCache[name]?.let { cached ->
+            if (System.currentTimeMillis() - cached.resolvedAt < 30_000L) {
+                return cached.imagePath to cached.bbox
+            }
+        }
+        okTemplateCocoMissCache[name]?.let { missAt ->
+            if (System.currentTimeMillis() - missAt < 30_000L) return null
+        }
+
+        val root = rootPath() ?: return null
+        val settings = settings()
+        val cocoFiles = listOf(
+            resolve(root, settings.okTemplatesDirectory()).resolve("coco_annotations.json"),
+            root.resolve("ok_tasks").resolve(resolve(root, settings.okTemplatesDirectory()).fileName.toString())
+                .resolve("coco_annotations.json"),
+        )
+        for (coco in cocoFiles) {
+            if (!coco.isRegularFile()) continue
+            val entry = runCatching {
+                val data = JSON.readTree(coco.toFile())
+                val categories = data.path("categories").associate { it.path("id").asInt() to it.path("name").asText() }
+                val images = data.path("images").associate { it.path("id").asInt() to it.path("file_name").asText() }
+                var found: Pair<Path, IntArray>? = null
+                for (ann in data.path("annotations")) {
+                    if (categories[ann.path("category_id").asInt()] != name) continue
+                    val imageFile = images[ann.path("image_id").asInt()] ?: continue
+                    val bboxNode = ann.path("bbox")
+                    if (!bboxNode.isArray || bboxNode.size() < 4) continue
+                    val bbox = IntArray(4) { bboxNode[it].asDouble().toInt() }
+                    if (bbox[2] <= 0 || bbox[3] <= 0) continue
+                    found = coco.parent.resolve(imageFile).normalize() to bbox
+                    break
+                }
+                found
+            }.getOrNull()
+            if (entry != null) {
+                okTemplateCocoCache[name] = OkTemplateCocoResult(entry.first, entry.second, System.currentTimeMillis())
+                okTemplateCocoMissCache.remove(name)
+                return entry
+            }
+        }
+        okTemplateCocoMissCache[name] = System.currentTimeMillis()
+        return null
+    }
     fun effectIds(): List<String> = current().effects.keys.sorted()
     fun effect(id: String): EffectEntry? = current().effects[id]
 
