@@ -1,5 +1,6 @@
 package com.alicejump.okscripttoolkit.editor
 
+import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.EffectEntry
 import com.alicejump.okscripttoolkit.core.FeatureTemplate
 import com.alicejump.okscripttoolkit.core.LangEntry
@@ -137,7 +138,7 @@ object OkEditorSupport {
             }
             EditorReference.Kind.OCR -> data.poEntry("ocr", reference.id)?.let {
                 formatLang(it, data, "match=re.compile(r\"${html(reference.id)}\")") +
-                    "<p><i>At runtime, fix_match_regex translates this pattern through ocr.po before compiling it.</i></p>"
+                    "<p><i>${OkScriptToolkitBundle.message("documentation.ocrRuntime")}</i></p>"
             }
             EditorReference.Kind.FEATURE -> data.feature(reference.id)?.let(::formatFeature)
             EditorReference.Kind.EFFECT -> data.effect(reference.id)?.let(::formatEffect)
