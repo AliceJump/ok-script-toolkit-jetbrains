@@ -532,30 +532,46 @@ class TemplateAssetDataService(private val project: Project) {
         } catch (_: Exception) { 0 }
     }
 
-    fun importImage(sourceFile: File, targetDir: File): TemplateImage? {
-        if (!sourceFile.exists()) return null
+    /**
+     * 下一个可用图片名：纯数字递增（对齐 VSCode 版 nextImageName），
+     * 以 COCO 已有图片的基名为占位判断依据，模板名即数字序号。
+     */
+    fun nextImageName(): String {
+        val existing = cocoData.images.map { it.fileName.substringBeforeLast('.') }.toSet()
+        var i = 1
+        while (i.toString() in existing) i++
+        return i.toString()
+    }
+
+    /**
+     * 批量导入图片到 ok_templates（对齐 VSCode 版 handleImport）：
+     * 仅支持裁剪/打包管线的 PNG/JPEG/BMP，重命名为数字序号并注册进 COCO，
+     * 全部完成后一次性 save；返回成功导入的数量（失败的文件跳过）。
+     */
+    fun importImages(sourceFiles: List<File>, targetDir: File): Int {
         targetDir.mkdirs()
 
-        val extensions = listOf("png", "jpg", "jpeg", "bmp")
-        val ext = sourceFile.extension.lowercase()
-        if (ext !in extensions) return null
+        val extensions = setOf("png", "jpg", "jpeg", "bmp")
+        var count = 0
+        for (sourceFile in sourceFiles) {
+            try {
+                if (!sourceFile.exists()) continue
+                val ext = sourceFile.extension.lowercase()
+                if (ext !in extensions) continue
 
-        // Auto-number to avoid conflicts
-        val baseName = sourceFile.nameWithoutExtension
-        var targetName = sourceFile.name
-        var counter = 1
-        while (File(targetDir, targetName).exists()) {
-            targetName = "${baseName}_${counter}.$ext"
-            counter++
+                val targetName = nextImageName() + "." + ext
+                val targetFile = File(targetDir, targetName)
+                if (targetFile.exists()) continue
+                Files.copy(sourceFile.toPath(), targetFile.toPath())
+
+                val (w, h) = readImageDimensions(targetFile)
+                addImageEntry(targetName, w, h)
+                count++
+            } catch (_: Exception) {
+                // 跳过失败的文件
+            }
         }
-
-        val targetFile = File(targetDir, targetName)
-        Files.copy(sourceFile.toPath(), targetFile.toPath())
-
-        val (w, h) = readImageDimensions(targetFile)
-        val imgEntry = addImageEntry(targetName, w, h)
-        save()
-
-        return TemplateImage(targetName.removeSuffix(".$ext"), targetFile, w, h, emptyList())
+        if (count > 0) save()
+        return count
     }
 }

@@ -314,18 +314,30 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     }
 
     private fun handleImport() {
-        val descriptor = FileChooserDescriptorFactory.createSingleFileDescriptor()
-            .withTitle("Import Template Image")
-        com.intellij.openapi.fileChooser.FileChooser.chooseFile(descriptor, project, null) { file ->
+        // 对齐 VSCode 版：多选导入 PNG/JPEG/BMP（裁剪/打包管线支持的格式）
+        val descriptor = com.intellij.openapi.fileChooser.FileChooserDescriptor(
+            /* chooseFiles = */ true,
+            /* chooseFolders = */ false,
+            /* chooseJars = */ false,
+            /* chooseJarsAsFiles = */ false,
+            /* chooseJarContents = */ false,
+            /* chooseMultiple = */ true,
+        )
+            .withTitle(OkScriptToolkitBundle.message("templateAsset.importTitle"))
+            .withFileFilter { file ->
+                (file.extension ?: "").lowercase() in setOf("png", "jpg", "jpeg", "bmp")
+            }
+        com.intellij.openapi.fileChooser.FileChooser.chooseFiles(descriptor, project, null) { files ->
             val settings = OkScriptToolkitSettings.getInstance(project)
-            val projectDir = project.basePath ?: return@chooseFile
+            val projectDir = project.basePath ?: return@chooseFiles
             val targetDir = File(projectDir, settings.okTemplatesDirectory())
-            val imported = data.importImage(File(file.path), targetDir)
-            if (imported != null) {
-                notify("Imported: ${imported.name}", NotificationType.INFORMATION)
+            val imported = data.importImages(files.map { File(it.path) }, targetDir)
+            if (imported > 0) {
+                notify(
+                    OkScriptToolkitBundle.message("templateAsset.imported", imported),
+                    NotificationType.INFORMATION,
+                )
                 loadData()
-            } else {
-                notify("Failed to import image", NotificationType.ERROR)
             }
         }
     }
