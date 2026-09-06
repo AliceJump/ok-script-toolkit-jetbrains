@@ -2,7 +2,7 @@
 .gradle/
 build/
 .intellijPlatform/
-
+next_error/
 # IntelliJ IDEA
 .idea/
 *.iml
