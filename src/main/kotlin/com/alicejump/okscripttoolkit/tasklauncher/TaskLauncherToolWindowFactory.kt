@@ -6,6 +6,7 @@ import com.alicejump.okscripttoolkit.toolbox.ToolboxService
 import com.alicejump.okscripttoolkit.ui.ToolbarAction
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.ui.JBColor
+import com.intellij.ui.dsl.listCellRenderer.listCellRenderer
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
@@ -86,7 +87,6 @@ class TaskLauncherPanel(private val project: Project) {
 
     private val paramPanel = JPanel(GridBagLayout())
     private val paramFields = mutableMapOf<String, JComponent>()
-    private val timeoutSpinner = JSpinner(SpinnerNumberModel(0, 0, 7 * 24 * 60 * 60, 1))
 
     private var tasks = listOf<TaskLauncherService.TaskInfo>()
     private var configModule = "src.config"
@@ -146,7 +146,7 @@ class TaskLauncherPanel(private val project: Project) {
         stopAction.isEnabled2 = state.running
         pauseAction.isEnabled2 = state.running && !state.paused
         resumeAction.isEnabled2 = state.running && state.paused
-        actionToolbar.updateActionsImmediately()
+        actionToolbar.updateActionsAsync()
         state.controlError?.let { statusLabel.text = "Task control error: $it" }
         if (!state.running) {
             state.finishMessage?.let { statusLabel.text = it }
@@ -426,28 +426,7 @@ class TaskLauncherPanel(private val project: Project) {
 
         var row = 0
 
-        val timeoutLabel = JBLabel("${OkScriptToolkitBundle.message("taskLauncher.timeout")}:")
-        paramPanel.add(timeoutLabel, GridBagConstraints().apply {
-            gridx = 0; gridy = row
-            anchor = GridBagConstraints.WEST
-            insets = Insets(4, 8, 4, 4)
-        })
-        val timeoutPanel = JPanel(BorderLayout())
-        timeoutPanel.add(timeoutSpinner, BorderLayout.CENTER)
-        timeoutPanel.add(JBLabel("s"), BorderLayout.EAST)
-        paramPanel.add(timeoutPanel, GridBagConstraints().apply {
-            gridx = 1; gridy = row
-            fill = GridBagConstraints.HORIZONTAL
-            weightx = 1.0
-            insets = Insets(4, 4, 4, 8)
-        })
-
         val taskConfig = taskService.getTaskConfig(taskKey)
-        timeoutSpinner.value = taskConfig.timeout ?: 0
-        timeoutSpinner.addChangeListener {
-            autoSaveTaskConfig(task)
-        }
-        row++
 
         if (schema != null && schema.fields.isNotEmpty()) {
             val separator = JSeparator()
@@ -514,10 +493,14 @@ class TaskLauncherPanel(private val project: Project) {
 
     /** 下拉/多选列表的显示渲染器：option_labels 按索引对应，无标签时显示原始值 */
     private fun optionLabelRenderer(options: List<*>, labels: List<*>): javax.swing.ListCellRenderer<Any?> =
-        com.intellij.ui.SimpleListCellRenderer.create<Any?>("") { value ->
-            val index = options.indexOf(value)
-            if (index >= 0) labels.getOrNull(index)?.toString() ?: value.toString()
-            else value.toString()
+        listCellRenderer<Any?> {
+            val value = value
+            if (value != null) {
+                val index = options.indexOf(value)
+                text(if (index >= 0) labels.getOrNull(index)?.toString() ?: value.toString() else value.toString())
+            } else {
+                text("")
+            }
         }
 
     // ── sub_configs 参数树（对齐 VSCode 版 configPanel.js）──
@@ -957,15 +940,17 @@ class TaskLauncherPanel(private val project: Project) {
                 leafField.isVisible = false
                 val groupCombo = JComboBox(options.keys.toTypedArray())
                 // 对齐 VSCode buildCascadeSelect：组名/叶子用本地化标签，保存原始值
-                groupCombo.renderer = com.intellij.ui.SimpleListCellRenderer.create("") { group ->
-                    (categoryLabels?.get(group) ?: group)?.toString() ?: ""
+                groupCombo.renderer = listCellRenderer<Any?> {
+                    val group = value?.toString()
+                    text((categoryLabels?.get(group) ?: group)?.toString() ?: "")
                 }
                 val leafCombo = JComboBox<String>()
-                leafCombo.renderer = com.intellij.ui.SimpleListCellRenderer.create("") { leaf ->
+                leafCombo.renderer = listCellRenderer<Any?> {
+                    val leaf = value?.toString()
                     val values = options[groupCombo.selectedItem] as? List<*>
                     val idx = values?.indexOfFirst { it?.toString() == leaf } ?: -1
                     val labelsForGroup = (groupCombo.selectedItem as? String)?.let { leafLabels?.get(it) } as? List<*>
-                    labelsForGroup?.getOrNull(idx)?.toString() ?: leaf
+                    text(labelsForGroup?.getOrNull(idx)?.toString() ?: leaf ?: "")
                 }
                 fun fillLeaves(group: Any?) {
                     leafCombo.removeAllItems()
@@ -1151,9 +1136,7 @@ class TaskLauncherPanel(private val project: Project) {
                 }
             }
         }
-        val timeout = (timeoutSpinner.value as? Number)?.toInt()?.takeIf { it > 0 }
         return TaskLauncherService.TaskConfig(
-            timeout = timeout,
             params = params.ifEmpty { null },
         )
     }
@@ -1254,7 +1237,6 @@ class TaskLauncherPanel(private val project: Project) {
             command = fullCommand,
             projectDir = projectDir,
             env = env,
-            timeoutSeconds = taskConfig.timeout ?: 0,
         )
     }
 

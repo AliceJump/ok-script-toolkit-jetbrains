@@ -126,7 +126,6 @@ class TaskRunnerService(private val project: Project) : Disposable {
         command: List<String>,
         projectDir: String,
         env: Map<String, String>,
-        timeoutSeconds: Int,
     ) {
         if (isRunning()) return
         stopping.set(false)
@@ -175,17 +174,6 @@ class TaskRunnerService(private val project: Project) : Disposable {
                     onTaskProcessExit(exitCode)
                 }.apply { isDaemon = true; start() }
 
-                if (timeoutSeconds > 0) {
-                    Thread {
-                        try {
-                            Thread.sleep(timeoutSeconds * 1000L)
-                            if (process?.isAlive == true) {
-                                recordAndEmit(OkScriptToolkitBundle.message("taskLauncher.taskTimeout"))
-                                stop()
-                            }
-                        } catch (_: InterruptedException) { }
-                    }.apply { isDaemon = true; start() }
-                }
             } catch (e: Exception) {
                 LOG.error("Failed to run task", e)
                 recordAndEmit(OkScriptToolkitBundle.message("taskLauncher.launchFailed", e.message ?: ""))

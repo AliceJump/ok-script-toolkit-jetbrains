@@ -84,7 +84,6 @@ class TaskLauncherService(private val project: Project) {
     data class TaskConfig(
         val extraArgs: String? = null,
         val env: Map<String, String>? = null,
-        val timeout: Int? = null,
         val params: Map<String, Any>? = null,
     )
 
@@ -300,7 +299,6 @@ class TaskLauncherService(private val project: Project) {
                         }
                         env
                     },
-                    timeout = taskNode.get("timeout")?.takeIf { it.isInt }?.asInt(),
                     params = taskNode.get("params")?.takeIf { it.isObject }?.let {
                         objectMapper.convertValue(it, Map::class.java) as? Map<String, Any>
                     },
