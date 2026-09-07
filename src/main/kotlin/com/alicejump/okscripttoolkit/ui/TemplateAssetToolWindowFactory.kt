@@ -81,6 +81,11 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             OkDataChangeService.TOPIC,
             com.alicejump.okscripttoolkit.core.OkDataChangeListener { loadData() },
         )
+
+        // 索引构建完成后再刷一次，确保缩略图正常加载
+        com.intellij.openapi.project.DumbService.getInstance(project).runWhenSmart {
+            loadData()
+        }
     }
 
     private fun initUI() {

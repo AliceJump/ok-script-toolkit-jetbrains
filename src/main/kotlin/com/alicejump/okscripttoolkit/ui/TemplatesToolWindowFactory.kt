@@ -388,22 +388,43 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
             val x1 = (bx + bw + margin).coerceAtMost(original.width)
             val y1 = (by + bh + margin).coerceAtMost(original.height)
             if (x1 - x0 <= 0 || y1 - y0 <= 0) return null
-            val crop = original.getSubimage(x0, y0, x1 - x0, y1 - y0)
+            val cropW = x1 - x0
+            val cropH = y1 - y0
+            val crop = original.getSubimage(x0, y0, cropW, cropH)
 
-            val stroke = maxOf(2, minOf(bw, bh) / 100).coerceAtMost(12)
-            val g = crop.createGraphics()
-            // 白色外圈 halo + 红色边框，与 VSCode 版一致
-            g.stroke = BasicStroke((stroke * 2).toFloat())
-            g.color = Color.WHITE
-            g.drawRect(bx - x0 - stroke, by - y0 - stroke, bw + stroke * 2, bh + stroke * 2)
-            g.stroke = BasicStroke(stroke.toFloat())
-            g.color = Color(255, 40, 40)
-            g.drawRect(bx - x0, by - y0, bw, bh)
+            // 归一化：缩放到目标分辨率内，保证不同原图输出视觉效果一致
+            val TARGET = 400
+            val scale = minOf(1.0, TARGET.toDouble() / maxOf(cropW, cropH))
+            val outW = (cropW * scale).toInt()
+            val outH = (cropH * scale).toInt()
+            val scaled = java.awt.image.BufferedImage(outW, outH, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+            val g = scaled.createGraphics()
+            g.drawImage(crop, 0, 0, outW, outH, null)
+
+            // 在缩放后的图上画标注框
+            val stroke = maxOf(2, (2 * scale).toInt())
+            // 白色外圈 halo + 红色边框
+            g.stroke = java.awt.BasicStroke((stroke * 2).toFloat())
+            g.color = java.awt.Color.WHITE
+            g.drawRect(
+                ((bx - x0) * scale).toInt() - stroke,
+                ((by - y0) * scale).toInt() - stroke,
+                (bw * scale).toInt() + stroke * 2,
+                (bh * scale).toInt() + stroke * 2,
+            )
+            g.stroke = java.awt.BasicStroke(stroke.toFloat())
+            g.color = java.awt.Color(255, 40, 40)
+            g.drawRect(
+                ((bx - x0) * scale).toInt(),
+                ((by - y0) * scale).toInt(),
+                (bw * scale).toInt(),
+                (bh * scale).toInt(),
+            )
             g.dispose()
 
             val outDir = Files.createTempDirectory("ok-script-toolkit")
             val out = outDir.resolve("annotated_${templateName}.png")
-            ImageIO.write(crop, "png", out.toFile())
+            ImageIO.write(scaled, "png", out.toFile())
             out
         } catch (e: Exception) {
             LOG.warn("Failed to render annotated image for $templateName", e)
