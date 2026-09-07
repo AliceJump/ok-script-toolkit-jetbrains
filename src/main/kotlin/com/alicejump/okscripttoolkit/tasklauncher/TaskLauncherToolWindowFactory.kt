@@ -439,7 +439,7 @@ class TaskLauncherPanel(private val project: Project) {
 
             // 树形渲染：boolean 条件显隐 + sub_configs 折叠组 + configGroups/groupSelector
             // （对齐 VSCode 版 configPanel.js renderSchema）
-            val renderer = SchemaTreeRenderer(task, schema)
+            val renderer = SchemaTreeRenderer(task, schema, initialRow = row)
             renderer.render(paramPanel)
             visibilityRefresher = {
                 renderer.syncDuplicateRows()
@@ -527,6 +527,7 @@ class TaskLauncherPanel(private val project: Project) {
     private inner class SchemaTreeRenderer(
         private val task: TaskLauncherService.TaskInfo,
         private val schema: TaskLauncherService.TaskSchema,
+        private val initialRow: Int = 0,
     ) {
         private val taskKey = "${task.module}::${task.className}"
         private val fieldsByKey = schema.fields.associateBy { it.key }
@@ -550,6 +551,9 @@ class TaskLauncherPanel(private val project: Project) {
         }
 
         fun render(host: JPanel) {
+            if (initialRow > 0) {
+                rowCounter[host] = initialRow
+            }
             for (field in schema.fields) {
                 subConfigRules(field)?.booleanRules?.let { rules ->
                     inlineRules[field.key] = rules
