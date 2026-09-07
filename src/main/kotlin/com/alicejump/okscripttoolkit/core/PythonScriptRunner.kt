@@ -181,10 +181,31 @@ object PythonScriptLocator {
                 input.close()
             }
             LOG.info("Extracted bundled Python scripts to $extractDir")
+            cleanupOldScriptDirs(extractDir)
             extractDir
         } catch (e: Exception) {
             LOG.warn("Failed to extract bundled Python scripts", e)
             null
+        }
+    }
+
+    /** 清理旧版本的脚本目录，只保留当前使用的目录 */
+    private fun cleanupOldScriptDirs(currentDir: java.nio.file.Path) {
+        try {
+            val tmpDir = java.io.File(System.getProperty("java.io.tmpdir"))
+            val prefix = "ok-script-toolkit-scripts-"
+            tmpDir.listFiles()?.forEach { dir ->
+                if (dir.isDirectory && dir.name.startsWith(prefix) && dir.toPath() != currentDir) {
+                    try {
+                        dir.deleteRecursively()
+                        LOG.info("Cleaned up old script directory: ${dir.name}")
+                    } catch (e: Exception) {
+                        LOG.warn("Failed to delete old script directory: ${dir.name}", e)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            LOG.warn("Failed to cleanup old script directories", e)
         }
     }
 }
