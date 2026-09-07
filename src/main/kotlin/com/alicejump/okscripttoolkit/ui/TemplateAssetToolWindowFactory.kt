@@ -67,6 +67,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     private val thumbInflight = java.util.concurrent.ConcurrentHashMap<String, CompletableFuture<ImageIcon?>>()
 
     companion object {
+        private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance(TemplateAssetPanel::class.java)
         private const val THUMB_HEIGHT = ThumbGridPolicy.THUMB_HEIGHT
     }
 
@@ -365,7 +366,10 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         val pythonPath = com.alicejump.okscripttoolkit.core.ScreenshotCapture.detectPythonPath(projectDir, project)
 
         statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotProbing")
-        CompletableFuture.supplyAsync { capture.probeWindowConfig(projectDir, pythonPath) }
+        CompletableFuture.supplyAsync {
+            LOG.info("Screenshot: probing window config (projectDir=$projectDir, python=$pythonPath)")
+            capture.probeWindowConfig(projectDir, pythonPath)
+        }
             .thenAccept { windowConfig ->
                 javax.swing.SwingUtilities.invokeLater {
                     var titleRegex: String? = null
@@ -373,8 +377,10 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
                     if (windowConfig != null &&
                         (!windowConfig.exe.isNullOrEmpty() || !windowConfig.title.isNullOrBlank() || !windowConfig.hwndClass.isNullOrBlank())
                     ) {
+                        LOG.info("Screenshot: probe succeeded: ${windowConfig.describe()}")
                         statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotDetected", windowConfig.describe())
                     } else {
+                        LOG.info("Screenshot: probe returned no config, asking user for title regex")
                         config = null
                         val input = com.intellij.openapi.ui.Messages.showInputDialog(
                             project,
@@ -385,12 +391,14 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
                             null,
                         ) ?: return@invokeLater
                         titleRegex = input.trim()
+                        LOG.info("Screenshot: user entered titleRegex=$titleRegex")
                         statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotCapturing")
                     }
                     doCapture(capture, projectDir, pythonPath, config, titleRegex)
                 }
             }
             .exceptionally { throwable ->
+                LOG.warn("Screenshot: probe failed", throwable)
                 SwingUtilities.invokeLater {
                     statusLabel.text = "Error: ${throwable.message}"
                 }
@@ -408,7 +416,10 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         val templatesDirName = OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory()
         CompletableFuture.supplyAsync {
             val projectRoot = projectDir.ifBlank { project.basePath ?: "" }
-            if (projectRoot.isBlank()) return@supplyAsync null to "no project dir"
+            if (projectRoot.isBlank()) {
+                LOG.warn("Screenshot: no project dir available")
+                return@supplyAsync null to "no project dir"
+            }
             val outputDir = java.nio.file.Paths.get(
                 if (projectRoot.isNotBlank() &&
                     java.nio.file.Files.exists(java.nio.file.Paths.get(projectRoot, templatesDirName))
@@ -420,8 +431,14 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
                 java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"),
             )
             val outputPath = outputDir.resolve("screenshot_$ts.png")
+            LOG.info("Screenshot: output=$outputPath, windowConfig=$windowConfig, titleRegex=$titleRegex")
             val error = StringBuilder()
             val result = capture.capture(projectRoot, pythonPath, outputPath, windowConfig, titleRegex, error)
+            if (result == null) {
+                LOG.warn("Screenshot: capture failed: ${error}")
+            } else {
+                LOG.info("Screenshot: capture succeeded: $result")
+            }
             result to error.toString()
         }.thenAccept { (result, err) ->
             SwingUtilities.invokeLater {
