@@ -441,11 +441,19 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
                         OkScriptToolkitSettings.getInstance(project).okScriptProjectPath().ifBlank { project.basePath ?: "" },
                         OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory(),
                     )
-                    val cocoImage = data.getImageEntryForFile(result.toFile().name)
-                        ?: data.addImageEntry(result.toFile().name, 0, 0)
-                    val (w, h) = data.readImageDimensions(result.toFile())
-                    if (w > 0 && cocoImage.width == 0) {
-                        data.removeImageEntry(cocoImage.id)
+                    val existingImage = data.getImageEntryForFile(result.toFile().name)
+                    if (existingImage != null) {
+                        // Image already in COCO, update dimensions if needed
+                        if (existingImage.width == 0 || existingImage.height == 0) {
+                            val (w, h) = data.readImageHeaderSize(result.toFile()) ?: (0 to 0)
+                            if (w > 0 && h > 0) {
+                                data.removeImageEntry(existingImage.id)
+                                data.addImageEntry(result.toFile().name, w, h)
+                            }
+                        }
+                    } else {
+                        // New image: read dimensions from file BEFORE adding to COCO
+                        val (w, h) = data.readImageHeaderSize(result.toFile()) ?: (0 to 0)
                         data.addImageEntry(result.toFile().name, w, h)
                     }
                     data.save()
