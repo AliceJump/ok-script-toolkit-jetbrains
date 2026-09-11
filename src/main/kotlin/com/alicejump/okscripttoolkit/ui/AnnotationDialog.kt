@@ -81,12 +81,15 @@ class AnnotationDialog(
         // 语义色：红=普通框、蓝=选中、橙=悬停、绿=手柄/预览；深浅主题分别取对比度合适的值
         private val BOX_COLOR = JBColor(0xE53935, 0xFF5252)
         private val SELECTED_COLOR = JBColor(0x0078D4, 0x4A9EFF)
-        private val HOVER_COLOR = JBColor(0xE08700, 0xFFA02E)
+        private         val HOVER_COLOR = JBColor(0xE08700, 0xFFA02E)
         private val HANDLE_COLOR = JBColor(0x009900, 0x00C800)
+        // 坐标复制模式的预览框（与画框模式的绿色区分）
+        private val COORD_COLOR = JBColor(0xE8A33D, 0xFFB454)
     }
 
     private val canvas = AnnotationCanvas()
     private val modeDrawToggle = JToggleButton(OkScriptToolkitBundle.message("annotation.mode.draw"))
+    private val modeCoordToggle = JToggleButton(OkScriptToolkitBundle.message("annotation.mode.coords"))
     private val modeDeleteToggle = JToggleButton(OkScriptToolkitBundle.message("annotation.mode.delete"))
     private val undoButton = JButton(OkScriptToolkitBundle.message("annotation.undo"))
     private val redoButton = JButton(OkScriptToolkitBundle.message("annotation.redo"))
@@ -127,12 +130,16 @@ class AnnotationDialog(
     override fun createCenterPanel(): JComponent {
         val toolbar = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
         modeDrawToggle.toolTipText = OkScriptToolkitBundle.message("annotation.mode.drawTooltip")
+        modeCoordToggle.toolTipText = OkScriptToolkitBundle.message("annotation.mode.coordsTooltip")
         modeDeleteToggle.toolTipText = OkScriptToolkitBundle.message("annotation.mode.deleteTooltip")
         modeDrawToggle.isFocusable = false
+        modeCoordToggle.isFocusable = false
         modeDeleteToggle.isFocusable = false
         modeDrawToggle.addActionListener { canvas.setMode(if (modeDrawToggle.isSelected) CanvasMode.DRAW else CanvasMode.NONE) }
+        modeCoordToggle.addActionListener { canvas.setMode(if (modeCoordToggle.isSelected) CanvasMode.COPYCOORD else CanvasMode.NONE) }
         modeDeleteToggle.addActionListener { canvas.setMode(if (modeDeleteToggle.isSelected) CanvasMode.DELETE else CanvasMode.NONE) }
         toolbar.add(modeDrawToggle)
+        toolbar.add(modeCoordToggle)
         toolbar.add(modeDeleteToggle)
         undoButton.isFocusable = false
         redoButton.isFocusable = false
@@ -294,7 +301,7 @@ class AnnotationDialog(
 
     private data class BoxItem(val categoryName: String, val rect: Rect)
 
-    private enum class CanvasMode { NONE, DRAW, DELETE }
+    private enum class CanvasMode { NONE, DRAW, DELETE, COPYCOORD }
 
     // ── 画布 ──────────────────────────────────────────────────────────
 
@@ -375,13 +382,16 @@ class AnnotationDialog(
             drawDragging = false
             if (!syncToggleOnly) {
                 modeDrawToggle.isSelected = m == CanvasMode.DRAW
+                modeCoordToggle.isSelected = m == CanvasMode.COPYCOORD
                 modeDeleteToggle.isSelected = m == CanvasMode.DELETE
             } else {
                 modeDrawToggle.isSelected = false
+                modeCoordToggle.isSelected = false
                 modeDeleteToggle.isSelected = false
             }
             cursor = when {
                 m == CanvasMode.DRAW -> Cursor.getPredefinedCursor(Cursor.CROSSHAIR_CURSOR)
+                m == CanvasMode.COPYCOORD -> Cursor.getPredefinedCursor(Cursor.CROSSHAIR_CURSOR)
                 m == CanvasMode.DELETE -> Cursor.getDefaultCursor()
                 isZoomed() -> Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
                 else -> Cursor.getPredefinedCursor(Cursor.CROSSHAIR_CURSOR)
@@ -450,6 +460,9 @@ class AnnotationDialog(
             bind(KeyStroke.getKeyStroke(KeyEvent.VK_D, 0), "mode-delete") {
                 setMode(if (mode == CanvasMode.DELETE) CanvasMode.NONE else CanvasMode.DELETE)
             }
+            bind(KeyStroke.getKeyStroke(KeyEvent.VK_C, 0), "mode-coords") {
+                setMode(if (mode == CanvasMode.COPYCOORD) CanvasMode.NONE else CanvasMode.COPYCOORD)
+            }
             bind(KeyStroke.getKeyStroke(KeyEvent.VK_Z, InputEvent.CTRL_DOWN_MASK), "undo") { undo() }
             bind(KeyStroke.getKeyStroke(KeyEvent.VK_Y, InputEvent.CTRL_DOWN_MASK), "redo") { redo() }
             bind(
@@ -488,6 +501,16 @@ class AnnotationDialog(
                             drawDragging = true
                         } else {
                             finishDraw(p)
+                        }
+                        return
+                    }
+                    if (mode == CanvasMode.COPYCOORD) {
+                        // 与画框同样的起手（拖拽 / 两次点击），结束时不弹框，直接复制坐标
+                        if (drawStart == null) {
+                            drawStart = p
+                            drawDragging = true
+                        } else {
+                            finishCoord(p)
                         }
                         return
                     }
@@ -539,6 +562,16 @@ class AnnotationDialog(
                         drawDragging = false
                         return
                     }
+                    if (mode == CanvasMode.COPYCOORD && drawDragging && drawStart != null) {
+                        val start = drawStart!!
+                        val distSq = (e.point.x - start.x).toDouble() * (e.point.x - start.x) +
+                            (e.point.y - start.y).toDouble() * (e.point.y - start.y)
+                        if (distSq > EDGE_MARGIN * EDGE_MARGIN) {
+                            finishCoord(e.point)
+                        }
+                        drawDragging = false
+                        return
+                    }
                     drawDragging = false
                     if (dragging && selected >= 0) {
                         val moved = dragOrigRect != null && boxes[selected].rect != dragOrigRect
@@ -585,6 +618,12 @@ class AnnotationDialog(
                         drawPreview = p
                         repaint()
                         updateColorAt(p)
+                        return
+                    }
+                    if (mode == CanvasMode.COPYCOORD && drawStart != null) {
+                        drawPreview = p
+                        updateCoordPreview(p)
+                        repaint()
                         return
                     }
                     if (resizing && selected >= 0 && resizeStartPos != null) {
@@ -723,6 +762,41 @@ class AnnotationDialog(
                     }
                     setMode(CanvasMode.NONE)
                 }
+            }
+        }
+
+        /**
+         * 坐标复制模式：把框选结果换算成归一化 x,y,tox,toy（左上 / 右下，0..1）
+         * 写入系统剪贴板，并在信息条显示。不产生标注框、不改动 COCO。
+         */
+        private fun finishCoord(p: Point) {
+            val img = source ?: return
+            val start = drawStart ?: return
+            drawStart = null
+            drawPreview = null
+            val a = toImageDouble(start)
+            val b = toImageDouble(p)
+            val text = NormalizedBox.format(a.first, a.second, b.first, b.second, img.width, img.height)
+            if (text.isEmpty()) {
+                setMode(CanvasMode.NONE)
+                repaint()
+                return
+            }
+            CopyPasteManager.getInstance().setContents(StringSelection(text))
+            colorLabel.text = "${OkScriptToolkitBundle.message("annotation.coordLabel")} $text"
+            setMode(CanvasMode.NONE)
+            repaint()
+        }
+
+        /** 拖拽过程中在信息条实时预览即将复制的坐标 */
+        private fun updateCoordPreview(p: Point) {
+            val img = source ?: return
+            val start = drawStart ?: return
+            val a = toImageDouble(start)
+            val b = toImageDouble(p)
+            val text = NormalizedBox.format(a.first, a.second, b.first, b.second, img.width, img.height)
+            if (text.isNotEmpty()) {
+                colorLabel.text = "${OkScriptToolkitBundle.message("annotation.coordLabel")} $text"
             }
         }
 
@@ -981,17 +1055,17 @@ class AnnotationDialog(
                 g2.drawString(label, labelX, labelY)
             }
 
-            // 画框预览（虚线绿框，图像坐标归一化后按当前缩放绘制）
+            // 画框 / 坐标复制 预览（虚线框，图像坐标归一化后按当前缩放绘制）
             val start = drawStart
             val preview = drawPreview
-            if (mode == CanvasMode.DRAW && start != null && preview != null) {
+            if ((mode == CanvasMode.DRAW || mode == CanvasMode.COPYCOORD) && start != null && preview != null) {
                 val a = toImage(start)
                 val b = toImage(preview)
                 val x = Math.min(a.x, b.x)
                 val y = Math.min(a.y, b.y)
                 val w = Math.abs(b.x - a.x)
                 val h = Math.abs(b.y - a.y)
-                g2.color = HANDLE_COLOR
+                g2.color = if (mode == CanvasMode.COPYCOORD) COORD_COLOR else HANDLE_COLOR
                 g2.stroke = BasicStroke(1.5f, 0, 0, 8f, floatArrayOf(6f, 6f), 0f)
                 g2.drawRect(
                     (offsetX + x * scale).toInt(),
