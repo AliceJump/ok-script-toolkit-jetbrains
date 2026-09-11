@@ -17,6 +17,14 @@ JetBrains Platform/PyCharm port of the VS Code extension in the repository root.
 - Template gallery tool window with bbox-cropped thumbnails, insert/copy,
   and red-box annotated source image preview.
 - Template asset manager tool window (import/delete images with COCO sync).
+- Temp shots tool window: a scratch area for at most 10 recent screenshots.
+  Paste a clipboard image, capture the game window, or drop/paste image files.
+  The stage shows the selected shot or cycles all of them every 0.1s; box-select
+  copies normalized `x,y,tox,toy` coordinates to the clipboard, and thumbnails
+  can be dragged onto the asset manager (or sent from the context menu) to import
+  into `ok_templates`.
+- The annotation editor gained a coords mode (`C`) that box-selects and copies
+  normalized `x,y,tox,toy` without creating an annotation box.
 - Character manager tool window with diagnostics and double-click
   jump-to-source for issues and effects.
 - Task launcher tool window: schema-driven parameter forms (grouped by

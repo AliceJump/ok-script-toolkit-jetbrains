@@ -56,6 +56,11 @@
             icon="/icons/assets.svg"
             factoryClass="com.alicejump.okscripttoolkit.ui.TemplateAssetToolWindowFactory"/>
         <toolWindow
+            id="ok-script Temp Shots"
+            anchor="right"
+            icon="/icons/tempShots.svg"
+            factoryClass="com.alicejump.okscripttoolkit.ui.TempScreenshotToolWindowFactory"/>
+        <toolWindow
             id="ok-script Characters"
             anchor="right"
             icon="/icons/toolbox.svg"
@@ -101,6 +106,13 @@
             class="com.alicejump.okscripttoolkit.ui.ShowCharacterManagerAction"
             text="Show ok-script Characters"
             description="Open the ok-script character manager">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+        <action
+            id="com.alicejump.okscripttoolkit.ShowTempShots"
+            class="com.alicejump.okscripttoolkit.ui.ShowTempShotsAction"
+            text="Show ok-script Temp Shots"
+            description="Open the ok-script temp screenshot viewer">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
     </actions>
