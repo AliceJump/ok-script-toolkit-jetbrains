@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.Messages
+import com.intellij.util.ui.UIUtil
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
@@ -19,6 +21,9 @@ import java.util.concurrent.TimeUnit
 class ScreenshotCapture(private val project: Project) {
 
     companion object {
+        /** [captureInteractive] 的用户取消标记 */
+        const val CANCELLED = "cancelled"
+
         private val LOG = Logger.getInstance(ScreenshotCapture::class.java)
         private val JSON = ObjectMapper()
 
@@ -533,12 +538,61 @@ class ScreenshotCapture(private val project: Project) {
         }
     }
 
+    /**
+     * 一次完整的交互式采集：后台探测窗口配置 → 无可用配置时提示手输标题正则 → 截图落盘。
+     *
+     * 供素材面板与临时截图面板共用（对齐 VSCode 版 screenshotCapture.ts 的抽取）。
+     * **可在后台线程调用**：需要弹输入框时内部会切到 EDT。
+     *
+     * @param onProbed 探测到可用窗口配置时回调（已切到 EDT），供调用方更新状态栏
+     * @return 成功返回 null；用户取消返回 [CANCELLED]；失败返回错误描述
+     */
+    fun captureInteractive(outputPath: Path, onProbed: ((WindowConfig) -> Unit)? = null): String? {
+        val projectDir = detectProjectDir(project)
+        val pythonPath = detectPythonPath(projectDir, project)
+        val probed = probeWindowConfig(projectDir, pythonPath)
+        val usable = probed != null &&
+            (!probed.exe.isNullOrEmpty() || !probed.title.isNullOrBlank() || !probed.hwndClass.isNullOrBlank())
+
+        var config: WindowConfig? = null
+        var titleRegex: String? = null
+        if (usable) {
+            config = probed
+            onProbed?.let { callback -> UIUtil.invokeLaterIfNeeded { callback(probed!!) } }
+        } else {
+            val input = UIUtil.invokeAndWaitIfNeeded<String?> {
+                Messages.showInputDialog(
+                    project,
+                    OkScriptToolkitBundle0.message("templateAsset.screenshotPrompt"),
+                    OkScriptToolkitBundle0.message("templateAsset.screenshot"),
+                    Messages.getInformationIcon(),
+                    "",
+                    null,
+                )
+            }
+            if (input == null) return CANCELLED
+            titleRegex = input.trim()
+        }
+
+        val projectRoot = projectDir.ifBlank { project.basePath ?: "" }
+        if (projectRoot.isBlank()) return OkScriptToolkitBundle0.message("taskLauncher.noProject")
+
+        val error = StringBuilder()
+        val result = capture(projectRoot, pythonPath, outputPath, config, titleRegex, error)
+        return if (result == null) {
+            error.toString().ifBlank { OkScriptToolkitBundle0.message("templateAsset.screenshotFailed", "") }
+        } else {
+            null
+        }
+    }
+
 }
 
 /** 避免与 ui 包互相依赖的最小 bundle 引用 */
 private object OkScriptToolkitBundle0 {
-    fun message(key: String): String =
-        com.alicejump.okscripttoolkit.OkScriptToolkitBundle.message(key)
+    /** 单参数与带占位符两种调用形态都支持（MessageFormat 参数） */
+    fun message(key: String, vararg params: Any): String =
+        com.alicejump.okscripttoolkit.OkScriptToolkitBundle.message(key, *params)
 }
 
 /** 窗口匹配配置（probe_window_config.py 的解析结果） */

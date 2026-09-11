@@ -2,6 +2,7 @@ package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
+import com.alicejump.okscripttoolkit.core.ScreenshotCapture
 import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
 import com.alicejump.okscripttoolkit.core.TemplateImage
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
@@ -26,6 +27,11 @@ import java.awt.*
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.Paths
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import javax.swing.*
@@ -69,11 +75,13 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     companion object {
         private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance(TemplateAssetPanel::class.java)
         private const val THUMB_HEIGHT = ThumbGridPolicy.THUMB_HEIGHT
+        private val DROP_HINT_COLOR = JBColor(0x0078D4, 0x4A9EFF)
     }
 
     init {
         mainPanel = JPanel(BorderLayout())
         initUI()
+        installDropTarget()
         loadData()
 
         // 数据文件变化自动刷新（对齐 VSCode 版 watcher 派发）
@@ -364,129 +372,142 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     /**
      * 截图采集（对齐 VSCode 版 handleScreenshot）：自动探测窗口配置，
      * 失败回退手输标题正则；截图落盘 ok_templates 并自动注册进 COCO。
+     *
+     * 探测 / 回退输入 / 采集这一整段由 [ScreenshotCapture.captureInteractive]
+     * 统一提供，与临时截图工具窗口共用同一套逻辑。
      */
     private fun handleScreenshot() {
-        val capture = com.alicejump.okscripttoolkit.core.ScreenshotCapture(project)
-        val projectDir = com.alicejump.okscripttoolkit.core.ScreenshotCapture.detectProjectDir(project)
-        val pythonPath = com.alicejump.okscripttoolkit.core.ScreenshotCapture.detectPythonPath(projectDir, project)
+        val templatesDirName = OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory()
+        val projectDir = ScreenshotCapture.detectProjectDir(project)
 
         statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotProbing")
-        CompletableFuture.supplyAsync {
-            LOG.info("Screenshot: probing window config (projectDir=$projectDir, python=$pythonPath)")
-            capture.probeWindowConfig(projectDir, pythonPath)
-        }
-            .thenAccept { windowConfig ->
-                javax.swing.SwingUtilities.invokeLater {
-                    var titleRegex: String? = null
-                    var config: com.alicejump.okscripttoolkit.core.WindowConfig? = windowConfig
-                    if (windowConfig != null &&
-                        (!windowConfig.exe.isNullOrEmpty() || !windowConfig.title.isNullOrBlank() || !windowConfig.hwndClass.isNullOrBlank())
-                    ) {
-                        LOG.info("Screenshot: probe succeeded: ${windowConfig.describe()}")
-                        statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotDetected", windowConfig.describe())
-                    } else {
-                        LOG.info("Screenshot: probe returned no config, asking user for title regex")
-                        config = null
-                        val input = com.intellij.openapi.ui.Messages.showInputDialog(
-                            project,
-                            OkScriptToolkitBundle.message("templateAsset.screenshotPrompt"),
-                            OkScriptToolkitBundle.message("templateAsset.screenshot"),
-                            com.intellij.openapi.ui.Messages.getInformationIcon(),
-                            "",
-                            null,
-                        ) ?: return@invokeLater
-                        titleRegex = input.trim()
-                        LOG.info("Screenshot: user entered titleRegex=$titleRegex")
-                        statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotCapturing")
+        CompletableFuture.supplyAsync<Pair<Path?, String?>> {
+            val projectRoot = projectDir.ifBlank { project.basePath.orEmpty() }
+                .ifBlank { return@supplyAsync null to "no project dir" }
+            val base = Paths.get(projectRoot)
+            val outputDir = if (Files.isDirectory(base.resolve(templatesDirName))) {
+                base.resolve(templatesDirName)
+            } else {
+                Paths.get(project.basePath ?: projectRoot).resolve(templatesDirName)
+            }
+            Files.createDirectories(outputDir)
+            val ts = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
+            val outputPath = outputDir.resolve("screenshot_$ts.png")
+            val error = ScreenshotCapture(project).captureInteractive(outputPath) { config ->
+                statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotDetected", config.describe())
+            }
+            outputPath to error
+        }.thenAccept { (outputPath, error) ->
+            SwingUtilities.invokeLater {
+                when {
+                    outputPath == null -> {
+                        statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotFailed", error ?: "")
+                        notify(statusLabel.text, NotificationType.ERROR)
                     }
-                    doCapture(capture, projectDir, pythonPath, config, titleRegex)
+                    error == null -> registerCapturedImage(outputPath)
+                    error == ScreenshotCapture.CANCELLED -> statusLabel.text = " "
+                    else -> {
+                        statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotFailed", error)
+                        notify(statusLabel.text, NotificationType.ERROR)
+                    }
                 }
             }
-            .exceptionally { throwable ->
-                LOG.warn("Screenshot: probe failed", throwable)
-                SwingUtilities.invokeLater {
-                    statusLabel.text = "Error: ${throwable.message}"
-                }
-                null
-            }
+        }
     }
 
-    private fun doCapture(
-        capture: com.alicejump.okscripttoolkit.core.ScreenshotCapture,
-        projectDir: String,
-        pythonPath: String,
-        windowConfig: com.alicejump.okscripttoolkit.core.WindowConfig?,
-        titleRegex: String?,
-    ) {
-        val templatesDirName = OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory()
-        CompletableFuture.supplyAsync {
-            val projectRoot = projectDir.ifBlank { project.basePath ?: "" }
-            if (projectRoot.isBlank()) {
-                LOG.warn("Screenshot: no project dir available")
-                return@supplyAsync null to "no project dir"
-            }
-            val outputDir = java.nio.file.Paths.get(
-                if (projectRoot.isNotBlank() &&
-                    java.nio.file.Files.exists(java.nio.file.Paths.get(projectRoot, templatesDirName))
-                ) projectRoot else (project.basePath ?: projectRoot),
-                templatesDirName,
-            )
-            java.nio.file.Files.createDirectories(outputDir)
-            val ts = java.time.LocalDateTime.now().format(
-                java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"),
-            )
-            val outputPath = outputDir.resolve("screenshot_$ts.png")
-            LOG.info("Screenshot: output=$outputPath, windowConfig=$windowConfig, titleRegex=$titleRegex")
-            val error = StringBuilder()
-            val result = capture.capture(projectRoot, pythonPath, outputPath, windowConfig, titleRegex, error)
-            if (result == null) {
-                LOG.warn("Screenshot: capture failed: ${error}")
-            } else {
-                LOG.info("Screenshot: capture succeeded: $result")
-            }
-            result to error.toString()
-        }.thenAccept { (result, err) ->
-            SwingUtilities.invokeLater {
-                if (result == null) {
-                    statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotFailed", err)
-                    com.intellij.notification.NotificationGroupManager.getInstance()
-                        .getNotificationGroup("okScriptToolkit")
-                        .createNotification(
-                            OkScriptToolkitBundle.message("templateAsset.screenshotFailed", err),
-                            com.intellij.notification.NotificationType.ERROR,
-                        )
-                        .notify(project)
-                    return@invokeLater
-                }
-                try {
-                    data.load(
-                        OkScriptToolkitSettings.getInstance(project).okScriptProjectPath().ifBlank { project.basePath ?: "" },
-                        OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory(),
-                    )
-                    val existingImage = data.getImageEntryForFile(result.toFile().name)
-                    if (existingImage != null) {
-                        // Image already in COCO, update dimensions if needed
-                        if (existingImage.width == 0 || existingImage.height == 0) {
-                            val (w, h) = data.readImageHeaderSize(result.toFile()) ?: (0 to 0)
-                            if (w > 0 && h > 0) {
-                                data.removeImageEntry(existingImage.id)
-                                data.addImageEntry(result.toFile().name, w, h)
-                            }
-                        }
-                    } else {
-                        // New image: read dimensions from file BEFORE adding to COCO
-                        val (w, h) = data.readImageHeaderSize(result.toFile()) ?: (0 to 0)
-                        data.addImageEntry(result.toFile().name, w, h)
+    /** 把刚落盘的截图登记进 COCO：已存在则补齐尺寸，不存在则新增条目 */
+    private fun registerCapturedImage(outputPath: Path) {
+        val file = outputPath.toFile()
+        try {
+            val settings = OkScriptToolkitSettings.getInstance(project)
+            val projectDir = settings.okScriptProjectPath().ifBlank { project.basePath ?: "" }
+            data.load(projectDir, settings.okTemplatesDirectory())
+            val existingImage = data.getImageEntryForFile(file.name)
+            if (existingImage != null) {
+                // Image already in COCO, update dimensions if needed
+                if (existingImage.width == 0 || existingImage.height == 0) {
+                    val (w, h) = data.readImageHeaderSize(file) ?: (0 to 0)
+                    if (w > 0 && h > 0) {
+                        data.removeImageEntry(existingImage.id)
+                        data.addImageEntry(file.name, w, h)
                     }
-                    data.save()
-                    statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotSaved", result.toFile().name)
-                    notify(OkScriptToolkitBundle.message("templateAsset.screenshotSaved", result.toFile().name), NotificationType.INFORMATION)
-                    loadData()
-                } catch (e: Exception) {
-                    statusLabel.text = "Error: ${e.message}"
                 }
+            } else {
+                // New image: read dimensions from file BEFORE adding to COCO
+                val (w, h) = data.readImageHeaderSize(file) ?: (0 to 0)
+                data.addImageEntry(file.name, w, h)
+            }
+            data.save()
+            val text = OkScriptToolkitBundle.message("templateAsset.screenshotSaved", file.name)
+            statusLabel.text = text
+            notify(text, NotificationType.INFORMATION)
+            loadData()
+        } catch (e: Exception) {
+            statusLabel.text = "Error: ${e.message}"
+        }
+    }
+
+    /**
+     * 接收「临时截图」工具窗口拖入的图片（对齐 VSCode 版的 dropTemp）。
+     * JetBrains 端两个工具窗口同处一个 JVM，可直接用自定义 DataFlavor 传递文件路径。
+     */
+    private fun handleDropTemp(file: File) {
+        val settings = OkScriptToolkitSettings.getInstance(project)
+        val projectDir = project.basePath ?: return
+        val targetDir = File(projectDir, settings.okTemplatesDirectory())
+        CompletableFuture.supplyAsync {
+            data.importImages(listOf(file), targetDir)
+        }.thenAccept { imported ->
+            SwingUtilities.invokeLater {
+                if (imported <= 0) {
+                    notify(
+                        OkScriptToolkitBundle.message("templateAsset.dropFailed", file.name),
+                        NotificationType.ERROR,
+                    )
+                } else {
+                    notify(
+                        OkScriptToolkitBundle.message("templateAsset.dropped", file.name),
+                        NotificationType.INFORMATION,
+                    )
+                }
+                loadData()
             }
         }
+    }
+
+    /** 拖入高亮：canImport 会随拖拽移动反复触发，用防抖计时器复位 */
+    private fun installDropTarget() {
+        var resetTimer: javax.swing.Timer? = null
+        val normalBorder = mainPanel.border
+        mainPanel.transferHandler = object : TransferHandler() {
+            override fun canImport(support: TransferSupport): Boolean {
+                val ok = support.isDrop && support.isDataFlavorSupported(TempShotTransferable.FLAVOR)
+                if (ok) {
+                    resetTimer?.stop()
+                    mainPanel.border = BorderFactory.createLineBorder(DROP_HINT_COLOR, 2)
+                    statusLabel.text = OkScriptToolkitBundle.message("templateAsset.dropHint")
+                    resetTimer = javax.swing.Timer(400) { clearDropHint(normalBorder) }.also {
+                        it.isRepeats = false
+                        it.start()
+                    }
+                }
+                return ok
+            }
+
+            override fun importData(support: TransferSupport): Boolean {
+                resetTimer?.stop()
+                clearDropHint(normalBorder)
+                if (!support.isDrop) return false
+                val file = TempShotTransferable.fileOf(support.transferable) ?: return false
+                handleDropTemp(file)
+                return true
+            }
+        }
+    }
+
+    private fun clearDropHint(border: javax.swing.border.Border?) {
+        mainPanel.border = border
+        statusLabel.text = " "
     }
 
     /**
