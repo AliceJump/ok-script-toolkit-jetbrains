@@ -73,8 +73,11 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
     private val effectsList = JList(effectsListModel)
 
     private var snapshot: CharacterManagerSnapshot? = null
+    private var sources: CharacterDataSources? = null
     private var currentCharacters = listOf<CharacterView>()
     private val avatars = mutableMapOf<String, Icon?>()
+    /** 角色 id → 技能文件绝对路径。必须由加载器实际扫描到的结果填充，
+     *  不能按 `<characterId>.json` 猜——多数项目的文件名与 character_id 并不一致。 */
     private val skillFilePaths = mutableMapOf<String, String>()
 
     init {
@@ -236,17 +239,14 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
                     }
                 }
             }
-            val skillPathMap = mutableMapOf<String, String>()
-            loadResult.snapshot.characters.forEach { c ->
-                val f = java.nio.file.Paths.get(paths.skillsDir, c.characterId + ".json").toFile()
-                if (f.exists()) skillPathMap[c.characterId] = f.absolutePath
-            }
-            Triple(loadResult, avatarMap, skillPathMap)
-        }.thenAccept { (result, avatarMap, skillPathMap) ->
+            Pair(loadResult, avatarMap)
+        }.thenAccept { (result, avatarMap) ->
             SwingUtilities.invokeLater {
                 avatars.clear(); avatars.putAll(avatarMap)
-                skillFilePaths.clear(); skillFilePaths.putAll(skillPathMap)
+                // 用加载器扫描到的真实路径：文件名可能与 character_id 不同（如 yvonne.json → yi_feng）
+                skillFilePaths.clear(); skillFilePaths.putAll(result.sources.characterFiles)
                 snapshot = result.snapshot
+                sources = result.sources
                 currentCharacters = result.snapshot.characters
                 updateUI()
             }
@@ -390,15 +390,17 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
             effectsFile = settings.effectsFile(),
         ))
         val source = issue.source
+        val src = sources
         val targetFile = when (source?.kind) {
             SourceKind.MASTER -> paths.masterFile
             SourceKind.LOCALE -> paths.localeFile
             SourceKind.EFFECTS -> paths.effectsFile
             SourceKind.CHARACTER -> {
-                val name = source.fileName
-                    ?: source.characterId?.let { "$it.json" }
+                // 优先用扫描到的真实路径，其次按文件名查表，最后才退回 `<characterId>.json`
+                source.fileName?.let { src?.characterFilesByName?.get(it) }
+                    ?: source.characterId?.let { src?.characterFiles?.get(it) }
+                    ?: source.characterId?.let { java.nio.file.Paths.get(paths.skillsDir, "$it.json").toString() }
                     ?: return
-                java.nio.file.Paths.get(paths.skillsDir, name).toString()
             }
             null -> return
         }
