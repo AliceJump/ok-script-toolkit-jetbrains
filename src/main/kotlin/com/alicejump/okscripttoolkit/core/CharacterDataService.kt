@@ -464,14 +464,12 @@ class CharacterDataService(private val project: Project) {
                     )
                 }
 
-                val issueCount = parsed.skills.size // simplified: count skills as issue proxy
-                val errorCount = 0
-
+                // 真实的问题数在全部 issue 收集完之后回填（见下方 issueIndex）
                 characters.add(CharacterView(
                     parsed.characterId, parsed.name, parsed.star, parsed.element,
                     parsed.profession, parsed.weaponType, parsed.wikiItemId,
                     parsed.sourceFile, master, locales, parsed.skills,
-                    issueCount, errorCount,
+                    0, 0,
                 ))
             }
 
@@ -509,8 +507,19 @@ class CharacterDataService(private val project: Project) {
                 )
             }.sortedBy { it.id }
 
+            // ── 回填每个角色的问题数（对齐 VSCode：issueCount / errorCount）──
+            // 必须在所有 issue 收集完之后——未知效果 ID 的问题是在这一刻才补全的。
+            val issueIndex = issues.groupBy { it.source?.characterId }
+            val finalCharacters = characters.map { char ->
+                val related = issueIndex[char.characterId].orEmpty()
+                char.copy(
+                    issueCount = related.size,
+                    errorCount = related.count { it.severity == IssueSeverity.ERROR },
+                )
+            }
+
             // ── Summary ──────────────────────────────────────────
-            val allLocales = characters.flatMap { it.locales.keys }.distinct().sortedWith(
+            val allLocales = finalCharacters.flatMap { it.locales.keys }.distinct().sortedWith(
                 compareBy<String> { LOCALE_ORDER.indexOf(it).let { idx -> if (idx < 0) Int.MAX_VALUE else idx } }
                     .thenBy { it }
             )
@@ -518,9 +527,9 @@ class CharacterDataService(private val project: Project) {
             val summary = CharacterDataSummary(
                 masterCharacters = masterEntries?.size ?: 0,
                 skillFiles = skillFiles.size,
-                characters = characters.size,
-                skills = characters.sumOf { it.skills.size },
-                enhancements = characters.sumOf { c -> c.skills.sumOf { s -> s.enhancements.size } },
+                characters = finalCharacters.size,
+                skills = finalCharacters.sumOf { it.skills.size },
+                enhancements = finalCharacters.sumOf { c -> c.skills.sumOf { s -> s.enhancements.size } },
                 effectReferences = pendingUsages.size,
                 definedEffects = effectDefinitions?.size ?: 0,
                 unknownEffects = pendingUsages.count { it.effectId !in allEffectIds },
@@ -538,7 +547,7 @@ class CharacterDataService(private val project: Project) {
             val snapshot = CharacterManagerSnapshot(
                 projectDir = paths.projectDir,
                 loadedAt = Instant.now().toString(),
-                characters = characters.sortedBy { it.name },
+                characters = finalCharacters.sortedBy { it.name },
                 effects = effectViews,
                 effectCategories = effectCategories,
                 issues = sortedIssues,
