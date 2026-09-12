@@ -5,6 +5,7 @@ import com.alicejump.okscripttoolkit.core.CharacterDataMutations
 import com.alicejump.okscripttoolkit.core.CharacterDataPaths
 import com.alicejump.okscripttoolkit.core.CharacterDataService
 import com.alicejump.okscripttoolkit.core.CharacterDataSettings
+import com.alicejump.okscripttoolkit.core.CharacterEffectRef
 import com.alicejump.okscripttoolkit.core.CharacterDataSources
 import com.alicejump.okscripttoolkit.core.CharacterEffectView
 import com.alicejump.okscripttoolkit.core.CharacterEnhancementView
@@ -77,6 +78,9 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
     private val statusLabel = JBLabel()
     private val projectLabel = JBLabel()
     private val tabs = JTabbedPane()
+
+    /** 效果页在 tabs 中的下标（focusEffect 用）。 */
+    private val EFFECTS_TAB_INDEX = 1
 
     // ── 角色页 ────────────────────────────────────────────────
     private val starBox = JComboBox<String>()
@@ -638,19 +642,29 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         meta += "SP ${skill.spiritCost}"
         card.add(subRow(meta.joinToString(" · ")))
         if (skill.description.isNotBlank()) card.add(textRow(skill.description))
-        if (skill.effects.isNotEmpty()) {
-            card.add(subRow(msg("characterManager.detailEffects") + " " +
-                skill.effects.joinToString(", ") { it.effectId + (if (it.inferred) "*" else "") }))
-        }
+        card.add(effectChipRow(msg("characterManager.detailEffects"), skill.effects))
         for ((index, enh) in skill.enhancements.withIndex()) {
-            card.add(enhancementRow(char, skill.skillId, enh, index))
+            card.add(enhancementCard(char, skill.skillId, enh, index))
         }
         return card
     }
 
-    private fun enhancementRow(char: CharacterView, skillId: String, enh: CharacterEnhancementView, index: Int): JComponent {
+    private fun enhancementCard(
+        char: CharacterView,
+        skillId: String,
+        enh: CharacterEnhancementView,
+        index: Int,
+    ): JComponent {
+        val card = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            alignmentX = Component.LEFT_ALIGNMENT
+            border = JBUI.Borders.emptyLeft(10)
+        }
         val row = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0)).apply { alignmentX = Component.LEFT_ALIGNMENT }
         row.add(JBLabel("↳ ${enh.name}"))
+        if (enh.visiblePulse) row.add(subLabel(msg("characterManager.detailPulse")))
+        // 多个触发依赖效果时才需要区分 all/any（与 VSCode 一致：1 个时直接铺开）
+        if (enh.triggerEffects.size > 1) row.add(triggerModeBadge(enh.triggerEffectMode))
         if (enh.triggerText.isNotBlank()) row.add(subLabel(msg("characterManager.detailTrigger", enh.triggerText)))
         if (enh.enhancementEffect.isNotBlank()) row.add(subLabel(enh.enhancementEffect))
         row.add(iconButton(AllIcons.Actions.Edit, msg("characterManager.editEnhancement")) {
@@ -659,14 +673,25 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         row.add(iconButton(AllIcons.Actions.GC, msg("characterManager.deleteEnhancement")) {
             runDeleteEnhancement(char, skillId, enh.name, index)
         })
-        return row
+        card.add(row)
+        if (enh.triggerEffects.isNotEmpty()) {
+            card.add(effectChipRow(msg("characterManager.detailTriggerEffects"), enh.triggerEffects))
+        }
+        card.add(effectChipRow(msg("characterManager.detailOutputEffects"), enh.effects))
+        return card
     }
 
     // ══ 变更 ══════════════════════════════════════════════════
 
     private fun runSkillDialog(char: CharacterView, mode: SkillDialogMode, editSkillId: String?) {
         val path = requireSkillFile(char) ?: return
-        val dialog = SkillDialog(project, mode, char, editSkillId)
+        val snap = snapshot ?: return
+        val dialog = SkillDialog(
+            project, mode, char, editSkillId,
+            effectOptions(),
+            snap.characters.flatMap { it.skills.map { skill -> skill.skillType } }.distinct(),
+            snap.characters.map { it.element }.distinct(),
+        )
         if (!dialog.showAndGet()) return
         val form = dialog.formValues()
         val skillId = if (mode == SkillDialogMode.ADD) dialog.enteredSkillId() else (editSkillId ?: return)
@@ -695,13 +720,16 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         val path = requireSkillFile(char) ?: return
         val dialog = EnhancementDialog(
             project,
-            existing?.name,
-            existing?.triggerText,
-            existing?.enhancementEffect,
-            existing?.triggerEffects?.joinToString(", ") { it.effectId },
-            existing?.triggerEffectMode,
-            existing?.effects?.joinToString(", ") { it.effectId },
-            existing?.visiblePulse ?: false,
+            effectOptions(),
+            CharacterEnhancementSeed(
+                name = existing?.name.orEmpty(),
+                triggerText = existing?.triggerText.orEmpty(),
+                triggerEffectMode = existing?.triggerEffectMode ?: "all",
+                triggerEffects = existing?.triggerEffects?.map { it.toEffectParam() } ?: emptyList(),
+                outputEffects = existing?.effects?.map { it.toEffectParam() } ?: emptyList(),
+                enhancementEffect = existing?.enhancementEffect.orEmpty(),
+                visiblePulse = existing?.visiblePulse ?: false,
+            ),
         )
         if (!dialog.showAndGet()) return
         val form = dialog.formValues()
@@ -755,6 +783,12 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
             return null
         }
         return file
+    }
+
+    /** 多选器的候选项。快照里的 effects 已包含「被引用但未定义」的 ID（defined=false）。 */
+    private fun effectOptions(): List<EffectOption> {
+        val snap = snapshot ?: return emptyList()
+        return snap.effects.toEffectOptions()
     }
 
     private fun mutate(block: () -> Unit) {
@@ -848,6 +882,89 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
     private fun subRow(text: String) = flowPanel(text, small = true)
     private fun textRow(text: String) = flowPanel(text, small = false)
     private fun lineLabel(text: String) = flowPanel(text, small = true)
+
+    /**
+     * 效果胶囊（对齐 VSCode 的 `.chip.effect`）：显示名 + ID + 参数，
+     * 未定义/推测/减益各有颜色，点击跳到效果页并定位该 ID。
+     */
+    private fun effectChip(ref: CharacterEffectRef): JComponent {
+        val definition = snapshot?.effects?.firstOrNull { it.id == ref.effectId }
+        val display = ref.displayName.ifBlank { definition?.displayName ?: ref.effectId }
+        val params = listOf(
+            ref.value?.let { "value=$it" },
+            ref.duration?.toString()?.takeIf { it.isNotBlank() }?.let { "duration=$it" },
+            ref.count?.let { "count=$it" },
+            ref.target?.let { "target=$it" },
+        ).filterNotNull().joinToString(" · ")
+        val label = buildString {
+            append(display)
+            if (display != ref.effectId) append(" · ").append(ref.effectId)
+            if (params.isNotBlank()) append("  ").append(params)
+            if (ref.inferred) append(" *")
+        }
+        val chip = JButton(label).apply {
+            toolTipText = buildString {
+                appendLine(definition?.description ?: msg("characterManager.effect.undefined"))
+                append(ref.effectId)
+                if (params.isNotBlank()) append("\n").append(params)
+                if (ref.inferred) append("\n").append(msg("characterManager.detailInferred"))
+                append("\n").append(msg("characterManager.effect.search"))
+            }
+            font = JBUI.Fonts.smallFont()
+            isBorderPainted = true
+            isFocusPainted = false
+            margin = JBUI.insets(1, 6, 1, 6)
+            addActionListener { focusEffect(ref.effectId) }
+        }
+        if (!ref.known || definition?.defined == false) {
+            chip.foreground = com.intellij.ui.JBColor.namedColor("Label.errorForeground", 0xC0392B)
+        } else if (isNegativeEffect(ref, definition?.category.orEmpty())) {
+            chip.foreground = com.intellij.ui.JBColor.namedColor("Label.infoForeground", 0x8E6E2E)
+        }
+        return chip
+    }
+
+    /** 与 VSCode isNegativeEffect 一致：层数负数、CONSUME_/CLEAR_/DEBUFF_ 前缀、减益/消耗/清除分类。 */
+    private fun isNegativeEffect(ref: CharacterEffectRef, category: String): Boolean =
+        (ref.count ?: 0) < 0 ||
+            Regex("^(?:CONSUME_|CLEAR_|DEBUFF_)").containsMatchIn(ref.effectId) ||
+            category.contains("减益") || category.contains("消耗") || category.contains("清除")
+
+    /** 一行效果胶囊；没有效果时显示「无」。 */
+    private fun effectChipRow(label: String, refs: List<CharacterEffectRef>): JComponent {
+        val panel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 1)).apply { alignmentX = Component.LEFT_ALIGNMENT }
+        panel.add(subLabel(label))
+        if (refs.isEmpty()) {
+            panel.add(subLabel(msg("characterManager.detailNone")))
+            return panel
+        }
+        refs.forEach { panel.add(effectChip(it)) }
+        return panel
+    }
+
+    /** 触发模式徽标（VSCode 里是带图标的 ALL / ANY 竖条）。 */
+    private fun triggerModeBadge(mode: String): JComponent = JBLabel(
+        if (mode.equals("any", ignoreCase = true)) "ANY" else "ALL",
+    ).apply {
+        font = JBUI.Fonts.smallFont().deriveFont(java.awt.Font.BOLD)
+        border = javax.swing.BorderFactory.createCompoundBorder(
+            javax.swing.BorderFactory.createLineBorder(javax.swing.UIManager.getColor("Separator.foreground")),
+            JBUI.Borders.empty(1, 5, 1, 5),
+        )
+        toolTipText = if (mode.equals("any", ignoreCase = true)) {
+            msg("characterManager.triggerModeAnyHint")
+        } else {
+            msg("characterManager.triggerModeAllHint")
+        }
+        alignmentX = Component.LEFT_ALIGNMENT
+    }
+
+    /** 跳到效果页并定位某个效果 ID（对齐 VSCode focusEffect）。 */
+    private fun focusEffect(effectId: String) {
+        tabs.selectedIndex = EFFECTS_TAB_INDEX
+        effectSearch.text = effectId
+        renderEffects()
+    }
 
     private fun iconButton(icon: Icon, tooltip: String, action: () -> Unit) = JButton(icon).apply {
         toolTipText = tooltip
