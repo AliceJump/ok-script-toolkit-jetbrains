@@ -202,4 +202,80 @@ class CharacterDataMutationsTest {
         assertEquals(0, skill.get("enhancements").size())
         assertEquals(false, skill.get("has_enhancement").asBoolean())
     }
+
+    /** 多选器产出的是 JSON 数组：value/count 必须是数字，空 duration 必须是 null。 */
+    @Test
+    fun `updateEnhancement writes picker output effects with typed params`() {
+        val file = writeSkill()
+        CharacterDataMutations.updateEnhancement(
+            file.absolutePath, "yi_feng_s1", 0,
+            mapOf(
+                "name" to "秘杖·矩阵位移",
+                "trigger_text" to "当有敌人被施加法术异常时可以发动",
+                "trigger_effects" to "STATUS_SPELL_ANOMALY",
+                "trigger_effect_mode" to "all",
+                "enhancement_effect" to "位移一段距离",
+                "effects" to EffectParamCodec.encode(
+                    listOf(
+                        EffectParam("STATUS_HEAVY_HIT", value = "3", duration = "", target = "ally", count = "2"),
+                        EffectParam("STATUS_NEW_ONE", value = "1", duration = "2s", target = "enemy", count = "1"),
+                    ),
+                ),
+                "visible_pulse" to "true",
+            ),
+        )
+        val effects = enhancementOf(file).get("effects")
+        assertEquals(2, effects.size())
+        val first = effects.get(0)
+        assertEquals("STATUS_HEAVY_HIT", first.get("effect_id").asText())
+        assertEquals(3, first.get("value").asInt(), "value 必须是数字")
+        assertTrue(first.get("duration").isNull, "空 duration 必须是 null，不能是空字符串")
+        assertEquals("ally", first.get("target").asText())
+        assertEquals(2, first.get("count").asInt())
+        val second = effects.get(1)
+        assertEquals("2s", second.get("duration").asText())
+        // 触发依赖效果仍然是纯字符串数组
+        val trigger = enhancementOf(file).get("trigger_condition").get("effects")
+        assertEquals("STATUS_SPELL_ANOMALY", trigger.get("all").get(0).asText())
+    }
+
+    /** 技能基础效果（124/124 技能都带 effects）也要能由多选器写回。 */
+    @Test
+    fun `updateSkill writes base effects from the picker`() {
+        val file = writeSkill()
+        CharacterDataMutations.addSkill(
+            file.absolutePath, "yi_feng_s2",
+            mapOf(
+                "name" to "新技能",
+                "effects" to EffectParamCodec.encode(
+                    listOf(EffectParam("ATTACH_COLD", value = "1", duration = "", target = "enemy", count = "1")),
+                ),
+            ),
+        )
+        val added = JSON.readTree(file).get("skills").last()
+        assertEquals(1, added.get("effects").size())
+        assertEquals("ATTACH_COLD", added.get("effects").get(0).get("effect_id").asText())
+        assertTrue(added.get("effects").get(0).get("value").isNumber)
+
+        CharacterDataMutations.updateSkill(
+            file.absolutePath, "yi_feng_s2",
+            mapOf("effects" to EffectParamCodec.encode(emptyList())),
+        )
+        val cleared = JSON.readTree(file).get("skills").last()
+        assertEquals(0, cleared.get("effects").size(), "清空选择要写回空数组")
+    }
+
+    /** 多选器的 JSON 数组与手写的「A,B」ID 串都要能解析。 */
+    @Test
+    fun `effect parsing accepts both the picker array and a plain id list`() {
+        val file = writeSkill()
+        CharacterDataMutations.updateEnhancement(
+            file.absolutePath, "yi_feng_s1", 0,
+            mapOf("effects" to "STATUS_A, STATUS_B"),
+        )
+        val effects = enhancementOf(file).get("effects")
+        assertEquals(2, effects.size())
+        assertEquals("STATUS_A", effects.get(0).get("effect_id").asText())
+        assertEquals("STATUS_B", effects.get(1).get("effect_id").asText())
+    }
 }

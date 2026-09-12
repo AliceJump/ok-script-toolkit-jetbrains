@@ -84,6 +84,17 @@ object CharacterDataMutations {
         else node.put(key, 0)
     }
 
+    /**
+     * 表单写回技能节点。`effects` 是对象数组（124/124 技能都带这个字段），
+     * 由多选器产出 JSON 数组，走 EffectParamCodec；其余字段按类型写入。
+     */
+    private fun applySkillForm(node: ObjectNode, form: Map<String, String>) {
+        for ((key, raw) in form) {
+            if (key == "effects") node.set<JsonNode>("effects", EffectParamCodec.parse(raw))
+            else writeSkillField(node, key, raw)
+        }
+    }
+
     /** 新增技能：表单字段写入 skills 数组并标记 _ok_lang_hints_custom。 */
     fun addSkill(
         path: String,
@@ -94,7 +105,7 @@ object CharacterDataMutations {
         ensureSkillIdFree(skills, skillId, excludeSelf = null)
         val node = skills.addObject()
         node.put("skill_id", skillId)
-        for ((k, v) in form) writeSkillField(node, k, v)
+        applySkillForm(node, form)
         node.put("_ok_lang_hints_custom", true)
         // 对齐 VSCode：新技能默认无强化
         if (!node.has("has_enhancement")) node.put("has_enhancement", false)
@@ -113,7 +124,7 @@ object CharacterDataMutations {
         if (skill.get("_ok_lang_hints_custom")?.asBoolean(false) != true) {
             throw MutationException("Skill '$skillId' is synced and locked")
         }
-        for ((k, v) in form) writeSkillField(skill, k, v)
+        applySkillForm(skill, form)
         skill.put("_ok_lang_hints_custom", true)
         atomicWriteJson(file.toPath(), root)
     }
@@ -152,8 +163,14 @@ object CharacterDataMutations {
             if (item is ObjectNode && !id.isNullOrBlank()) previous[id] = item
         }
         val output = JSON.createArrayNode()
-        parseIdList(form["effects"]).forEach { id ->
-            output.add(previous[id] ?: JSON.createObjectNode().put("effect_id", id))
+        // form["effects"] 可能是 JSON 数组（多选器产出）或「A,B,C」纯 ID 串。
+        for (item in EffectParamCodec.parse(form["effects"])) {
+            if (item !is ObjectNode) { output.add(item); continue }
+            val id = item.get("effect_id")?.asText().orEmpty()
+            // 以既有对象为底再覆盖，保住多选器没暴露的字段（如 inferred）。
+            val base = previous[id]?.deepCopy() ?: JSON.createObjectNode()
+            item.fieldNames().forEach { key -> base.set<JsonNode>(key, item.get(key)) }
+            output.add(base)
         }
         node.set<JsonNode>("effects", output)
         return node
