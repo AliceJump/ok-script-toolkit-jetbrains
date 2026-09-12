@@ -93,6 +93,8 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
         private const val GRID_COLS = 3
         private const val ZOOM_MAX = 20.0
         private const val ZOOM_STEP = 1.1
+        /** 坐标框手柄的命中半径（像素） */
+        private const val HANDLE_PX = 8
 
         private val COORD_COLOR = JBColor(0xE8A33D, 0xFFB454)
     }
@@ -455,8 +457,11 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
 
     // ── 舞台 ───────────────────────────────────────────────────────
 
-    /** 图像坐标系下的矩形（用于保留选框，缩放/平移后重绘仍然一致） */
+    /** 图像坐标系下的矩形（坐标框用它保存，缩放/平移/切帧后重绘仍然一致） */
     private data class ImageRect(val x: Double, val y: Double, val w: Double, val h: Double)
+
+    /** 坐标框的调整拖拽：handle 为空表示整体移动 */
+    private data class CoordDrag(val handle: String?, val start: Point, val orig: ImageRect)
 
     private inner class TempShotStage : JComponent() {
 
@@ -472,6 +477,8 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
         private var boxStart: Point? = null
         private var boxCurrent: Point? = null
         private var committed: ImageRect? = null
+        // 坐标框的移动 / 缩放拖拽状态（committed 即可调的坐标框，存图像坐标）
+        private var coordDrag: CoordDrag? = null
 
         private var panning = false
         private var panStart: Point? = null
@@ -517,7 +524,12 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
             coordMode = enabled
             boxStart = null
             boxCurrent = null
-            if (!enabled) committed = null
+            // 坐标框只在坐标模式内存在，退出即丢弃（它不落盘）
+            if (!enabled && (committed != null || coordDrag != null)) {
+                committed = null
+                coordDrag = null
+                statusLabel.text = " "
+            }
             repaint()
         }
 
@@ -566,8 +578,24 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
                         SwingUtilities.isMiddleMouseButton(e) -> startPan(e.point)
                         SwingUtilities.isLeftMouseButton(e) -> {
                             if (coordMode) {
-                                boxStart = e.point
-                                boxCurrent = e.point
+                                // 与模板标注一致：先命中手柄，再命中框体，否则起手画新框
+                                val handle = findCoordHandleAt(e.point)
+                                when {
+                                    handle != null -> {
+                                        coordDrag = CoordDrag(handle, e.point, committed!!)
+                                        cursor = handleCursor(handle)
+                                        return
+                                    }
+                                    coordContains(e.point) -> {
+                                        coordDrag = CoordDrag(null, e.point, committed!!)
+                                        cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+                                        return
+                                    }
+                                    else -> {
+                                        boxStart = e.point
+                                        boxCurrent = e.point
+                                    }
+                                }
                             } else if (isZoomed()) {
                                 startPan(e.point)
                             }
@@ -581,6 +609,16 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
                         panning = false
                         panStart = null
                         panStartOffset = null
+                        repaint()
+                        return
+                    }
+                    // 结束坐标框的移动 / 缩放：有变化才复制
+                    val dragging = coordDrag
+                    if (dragging != null) {
+                        val changed = committed != dragging.orig
+                        coordDrag = null
+                        if (changed) copyCoordBox()
+                        cursor = Cursor.getPredefinedCursor(Cursor.CROSSHAIR_CURSOR)
                         repaint()
                         return
                     }
@@ -602,9 +640,25 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
                         repaint()
                         return
                     }
+                    // 调整坐标框：过程中只更新读数，松手时才复制
+                    if (coordDrag != null) {
+                        applyCoordDrag(e.point)
+                        repaint()
+                        return
+                    }
                     if (coordMode && boxStart != null) {
                         boxCurrent = e.point
                         repaint()
+                    }
+                }
+
+                override fun mouseMoved(e: MouseEvent) {
+                    if (!coordMode) return
+                    val handle = findCoordHandleAt(e.point)
+                    cursor = when {
+                        handle != null -> handleCursor(handle)
+                        coordContains(e.point) -> Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+                        else -> Cursor.getPredefinedCursor(Cursor.CROSSHAIR_CURSOR)
                     }
                 }
             })
@@ -644,8 +698,8 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
             val b = toImage(end)
             val text = NormalizedBox.format(a.first, a.second, b.first, b.second, img.width, img.height)
             if (text.isEmpty()) {
-                committed = null
-                repaint()
+                // 几乎没拖动 = 点了图片的非交互部分：清除坐标框
+                clearCoordBox()
                 return
             }
             committed = ImageRect(
@@ -654,10 +708,109 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
                 Math.abs(b.first - a.first),
                 Math.abs(b.second - a.second),
             )
+            copyCoordBox()
+        }
+
+        /* ── 可调节的坐标框（创建与每次调整结束都会重新复制，点击空白清除） ── */
+
+        private fun coordText(): String {
+            val img = current() ?: return ""
+            val r = committed ?: return ""
+            return NormalizedBox.format(r.x, r.y, r.x + r.w, r.y + r.h, img.width, img.height)
+        }
+
+        private fun copyCoordBox() {
+            val text = coordText()
+            if (text.isEmpty()) return
             CopyPasteManager.getInstance().setContents(StringSelection(text))
-            // 只在状态栏提示：连续微调时不弹气球通知（VSCode 版是 toast，这里是常驻状态栏）
+            // 只在状态栏提示：连续微调时不弹气球通知
             statusLabel.text = "${msg("tempShots.coordLabel")} $text"
             repaint()
+        }
+
+        private fun clearCoordBox() {
+            committed = null
+            coordDrag = null
+            statusLabel.text = " "
+            repaint()
+        }
+
+        private fun coordScreenRect(): java.awt.Rectangle? {
+            val r = committed ?: return null
+            return java.awt.Rectangle(
+                (offsetX + r.x * scale).toInt(),
+                (offsetY + r.y * scale).toInt(),
+                Math.max(1, (r.w * scale).toInt()),
+                Math.max(1, (r.h * scale).toInt()),
+            )
+        }
+
+        private fun handlePoints(r: java.awt.Rectangle): List<Pair<String, Pair<Int, Int>>> {
+            val mx = r.x + r.width / 2
+            val my = r.y + r.height / 2
+            return listOf(
+                "tl" to (r.x to r.y),
+                "top" to (mx to r.y),
+                "tr" to (r.x + r.width to r.y),
+                "right" to (r.x + r.width to my),
+                "br" to (r.x + r.width to r.y + r.height),
+                "bottom" to (mx to r.y + r.height),
+                "bl" to (r.x to r.y + r.height),
+                "left" to (r.x to my),
+            )
+        }
+
+        private fun handleCursor(h: String): Cursor = when (h) {
+            "tl", "br" -> Cursor.getPredefinedCursor(Cursor.NW_RESIZE_CURSOR)
+            "tr", "bl" -> Cursor.getPredefinedCursor(Cursor.NE_RESIZE_CURSOR)
+            "top", "bottom" -> Cursor.getPredefinedCursor(Cursor.N_RESIZE_CURSOR)
+            "left", "right" -> Cursor.getPredefinedCursor(Cursor.W_RESIZE_CURSOR)
+            else -> Cursor.getDefaultCursor()
+        }
+
+        private fun findCoordHandleAt(p: Point): String? {
+            val r = coordScreenRect() ?: return null
+            for ((name, pos) in handlePoints(r)) {
+                if (Math.abs(p.x - pos.first) <= HANDLE_PX && Math.abs(p.y - pos.second) <= HANDLE_PX) return name
+            }
+            return null
+        }
+
+        private fun coordContains(p: Point): Boolean = coordScreenRect()?.contains(p) == true
+
+        /** 按当前拖拽（移动或缩放）算出新的图像坐标矩形 */
+        private fun applyCoordDrag(p: Point) {
+            val img = current() ?: return
+            val d = coordDrag ?: return
+            val dx = (p.x - d.start.x) / scale
+            val dy = (p.y - d.start.y) / scale
+            val o = d.orig
+            val minW = (NormalizedBox.MIN_SIZE_PX / scale).coerceAtLeast(1.0)
+            val minH = minW
+            var nx = o.x
+            var ny = o.y
+            var nw = o.w
+            var nh = o.h
+            val h = d.handle
+            if (h == null) {
+                nx = o.x + dx
+                ny = o.y + dy
+            } else {
+                if (h == "left" || h == "tl" || h == "bl") { nx = o.x + dx; nw = o.w - dx }
+                if (h == "right" || h == "tr" || h == "br") { nw = o.w + dx }
+                if (h == "top" || h == "tl" || h == "tr") { ny = o.y + dy; nh = o.h - dy }
+                if (h == "bottom" || h == "bl" || h == "br") { nh = o.h + dy }
+                if (nw < minW) { if (h == "left" || h == "tl" || h == "bl") nx = o.x + o.w - minW; nw = minW }
+                if (nh < minH) { if (h == "top" || h == "tl" || h == "tr") ny = o.y + o.h - minH; nh = minH }
+            }
+            nx = nx.coerceIn(0.0, (img.width - nw).coerceAtLeast(0.0))
+            ny = ny.coerceIn(0.0, (img.height - nh).coerceAtLeast(0.0))
+            nw = nw.coerceAtMost(img.width - nx).coerceAtLeast(1.0)
+            nh = nh.coerceAtMost(img.height - ny).coerceAtLeast(1.0)
+            committed = ImageRect(nx, ny, nw, nh)
+            // 拖动过程中只更新读数，松手时才写剪贴板
+            val text = coordText()
+            if (text.isNotEmpty()) statusLabel.text = "${msg("tempShots.coordLabel")} $text"
         }
 
         // ── 绘制 ──
@@ -680,11 +833,23 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
             val drawH = (img.height * scale).toInt()
             g2.drawImage(img, offsetX.toInt(), offsetY.toInt(), drawW, drawH, null)
 
-            // 保留的选框（图像坐标 → 屏幕坐标）
+            // 保留的坐标框（图像坐标 → 屏幕坐标）+ 8 向手柄 + 当前读数
             committed?.let { rect ->
                 g2.color = COORD_COLOR
                 g2.stroke = BasicStroke(1.5f)
                 drawImageRect(g2, rect)
+                val r = coordScreenRect()
+                if (coordMode && r != null) {
+                    for ((_, pos) in handlePoints(r)) {
+                        g2.fillOval(pos.first - 4, pos.second - 4, 8, 8)
+                    }
+                    val text = coordText()
+                    if (text.isNotEmpty()) {
+                        val metrics = g2.fontMetrics
+                        val labelY = if (r.y - 4 < metrics.height) r.y + metrics.height + 2 else r.y - 4
+                        g2.drawString(text, r.x, labelY)
+                    }
+                }
             }
 
             // 拖拽中的预览框

@@ -22,9 +22,13 @@ JetBrains Platform/PyCharm port of the VS Code extension in the repository root.
   The stage shows the selected shot or cycles all of them every 0.1s; box-select
   copies normalized `x,y,tox,toy` coordinates to the clipboard, and thumbnails
   can be dragged onto the asset manager (or sent from the context menu) to import
-  into `ok_templates`.
+  into `ok_templates`. The coordinate box stays on the canvas afterwards with 8
+  resize handles and can be dragged around — each create or adjustment re-copies
+  the coordinates; it is never written to COCO, and clicking outside the box
+  (or leaving the mode) clears it.
 - The annotation editor gained a coords mode (`C`) that box-selects and copies
-  normalized `x,y,tox,toy` without creating an annotation box.
+  normalized `x,y,tox,toy` without creating an annotation box; the same
+  adjustable-box behaviour applies.
 - Character manager tool window with diagnostics and double-click
   jump-to-source for issues and effects.
 - Task launcher tool window: schema-driven parameter forms (grouped by

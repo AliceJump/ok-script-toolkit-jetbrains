@@ -301,6 +301,9 @@ class AnnotationDialog(
 
     private data class BoxItem(val categoryName: String, val rect: Rect)
 
+    /** 坐标框的调整拖拽：handle 为空表示整体移动 */
+    private data class CoordDrag(val handle: String?, val start: Point, val orig: Rect)
+
     private enum class CanvasMode { NONE, DRAW, DELETE, COPYCOORD }
 
     // ── 画布 ──────────────────────────────────────────────────────────
@@ -324,6 +327,11 @@ class AnnotationDialog(
         private var drawStart: Point? = null
         private var drawPreview: Point? = null
         private var drawDragging = false
+
+        // 坐标复制模式的临时框：只用于取坐标，不进 boxes、不落盘；
+        // 创建与每次调整结束都会重新复制，点击非交互区域即清除
+        private var coordBox: Rect? = null
+        private var coordDrag: CoordDrag? = null
 
         // 拖拽移动
         private var dragging = false
@@ -380,6 +388,12 @@ class AnnotationDialog(
             drawStart = null
             drawPreview = null
             drawDragging = false
+            // 坐标框只在坐标模式内存在，切换走即丢弃（它不落盘，无需保留）
+            if (m != CanvasMode.COPYCOORD && (coordBox != null || coordDrag != null)) {
+                coordBox = null
+                coordDrag = null
+                colorLabel.text = " "
+            }
             if (!syncToggleOnly) {
                 modeDrawToggle.isSelected = m == CanvasMode.DRAW
                 modeCoordToggle.isSelected = m == CanvasMode.COPYCOORD
@@ -505,12 +519,23 @@ class AnnotationDialog(
                         return
                     }
                     if (mode == CanvasMode.COPYCOORD) {
-                        // 与画框同样的起手（拖拽 / 两次点击），结束时不弹框，直接复制坐标
-                        if (drawStart == null) {
-                            drawStart = p
-                            drawDragging = true
-                        } else {
-                            finishCoord(p)
+                        // 与标注框一致：先命中手柄，再命中框体，否则起手画新框
+                        val handle = findCoordHandleAt(p)
+                        when {
+                            handle != null -> {
+                                coordDrag = CoordDrag(handle, p, coordBox!!)
+                                cursor = handleCursor(handle)
+                                return
+                            }
+                            coordContains(p) -> {
+                                coordDrag = CoordDrag(null, p, coordBox!!)
+                                cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+                                return
+                            }
+                            else -> {
+                                drawStart = p
+                                drawDragging = true
+                            }
                         }
                         return
                     }
@@ -552,6 +577,16 @@ class AnnotationDialog(
                 }
 
                 override fun mouseReleased(e: MouseEvent) {
+                    // 结束坐标框的移动 / 缩放：有变化才复制
+                    val coordDragging = coordDrag
+                    if (coordDragging != null) {
+                        val changed = coordBox != coordDragging.orig
+                        coordDrag = null
+                        if (changed) copyCoordBox()
+                        cursor = Cursor.getPredefinedCursor(Cursor.CROSSHAIR_CURSOR)
+                        repaint()
+                        return
+                    }
                     if (mode == CanvasMode.DRAW && drawDragging && drawStart != null) {
                         val start = drawStart!!
                         val distSq = (e.point.x - start.x).toDouble() * (e.point.x - start.x) +
@@ -566,10 +601,15 @@ class AnnotationDialog(
                         val start = drawStart!!
                         val distSq = (e.point.x - start.x).toDouble() * (e.point.x - start.x) +
                             (e.point.y - start.y).toDouble() * (e.point.y - start.y)
+                        drawDragging = false
                         if (distSq > EDGE_MARGIN * EDGE_MARGIN) {
                             finishCoord(e.point)
+                        } else {
+                            // 几乎没移动 = 点了图片的非交互部分：清除坐标框
+                            drawStart = null
+                            drawPreview = null
+                            clearCoordBox()
                         }
-                        drawDragging = false
                         return
                     }
                     drawDragging = false
@@ -614,6 +654,12 @@ class AnnotationDialog(
             addMouseMotionListener(object : java.awt.event.MouseMotionAdapter() {
                 override fun mouseDragged(e: MouseEvent) {
                     val p = e.point
+                    // 调整坐标框：过程中只更新读数，松手时才复制
+                    if (coordDrag != null) {
+                        applyCoordDrag(p)
+                        repaint()
+                        return
+                    }
                     if (mode == CanvasMode.DRAW && drawStart != null) {
                         drawPreview = p
                         repaint()
@@ -680,6 +726,14 @@ class AnnotationDialog(
                             Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
                         } else {
                             Cursor.getDefaultCursor()
+                        }
+                        repaint()
+                    } else if (mode == CanvasMode.COPYCOORD) {
+                        val handle = findCoordHandleAt(p)
+                        cursor = when {
+                            handle != null -> handleCursor(handle)
+                            coordContains(p) -> Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
+                            else -> Cursor.getPredefinedCursor(Cursor.CROSSHAIR_CURSOR)
                         }
                         repaint()
                     }
@@ -766,29 +820,104 @@ class AnnotationDialog(
         }
 
         /**
-         * 坐标复制模式：把框选结果换算成归一化 x,y,tox,toy（左上 / 右下，0..1）
-         * 写入系统剪贴板，并在信息条显示。不产生标注框、不改动 COCO。
+         * 坐标复制模式：框选结束后建立**可继续调整**的坐标框，并把归一化
+         * x,y,tox,toy（左上 / 右下，0..1）写入系统剪贴板。
+         * 该框不进入 boxes、不改动 COCO，只是一个取坐标的尺子。
          */
         private fun finishCoord(p: Point) {
             val img = source ?: return
             val start = drawStart ?: return
             drawStart = null
             drawPreview = null
-            val a = toImageDouble(start)
-            val b = toImageDouble(p)
-            val text = NormalizedBox.format(a.first, a.second, b.first, b.second, img.width, img.height)
-            if (text.isEmpty()) {
-                setMode(CanvasMode.NONE)
-                repaint()
+            val a = toImage(start)
+            val b = toImage(p)
+            val rect = Rect(
+                minOf(a.x, b.x),
+                minOf(a.y, b.y),
+                Math.abs(b.x - a.x),
+                Math.abs(b.y - a.y),
+            ).let { clampRect(it, img.width, img.height) }
+            if (rect.w < MIN_DRAW || rect.h < MIN_DRAW) {
+                clearCoordBox()
                 return
             }
+            coordBox = rect
+            copyCoordBox()
+        }
+
+        /** 把坐标框当前的归一化坐标写入剪贴板（创建与每次调整结束都会调用） */
+        private fun copyCoordBox() {
+            val img = source ?: return
+            val box = coordBox ?: return
+            val text = NormalizedBox.format(
+                box.x.toDouble(), box.y.toDouble(),
+                (box.x + box.w).toDouble(), (box.y + box.h).toDouble(),
+                img.width, img.height,
+            )
+            if (text.isEmpty()) return
             CopyPasteManager.getInstance().setContents(StringSelection(text))
             colorLabel.text = "${OkScriptToolkitBundle.message("annotation.coordLabel")} $text"
-            setMode(CanvasMode.NONE)
             repaint()
         }
 
-        /** 拖拽过程中在信息条实时预览即将复制的坐标 */
+        private fun clearCoordBox() {
+            coordBox = null
+            coordDrag = null
+            colorLabel.text = " "
+            repaint()
+        }
+
+        private fun coordScreenRect(): java.awt.Rectangle? = coordBox?.let { toScreenRect(it) }
+
+        private fun findCoordHandleAt(p: Point): String? {
+            val r = coordScreenRect() ?: return null
+            return detectHandle(p.x.toDouble(), p.y.toDouble(), r)
+        }
+
+        private fun coordContains(p: Point): Boolean = coordScreenRect()?.contains(p) == true
+
+        /** 按当前拖拽（移动或缩放）算出新的图像坐标矩形 */
+        private fun applyCoordDrag(p: Point) {
+            val img = source ?: return
+            val d = coordDrag ?: return
+            val dx = (p.x - d.start.x) / scale
+            val dy = (p.y - d.start.y) / scale
+            val o = d.orig
+            var nx = o.x.toDouble()
+            var ny = o.y.toDouble()
+            var nw = o.w.toDouble()
+            var nh = o.h.toDouble()
+            val h = d.handle
+            if (h == null) {
+                nx = o.x + dx
+                ny = o.y + dy
+            } else {
+                // 手柄名是 tl/tr/bl/br/top/bottom/left/right，必须精确匹配
+                if (h == "left" || h == "tl" || h == "bl") { nx = o.x + dx; nw = o.w - dx }
+                if (h == "right" || h == "tr" || h == "br") { nw = o.w + dx }
+                if (h == "top" || h == "tl" || h == "tr") { ny = o.y + dy; nh = o.h - dy }
+                if (h == "bottom" || h == "bl" || h == "br") { nh = o.h + dy }
+                if (nw < MIN_RESIZE) { if (h == "left" || h == "tl" || h == "bl") nx = (o.x + o.w - MIN_RESIZE).toDouble(); nw = MIN_RESIZE.toDouble() }
+                if (nh < MIN_RESIZE) { if (h == "top" || h == "tl" || h == "tr") ny = (o.y + o.h - MIN_RESIZE).toDouble(); nh = MIN_RESIZE.toDouble() }
+            }
+            if (img.width > 0) nx = nx.coerceIn(0.0, (img.width - nw).coerceAtLeast(0.0))
+            if (img.height > 0) ny = ny.coerceIn(0.0, (img.height - nh).coerceAtLeast(0.0))
+            nw = nw.coerceAtMost(img.width - nx).coerceAtLeast(1.0)
+            nh = nh.coerceAtMost(img.height - ny).coerceAtLeast(1.0)
+            coordBox = Rect(nx.toInt(), ny.toInt(), nw.toInt(), nh.toInt())
+            // 拖动过程中只更新读数（不写剪贴板），松手时才复制
+            val box = coordBox ?: return
+            val text = NormalizedBox.format(
+                box.x.toDouble(), box.y.toDouble(),
+                (box.x + box.w).toDouble(), (box.y + box.h).toDouble(),
+                img.width, img.height,
+            )
+            if (text.isNotEmpty()) {
+                colorLabel.text = "${OkScriptToolkitBundle.message("annotation.coordLabel")} $text"
+            }
+        }
+
+        /** 拖拽画新框时在信息条实时预览即将复制的坐标 */
         private fun updateCoordPreview(p: Point) {
             val img = source ?: return
             val start = drawStart ?: return
@@ -798,6 +927,44 @@ class AnnotationDialog(
             if (text.isNotEmpty()) {
                 colorLabel.text = "${OkScriptToolkitBundle.message("annotation.coordLabel")} $text"
             }
+        }
+
+        /** 绘制坐标框：框体 + 8 向手柄 + 当前归一化坐标 */
+        private fun paintCoordBox(g2: Graphics2D) {
+            val box = coordBox ?: return
+            val r = toScreenRect(box)
+            g2.color = COORD_COLOR
+            g2.stroke = BasicStroke(2f)
+            g2.drawRect(r.x, r.y, r.width, r.height)
+
+            g2.color = HANDLE_COLOR
+            for ((hx, hy) in handlePoints(r).values) {
+                g2.fillOval(hx - 4, hy - 4, 8, 8)
+            }
+
+            val text = colorLabel.text.trim()
+            if (text.isNotEmpty()) {
+                g2.color = COORD_COLOR
+                val metrics = g2.fontMetrics
+                val labelY = if (r.y - 4 < metrics.height) r.y + metrics.height + 2 else r.y - 4
+                g2.drawString(text, r.x, labelY)
+            }
+        }
+
+        /** 框的 8 个手柄锚点（四角 + 四边中点） */
+        private fun handlePoints(r: java.awt.Rectangle): Map<String, Pair<Int, Int>> {
+            val mx = r.x + r.width / 2
+            val my = r.y + r.height / 2
+            return mapOf(
+                "tl" to (r.x to r.y),
+                "top" to (mx to r.y),
+                "tr" to (r.x + r.width to r.y),
+                "right" to (r.x + r.width to my),
+                "br" to (r.x + r.width to r.y + r.height),
+                "bottom" to (mx to r.y + r.height),
+                "bl" to (r.x to r.y + r.height),
+                "left" to (r.x to my),
+            )
         }
 
         private fun clampRect(rect: Rect, imgW: Int, imgH: Int): Rect {
@@ -1074,6 +1241,9 @@ class AnnotationDialog(
                     (h * scale).toInt(),
                 )
             }
+
+            // 坐标复制模式的可调框（画在最上层，便于看到手柄与读数）
+            if (mode == CanvasMode.COPYCOORD) paintCoordBox(g2)
         }
     }
 
