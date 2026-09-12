@@ -49,7 +49,9 @@ import javax.swing.JCheckBox
 import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JList
+import javax.swing.JMenuItem
 import javax.swing.JPanel
+import javax.swing.JPopupMenu
 import javax.swing.JTabbedPane
 import javax.swing.JTable
 import javax.swing.ListSelectionModel
@@ -215,6 +217,26 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
                 if (e.clickCount != 2) return
                 val value = effectList.selectedValue ?: return
                 openEffectsFileAt(value.id)
+            }
+
+            override fun mousePressed(e: java.awt.event.MouseEvent) = maybePopup(e)
+            override fun mouseReleased(e: java.awt.event.MouseEvent) = maybePopup(e)
+
+            /** 右键菜单：复制效果 ID（VSCode 里是点 ID 直接复制） */
+            private fun maybePopup(e: java.awt.event.MouseEvent) {
+                if (!e.isPopupTrigger) return
+                val index = effectList.locationToIndex(e.point)
+                if (index < 0) return
+                effectList.selectedIndex = index
+                val value = effectList.selectedValue ?: return
+                JPopupMenu().apply {
+                    add(JMenuItem(msg("characterManager.copyEffectId")).apply {
+                        addActionListener { copyText(value.id) }
+                    })
+                    add(JMenuItem(msg("characterManager.openSource")).apply {
+                        addActionListener { openEffectsFileAt(value.id) }
+                    })
+                }.show(e.component, e.x, e.y)
             }
         })
 
@@ -546,7 +568,20 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         if (char.issueCount > 0) {
             body.add(lineLabel(msg("characterManager.detailIssues", char.issueCount, char.errorCount)))
         }
-        sources?.characterFiles?.get(char.characterId)?.let { body.add(lineLabel(File(it).name)) }
+        // 打开角色 JSON（对齐 VSCode 详情里的 openCharacterJson）：做成无边框链接按钮
+        sources?.characterFiles?.get(char.characterId)?.let { path ->
+            val link = JButton(File(path).name, AllIcons.Actions.OpenNewTab).apply {
+                toolTipText = msg("characterManager.openCharacterJson")
+                isBorderPainted = false
+                isContentAreaFilled = false
+                isOpaque = false
+                addActionListener { openFileAt(path, char.characterId) }
+            }
+            body.add(JPanel(FlowLayout(FlowLayout.LEFT, 4, 0)).apply {
+                alignmentX = Component.LEFT_ALIGNMENT
+                add(link)
+            })
+        }
 
         val addSkill = JButton(msg("characterManager.addSkill"), AllIcons.General.Add).apply {
             toolTipText = msg("characterManager.addSkill")
