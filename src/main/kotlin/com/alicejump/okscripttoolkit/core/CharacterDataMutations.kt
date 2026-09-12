@@ -103,20 +103,53 @@ object CharacterDataMutations {
 
     // ── 强化组编辑（enhancement 增删改，兼容单数/复数字段）────────────
 
-    /** form 键：name / trigger_text / enhancement_effect。 */
-    private fun enhancementNode(form: Map<String, String>): ObjectNode {
-        val node = JSON.createObjectNode()
+    /**
+     * form 键：name / trigger_text / enhancement_effect / trigger_effects /
+     * trigger_effect_mode / effects / visible_pulse。
+     *
+     * 对齐 VSCode 的 `sanitizeEnhancement(data, existing)`：**以既有节点为底**
+     * （`...existing` 展开），只覆盖对话框里出现的字段。真实数据里
+     * `effects`（强化产出，79/79 都有）、`enhancement_visible_pulse`、
+     * `trigger_condition.effects` 都是全量字段，早先按空节点重建会把它们整片抹掉。
+     */
+    private fun enhancementNode(form: Map<String, String>, existing: JsonNode? = null): ObjectNode {
+        val node = if (existing is ObjectNode) existing.deepCopy() else JSON.createObjectNode()
         node.put("name", form["name"] ?: "")
         node.put("enhancement_effect", form["enhancement_effect"] ?: "")
-        node.put("enhancement_visible_pulse", false)
-        val trigger = JSON.createObjectNode()
+        node.put("enhancement_visible_pulse", form["visible_pulse"].isTrue())
+
+        val trigger = node.get("trigger_condition") as? ObjectNode ?: JSON.createObjectNode()
         trigger.put("text", form["trigger_text"] ?: "")
-        val effects = JSON.createArrayNode()
-        (form["effects"] ?: "").lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.forEach { effects.add(it as JsonNode) }
-        trigger.set<JsonNode>("effects", effects)
+        // 触发依赖效果：真实数据一律是 { all: [...] } / { any: [...] } 且元素为字符串
+        val mode = if (form["trigger_effect_mode"].equals("any", ignoreCase = true)) "any" else "all"
+        val triggerArray = JSON.createArrayNode()
+        parseIdList(form["trigger_effects"]).forEach { triggerArray.add(it) }
+        trigger.set<JsonNode>("effects", JSON.createObjectNode().set(mode, triggerArray))
         node.set<JsonNode>("trigger_condition", trigger)
+
+        // 强化产出效果：[{ effect_id, ... }]。按 effect_id 复用既有对象，
+        // 这样 value / duration / target / count 这些对话框不编辑的字段不会丢。
+        val previous = mutableMapOf<String, ObjectNode>()
+        (node.get("effects") as? ArrayNode)?.forEach { item ->
+            val id = item.get("effect_id")?.asText()
+            if (item is ObjectNode && !id.isNullOrBlank()) previous[id] = item
+        }
+        val output = JSON.createArrayNode()
+        parseIdList(form["effects"]).forEach { id ->
+            output.add(previous[id] ?: JSON.createObjectNode().put("effect_id", id))
+        }
+        node.set<JsonNode>("effects", output)
         return node
     }
+
+    /** 逗号 / 分号 / 换行分隔的效果 ID 列表（保持输入顺序，去重）。 */
+    private fun parseIdList(raw: String?): List<String> =
+        raw.orEmpty().split(',', ';', '\n', '\r', '，', '、')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .distinct()
+
+    private fun String?.isTrue(): Boolean = this.equals("true", ignoreCase = true)
 
     fun addEnhancement(path: String, skillId: String, form: Map<String, String>) {
         val (root, skills, file) = skillFile(path)
@@ -142,7 +175,8 @@ object CharacterDataMutations {
         if (enhancements == null || index < 0 || index >= enhancements.size()) {
             throw MutationException("Invalid enhancement index: $index")
         }
-        enhancements.set(index, enhancementNode(form))
+        // 以原节点为底改写，未编辑的字段（effects / 可见脉冲 / 未知键）原样保留
+        enhancements.set(index, enhancementNode(form, enhancements.get(index)))
         skill.put("has_enhancement", true)
         atomicWriteJson(file.toPath(), root)
     }
@@ -159,6 +193,7 @@ object CharacterDataMutations {
         if (enhancements.isEmpty) skill.put("has_enhancement", false)
         atomicWriteJson(file.toPath(), root)
     }
+
 
     /** 删除技能：仅允许删除自定义技能。 */
     fun deleteSkill(path: String, skillId: String) {

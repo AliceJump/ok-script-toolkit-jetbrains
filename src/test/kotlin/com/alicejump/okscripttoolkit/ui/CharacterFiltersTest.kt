@@ -268,22 +268,45 @@ class CharacterFiltersTest {
 
     // ── 问题 ────────────────────────────────────────────────────
 
+    private fun issue(
+        severity: IssueSeverity,
+        message: String,
+        code: String,
+        source: com.alicejump.okscripttoolkit.core.CharacterIssueSource? = null,
+    ) = com.alicejump.okscripttoolkit.core.CharacterIssue(
+        id = code, severity = severity, code = code, message = message, source = source,
+    )
+
     @Test
     fun `issue matches by severity and free text`() {
+        assertTrue(CharacterFilters.issueMatches(issue(IssueSeverity.ERROR, "缺少技能文件", "MISSING_SKILL"), "", null))
+        assertFalse(
+            CharacterFilters.issueMatches(issue(IssueSeverity.ERROR, "x", "y"), "", IssueSeverity.WARNING),
+        )
         assertTrue(
-            CharacterFilters.issueMatches(IssueSeverity.ERROR, "缺少技能文件", "MISSING_SKILL", "", null),
+            CharacterFilters.issueMatches(issue(IssueSeverity.WARNING, "效果未定义", "UNKNOWN_EFFECT"), "unknown_eff", null),
+        )
+        assertTrue(
+            CharacterFilters.issueMatches(issue(IssueSeverity.INFO, "效果未定义", "UNKNOWN_EFFECT"), "未定义", null),
         )
         assertFalse(
-            CharacterFilters.issueMatches(IssueSeverity.ERROR, "x", " y", "", IssueSeverity.WARNING),
+            CharacterFilters.issueMatches(issue(IssueSeverity.INFO, "效果未定义", "UNKNOWN_EFFECT"), "zzz", null),
         )
-        assertTrue(
-            CharacterFilters.issueMatches(IssueSeverity.WARNING, "效果未定义", "UNKNOWN_EFFECT", "unknown_eff", null),
+    }
+
+    @Test
+    fun `issue search also covers the source ids like VSCode does`() {
+        val source = com.alicejump.okscripttoolkit.core.CharacterIssueSource(
+            kind = com.alicejump.okscripttoolkit.core.SourceKind.CHARACTER,
+            characterId = "yi_feng",
+            skillId = "yi_feng_s1",
+            effectId = "ATTACH_FIRE",
+            fileName = "yvonne.json",
         )
-        assertTrue(
-            CharacterFilters.issueMatches(IssueSeverity.INFO, "效果未定义", "UNKNOWN_EFFECT", "未定义", null),
-        )
-        assertFalse(
-            CharacterFilters.issueMatches(IssueSeverity.INFO, "效果未定义", "UNKNOWN_EFFECT", "zzz", null),
-        )
+        val target = issue(IssueSeverity.ERROR, "效果未定义", "UNKNOWN_EFFECT", source)
+        for (needle in listOf("yi_feng", "yi_feng_s1", "attach_fire", "yvonne", "unknown_effect")) {
+            assertTrue(CharacterFilters.issueMatches(target, needle, null), "应能按 $needle 搜到")
+        }
+        assertFalse(CharacterFilters.issueMatches(target, "aglina", null))
     }
 }

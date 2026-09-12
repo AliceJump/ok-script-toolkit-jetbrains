@@ -12,6 +12,7 @@ import com.intellij.util.ui.JBUI
 import java.awt.Dimension
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
+import javax.swing.JCheckBox
 import javax.swing.JComboBox
 import javax.swing.JComponent
 import javax.swing.JLabel
@@ -99,18 +100,37 @@ class SkillDialog(
 }
 
 /** 强化组编辑表单（名称 / 触发文本 / 强化产出效果）。 */
+/**
+ * 强化组新增/编辑表单。
+ *
+ * 真实数据里强化组有 5 类内容：名称、trigger_condition.text、
+ * trigger_condition.effects（{all|any: [id...]}）、enhancement_effect、
+ * effects（强化产出，带 value/duration/target/count）。早先只有前三类可编辑，
+ * 写回时会把后两类整片抹掉，所以这里全部开放。
+ */
 class EnhancementDialog(
     project: Project,
     initialName: String?,
     initialTrigger: String?,
     initialEffect: String? = null,
+    initialTriggerEffects: String? = null,
+    initialTriggerEffectMode: String? = null,
+    initialOutputEffects: String? = null,
+    initialVisiblePulse: Boolean = false,
 ) : DialogWrapper(project) {
 
     private val nameField = JBTextField(initialName ?: "")
     private val triggerField = JBTextField(initialTrigger ?: "")
     private val effectField = JBTextField(initialEffect ?: "")
+    private val triggerEffectsField = JBTextField(initialTriggerEffects ?: "")
+    private val triggerModeBox = JComboBox(arrayOf("all", "any"))
+    private val outputEffectsField = JBTextField(initialOutputEffects ?: "")
+    private val visiblePulseBox = JCheckBox()
 
     init {
+        triggerModeBox.selectedItem =
+            if (initialTriggerEffectMode.equals("any", ignoreCase = true)) "any" else "all"
+        visiblePulseBox.isSelected = initialVisiblePulse
         title = msg("characterManager.enhancements")
         setOKButtonText(msg("annotation.ok"))
         init()
@@ -132,16 +152,23 @@ class EnhancementDialog(
         }
         addField(msg("characterManager.fieldEnhName"), nameField)
         addField(msg("characterManager.fieldTriggerText"), triggerField)
+        addField(msg("characterManager.fieldTriggerEffects"), triggerEffectsField)
+        addField(msg("characterManager.fieldTriggerEffectMode"), triggerModeBox)
         addField(msg("characterManager.fieldEnhEffect"), effectField)
-        form.preferredSize = Dimension(420, form.preferredSize.height)
+        addField(msg("characterManager.fieldOutputEffects"), outputEffectsField)
+        addField(msg("characterManager.fieldVisiblePulse"), visiblePulseBox)
+        form.preferredSize = Dimension(460, form.preferredSize.height)
         return form
     }
 
     fun formValues(): Map<String, String> = mapOf(
         "name" to nameField.text.trim(),
         "trigger_text" to triggerField.text.trim(),
+        "trigger_effects" to triggerEffectsField.text.trim(),
+        "trigger_effect_mode" to (triggerModeBox.selectedItem as? String ?: "all"),
         "enhancement_effect" to effectField.text.trim(),
-        "effects" to "",
+        "effects" to outputEffectsField.text.trim(),
+        "visible_pulse" to visiblePulseBox.isSelected.toString(),
     )
 }
 

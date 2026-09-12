@@ -101,6 +101,7 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
     private val localeTable = JTable(localeModel)
     private val issueSearch = SearchTextField(false)
     private val issueSeverityBox = JComboBox<IssueSeverity?>()
+    private val issueCountLabel = JBLabel()
     private val issueModel = DefaultTableModel(
         arrayOf(
             msg("characterManager.column.severity"),
@@ -257,6 +258,16 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
     private fun buildLocalesTab() {
         localeTable.autoResizeMode = JTable.AUTO_RESIZE_OFF
         localeTable.rowSorter = TableRowSorter(localeModel)
+        // 双击打开该角色的语言源文件（对齐 VSCode 里点角色名跳 assets/lang/characters.json）
+        localeTable.addMouseListener(object : java.awt.event.MouseAdapter() {
+            override fun mouseClicked(e: java.awt.event.MouseEvent) {
+                if (e.clickCount != 2) return
+                val row = localeTable.selectedRow
+                if (row < 0) return
+                val id = localeModel.getValueAt(localeTable.convertRowIndexToModel(row), 0) ?: return
+                openFileAt(paths?.localeFile ?: return, id.toString())
+            }
+        })
         val panel = JPanel(BorderLayout())
         panel.add(JBScrollPane(localeTable), BorderLayout.CENTER)
         tabs.addTab(msg("characterManager.tab.locales"), panel)
@@ -295,6 +306,7 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
             border = JBUI.Borders.empty(6)
             add(issueSearch)
             add(issueSeverityBox)
+            add(issueCountLabel)
         }
         val panel = JPanel(BorderLayout())
         panel.add(toolbar, BorderLayout.NORTH)
@@ -372,6 +384,26 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         applyFilters()
         renderEffects()
         renderIssues()
+        renderTabBadges(snap)
+    }
+
+    /** 标签页上的数量徽标（对齐 VSCode 的 charactersBadge / effectsBadge / localesBadge / issuesBadge）。 */
+    private fun renderTabBadges(snap: CharacterManagerSnapshot) {
+        val counts = listOf(
+            snap.characters.size,
+            snap.effects.size,
+            snap.summary.locales.size,
+            snap.summary.errors + snap.summary.warnings + snap.summary.infos,
+        )
+        val keys = listOf(
+            "characterManager.tab.characters",
+            "characterManager.tab.effects",
+            "characterManager.tab.locales",
+            "characterManager.tab.issues",
+        )
+        for (index in keys.indices) {
+            if (index < tabs.tabCount) tabs.setTitleAt(index, "${msg(keys[index])} (${counts[index]})")
+        }
     }
 
     private fun refillFilterBoxes(snap: CharacterManagerSnapshot) {
@@ -455,15 +487,17 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         val rows = snap.characters.filter { CharacterFilters.matches(it, criteria) }
         val locales = snap.summary.locales
         val header: Array<Any> = (listOf<Any>(msg("characterManager.column.characterId")) + locales).toTypedArray()
+        val missing = msg("characterManager.missing")
         val body: Array<Array<Any>> = rows.map { char ->
-            (listOf<Any>(char.characterId) + locales.map { char.locales[it].orEmpty() }).toTypedArray()
+            (listOf<Any>(char.characterId) +
+                locales.map { char.locales[it].orEmpty().ifBlank { missing } }).toTypedArray()
         }.toTypedArray()
         localeModel.setDataVector(body, header)
     }
 
     private fun filteredIssues(snap: CharacterManagerSnapshot) = snap.issues.filter { issue ->
         CharacterFilters.issueMatches(
-            issue.severity, issue.message, issue.code,
+            issue,
             issueSearch.text.ifBlank { searchField.text },
             issueSeverityBox.selectedItem as? IssueSeverity,
         )
@@ -471,10 +505,12 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
 
     private fun renderIssues() {
         val snap = snapshot ?: return
+        val filtered = filteredIssues(snap)
         issueModel.rowCount = 0
-        for (issue in filteredIssues(snap)) {
+        for (issue in filtered) {
             issueModel.addRow(arrayOf(severityLabel(issue.severity), issue.code, issue.message))
         }
+        issueCountLabel.text = msg("characterManager.issuesCount", filtered.size, snap.issues.size)
     }
 
     // ══ 角色详情 ══════════════════════════════════════════════
@@ -622,7 +658,16 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         index: Int?,
     ) {
         val path = requireSkillFile(char) ?: return
-        val dialog = EnhancementDialog(project, existing?.name, existing?.triggerText, existing?.enhancementEffect)
+        val dialog = EnhancementDialog(
+            project,
+            existing?.name,
+            existing?.triggerText,
+            existing?.enhancementEffect,
+            existing?.triggerEffects?.joinToString(", ") { it.effectId },
+            existing?.triggerEffectMode,
+            existing?.effects?.joinToString(", ") { it.effectId },
+            existing?.visiblePulse ?: false,
+        )
         if (!dialog.showAndGet()) return
         val form = dialog.formValues()
         mutate {

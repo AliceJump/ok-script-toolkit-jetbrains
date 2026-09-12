@@ -1,6 +1,7 @@
 package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.core.CharacterEffectView
+import com.alicejump.okscripttoolkit.core.CharacterIssue
 import com.alicejump.okscripttoolkit.core.CharacterView
 import com.alicejump.okscripttoolkit.core.IssueSeverity
 
@@ -92,16 +93,23 @@ object CharacterFilters {
 
     // ── 问题 ────────────────────────────────────────────────────
 
-    fun issueMatches(
-        severity: IssueSeverity,
-        message: String,
-        code: String,
-        query: String,
-        severityFilter: IssueSeverity?,
-    ): Boolean {
-        if (severityFilter != null && severity != severityFilter) return false
+    /**
+     * 问题的可检索字段。对齐 VSCode：除了 code / message，还要能按来源的
+     * character_id / skill_id / effect_id 搜 —— 排查「某个效果没定义」时
+     * 用户手里的线索往往就是这些 ID。
+     */
+    fun issueHaystack(issue: CharacterIssue): String = listOf(
+        issue.code, issue.message,
+        issue.source?.characterId.orEmpty(),
+        issue.source?.skillId.orEmpty(),
+        issue.source?.effectId.orEmpty(),
+        issue.source?.fileName.orEmpty(),
+    ).joinToString(" ").lowercase()
+
+    fun issueMatches(issue: CharacterIssue, query: String, severityFilter: IssueSeverity?): Boolean {
+        if (severityFilter != null && issue.severity != severityFilter) return false
         val q = query.trim().lowercase()
-        if (q.isNotEmpty() && q !in message.lowercase() && q !in code.lowercase()) return false
+        if (q.isNotEmpty() && q !in issueHaystack(issue)) return false
         return true
     }
 }
