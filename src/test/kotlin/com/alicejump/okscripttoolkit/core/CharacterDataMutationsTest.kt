@@ -149,6 +149,51 @@ class CharacterDataMutationsTest {
         assertTrue(JSON.readTree(file).get("skills").get(0).get("has_enhancement").asBoolean())
     }
 
+    /** 真实数据里 stagger_value / spirit_cost 124/124 都是 int，退化成字符串会污染整个文件。 */
+    @Test
+    fun `updateSkill keeps stagger_value and spirit_cost numeric`() {
+        val file = writeSkill()
+        JSON.readTree(file).get("skills").get(0) // 原技能是 synced，先造一个 custom 的
+        CharacterDataMutations.addSkill(
+            file.absolutePath, "yi_feng_s2",
+            mapOf(
+                "name" to "新技能",
+                "skill_type" to "主动",
+                "element" to "冰",
+                "stagger_value" to "12",
+                "spirit_cost" to "30",
+                "damage_multiplier" to "1.5x",
+            ),
+        )
+        val added = JSON.readTree(file).get("skills").last()
+        assertTrue(added.get("stagger_value").isNumber, "stagger_value 必须是数字")
+        assertTrue(added.get("spirit_cost").isNumber, "spirit_cost 必须是数字")
+        assertEquals(12, added.get("stagger_value").asInt())
+        assertEquals(30, added.get("spirit_cost").asInt())
+        assertEquals("1.5x", added.get("damage_multiplier").asText(), "倍率是字符串")
+        assertEquals(false, added.get("has_enhancement").asBoolean())
+
+        // 改一次仍然是数字
+        CharacterDataMutations.updateSkill(
+            file.absolutePath, "yi_feng_s2",
+            mapOf("name" to "新技能2", "stagger_value" to "7", "spirit_cost" to "0"),
+        )
+        val updated = JSON.readTree(file).get("skills").last()
+        assertEquals("新技能2", updated.get("name").asText())
+        assertTrue(updated.get("stagger_value").isNumber)
+        assertEquals(7, updated.get("stagger_value").asInt())
+        assertEquals(0, updated.get("spirit_cost").asInt())
+    }
+
+    @Test
+    fun `updateSkill refuses to touch a synced skill`() {
+        val file = writeSkill()
+        assertFailsWith<CharacterDataMutations.MutationException> {
+            CharacterDataMutations.updateSkill(file.absolutePath, "yi_feng_s1", mapOf("name" to "x"))
+        }
+        assertEquals("霜噬", JSON.readTree(file).get("skills").get(0).get("name").asText())
+    }
+
     @Test
     fun `deleteEnhancement clears has_enhancement when the list empties`() {
         val file = writeSkill()

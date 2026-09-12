@@ -65,6 +65,25 @@ object CharacterDataMutations {
         return Triple(root, skills, file)
     }
 
+    /**
+     * 数值字段。真实数据里 `stagger_value` / `spirit_cost` **124/124 都是 int**，
+     * 早先整张表单按字符串写回会把它们变成 `"12"` —— 与本项目的其余文件不一致。
+     */
+    private val NUMERIC_SKILL_FIELDS = setOf("stagger_value", "spirit_cost")
+
+    /** 按字段类型写入（对齐 VSCode 的 optionalString / finiteNumber）。 */
+    private fun writeSkillField(node: ObjectNode, key: String, raw: String) {
+        if (key !in NUMERIC_SKILL_FIELDS) {
+            if (raw.isNotBlank()) node.put(key, raw) else node.remove(key)
+            return
+        }
+        val text = raw.trim()
+        text.toLongOrNull()?.let { node.put(key, it); return }
+        val asDouble = text.toDoubleOrNull()
+        if (asDouble != null && !asDouble.isNaN() && !asDouble.isInfinite()) node.put(key, asDouble)
+        else node.put(key, 0)
+    }
+
     /** 新增技能：表单字段写入 skills 数组并标记 _ok_lang_hints_custom。 */
     fun addSkill(
         path: String,
@@ -75,10 +94,10 @@ object CharacterDataMutations {
         ensureSkillIdFree(skills, skillId, excludeSelf = null)
         val node = skills.addObject()
         node.put("skill_id", skillId)
-        for ((k, v) in form) {
-            if (v.isNotBlank()) node.put(k, v)
-        }
+        for ((k, v) in form) writeSkillField(node, k, v)
         node.put("_ok_lang_hints_custom", true)
+        // 对齐 VSCode：新技能默认无强化
+        if (!node.has("has_enhancement")) node.put("has_enhancement", false)
         atomicWriteJson(file.toPath(), root)
     }
 
@@ -94,9 +113,7 @@ object CharacterDataMutations {
         if (skill.get("_ok_lang_hints_custom")?.asBoolean(false) != true) {
             throw MutationException("Skill '$skillId' is synced and locked")
         }
-        for ((k, v) in form) {
-            if (v.isNotBlank()) skill.put(k, v) else skill.remove(k)
-        }
+        for ((k, v) in form) writeSkillField(skill, k, v)
         skill.put("_ok_lang_hints_custom", true)
         atomicWriteJson(file.toPath(), root)
     }
