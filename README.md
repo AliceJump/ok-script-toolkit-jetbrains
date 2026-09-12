@@ -42,7 +42,8 @@ JetBrains Platform/PyCharm port of the VS Code extension in the repository root.
   `configGroups`), per-task overrides with auto-save, run/stop/pause/resume,
   timeout, and a live output console.
 - Toolbox in the task launcher (also the entry point for the character
-  manager — the toolbar has a characters button next to the task controls):
+  manager — a full-width button sits on top of the toolbox, exactly like the
+  `toolboxOpenCharacterManager` button in the VS Code toolbox view):
   connect/disconnect the game window
   (`connect_game.py`, auto-starts the game and reuses the connection for every
   task via `configs/devices.json`) and a debug-overlay toggle that is adopted

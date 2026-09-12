@@ -4,6 +4,7 @@ import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
 import com.alicejump.okscripttoolkit.toolbox.ToolboxService
 import com.alicejump.okscripttoolkit.ui.ToolbarAction
+import com.alicejump.okscripttoolkit.ui.openCharacterManager
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.ui.JBColor
 import com.intellij.ui.dsl.listCellRenderer.listCellRenderer
@@ -98,6 +99,8 @@ class TaskLauncherPanel(private val project: Project) {
     private val taskRunner = TaskRunnerService.getInstance(project)
 
     // ── Toolbox（游戏连接 + 调试浮层，状态由 ToolboxService 持有）──
+    /** 角色管理入口按钮，见 buildCharactersEntry()。 */
+    private val charactersButton = JButton(OkScriptToolkitBundle.message("characterManager.open"))
     private val connectGameButton = JButton(OkScriptToolkitBundle.message("toolbox.connectGame"))
     private val disconnectGameButton = JButton(OkScriptToolkitBundle.message("toolbox.disconnect"))
     private val gameStatusLabel = JBLabel()
@@ -209,11 +212,26 @@ class TaskLauncherPanel(private val project: Project) {
 
         val northPane = JPanel(BorderLayout())
         northPane.add(toolbar, BorderLayout.NORTH)
+        northPane.add(buildCharactersEntry(), BorderLayout.CENTER)
         northPane.add(buildToolboxBar(), BorderLayout.SOUTH)
 
         mainPanel.add(northPane, BorderLayout.NORTH)
         mainPanel.add(centerPane, BorderLayout.CENTER)
         mainPanel.add(statusBar, BorderLayout.SOUTH)
+    }
+
+    /**
+     * 角色管理入口：VS Code 里「工具箱」侧边栏的第一行就是「打开角色技能管理面板」
+     * （`toolboxOpenCharacterManager`），下面才是游戏连接与调试浮层。这里同样把
+     * 整行按钮放在工具箱条上方 —— 角色管理已改为编辑器标签页，不再占工具窗。
+     */
+    private fun buildCharactersEntry(): JPanel {
+        charactersButton.toolTipText = OkScriptToolkitBundle.message("characterManager.openDescription")
+        charactersButton.addActionListener { openCharacterManager(project) }
+        val panel = JPanel(BorderLayout())
+        panel.border = BorderFactory.createEmptyBorder(2, 6, 4, 6)
+        panel.add(charactersButton, BorderLayout.CENTER)
+        return panel
     }
 
     /** 工具箱条：连接/断开游戏、连接状态、调试浮层开关（与 VS Code 侧栏工具箱同源状态） */
