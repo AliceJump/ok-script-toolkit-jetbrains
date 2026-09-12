@@ -29,12 +29,21 @@ JetBrains Platform/PyCharm port of the VS Code extension in the repository root.
 - The annotation editor gained a coords mode (`C`) that box-selects and copies
   normalized `x,y,tox,toy` without creating an annotation box; the same
   adjustable-box behaviour applies.
-- Character manager tool window with diagnostics and double-click
-  jump-to-source for issues and effects.
+- Character manager opened as a full editor tab (not a tool window) so it gets
+  the same room as the VS Code `ViewColumn.One` webview. It is carried by a
+  non-physical `CharacterManagerFile` plus a `FileEditorProvider` with
+  `FileEditorPolicy.HIDE_DEFAULT_EDITOR`. Four tabs — characters / effects /
+  locales / issues — with star, element, profession, skill-type,
+  has-enhancements and has-issues filters, an effect usage filter
+  (used / unused / undefined), skill and enhancement CRUD, effect and category
+  insertion into `src/data/effects.py`, and double-click jump-to-source for
+  issues and effects.
 - Task launcher tool window: schema-driven parameter forms (grouped by
   `configGroups`), per-task overrides with auto-save, run/stop/pause/resume,
   timeout, and a live output console.
-- Toolbox in the task launcher: connect/disconnect the game window
+- Toolbox in the task launcher (also the entry point for the character
+  manager — the toolbar has a characters button next to the task controls):
+  connect/disconnect the game window
   (`connect_game.py`, auto-starts the game and reuses the connection for every
   task via `configs/devices.json`) and a debug-overlay toggle that is adopted
   by launched tasks, toggled live on running tasks, and backed by a persistent

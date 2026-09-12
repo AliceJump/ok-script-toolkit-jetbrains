@@ -26,6 +26,15 @@
 
         <documentationProvider implementationClass="com.alicejump.okscripttoolkit.editor.OkDocumentationProvider"/>
 
+        <!-- 角色管理开成编辑器标签页（对齐 VSCode 的 ViewColumn.One 大窗口），
+             载体是非物理的 CharacterManagerFile，只由下面的 provider 接管。 -->
+        <fileType
+            name="ok-script Character Manager"
+            implementationClass="com.alicejump.okscripttoolkit.ui.CharacterManagerFileType"
+            fieldName="INSTANCE"
+            extensions="okcharacters"/>
+        <fileEditorProvider implementation="com.alicejump.okscripttoolkit.ui.CharacterManagerEditorProvider"/>
+
         <codeInsight.declarativeInlayProvider
             language="Python"
             providerId="ok.script.toolkit.python"
@@ -60,11 +69,6 @@
             anchor="right"
             icon="/icons/tempShots.svg"
             factoryClass="com.alicejump.okscripttoolkit.ui.TempScreenshotToolWindowFactory"/>
-        <toolWindow
-            id="ok-script Characters"
-            anchor="right"
-            icon="/icons/toolbox.svg"
-            factoryClass="com.alicejump.okscripttoolkit.ui.CharacterToolWindowFactory"/>
         <toolWindow
             id="ok-script Tasks"
             anchor="bottom"
