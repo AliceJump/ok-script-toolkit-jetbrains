@@ -135,7 +135,9 @@ class ScreenshotCapture(private val project: Project) {
     }
 
     /**
-     * 执行截图（对齐 VSCode 版 captureWithScript）。
+     * 执行截图（对齐 VSCode 版 captureWithScript + runCaptureScript）。
+     * 截图方式由 [methodOverride]（面板临时指定）或设置项 captureMethod 决定，
+     * 以 --method 传给 capture_game_window.py；不传时脚本默认 auto。
      * 成功返回输出文件，失败返回 null（原因写入 [error]）。
      */
 
@@ -146,6 +148,8 @@ class ScreenshotCapture(private val project: Project) {
         windowConfig: WindowConfig?,
         titleRegex: String?,
         error: StringBuilder,
+        /** 非 null 时本次截图强制走该方式（面板「硬前台」勾选传 foreground），覆盖设置项 */
+        methodOverride: String? = null,
     ): Path? {
         LOG.info("========== Screenshot capture BEGIN ==========")
         LOG.info("capture.projectDir=$projectDir")
@@ -261,6 +265,15 @@ class ScreenshotCapture(private val project: Project) {
         } else {
             LOG.info("capture.args.projectDir=<blank>")
         }
+
+        // --method：显式覆盖优先，其次设置项，最后 auto（与 capture_game_window.py 的默认值一致）
+        val method = methodOverride
+            ?.takeIf { it.isNotBlank() }
+            ?.let { OkScriptToolkitSettings.normalizeCaptureMethod(it) }
+            ?: OkScriptToolkitSettings.getInstance(project).captureMethod()
+        args.add("--method")
+        args.add(method)
+        LOG.info("capture.args.method=$method (override=$methodOverride)")
 
         // ------------------------------------------------------------
         // 4. Log arguments individually
@@ -547,7 +560,12 @@ class ScreenshotCapture(private val project: Project) {
      * @param onProbed 探测到可用窗口配置时回调（已切到 EDT），供调用方更新状态栏
      * @return 成功返回 null；用户取消返回 [CANCELLED]；失败返回错误描述
      */
-    fun captureInteractive(outputPath: Path, onProbed: ((WindowConfig) -> Unit)? = null): String? {
+    fun captureInteractive(
+        outputPath: Path,
+        /** 非 null 时本次截图强制走该方式（面板「硬前台」勾选传 foreground），覆盖设置项 */
+        methodOverride: String? = null,
+        onProbed: ((WindowConfig) -> Unit)? = null,
+    ): String? {
         val projectDir = detectProjectDir(project)
         val pythonPath = detectPythonPath(projectDir, project)
         val probed = probeWindowConfig(projectDir, pythonPath)
@@ -578,7 +596,7 @@ class ScreenshotCapture(private val project: Project) {
         if (projectRoot.isBlank()) return OkScriptToolkitBundle0.message("taskLauncher.noProject")
 
         val error = StringBuilder()
-        val result = capture(projectRoot, pythonPath, outputPath, config, titleRegex, error)
+        val result = capture(projectRoot, pythonPath, outputPath, config, titleRegex, error, methodOverride)
         return if (result == null) {
             error.toString().ifBlank { OkScriptToolkitBundle0.message("templateAsset.screenshotFailed", "") }
         } else {

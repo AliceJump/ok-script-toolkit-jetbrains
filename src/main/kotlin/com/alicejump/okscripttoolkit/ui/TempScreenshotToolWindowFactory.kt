@@ -49,6 +49,7 @@ import javax.imageio.ImageIO
 import javax.swing.BorderFactory
 import javax.swing.ImageIcon
 import javax.swing.JButton
+import javax.swing.JCheckBox
 import javax.swing.JComponent
 import javax.swing.JMenuItem
 import javax.swing.JOptionPane
@@ -110,6 +111,8 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
 
     private val pasteButton = JButton(msg("tempShots.paste"))
     private val captureButton = JButton(msg("tempShots.capture"))
+    /** 「硬前台」：本次截图强制把游戏窗口切到前台再截（会抢焦点），状态按项目持久化 */
+    private val hardForegroundCheck: JCheckBox = HardForegroundToggle.create(project)
     private val clearButton = JButton(msg("tempShots.clear"))
 
     /** 降采样预览缓存：id → 预览图（舞台与轮播使用，避免常驻 4K 原图） */
@@ -136,7 +139,9 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
         clearButton.toolTipText = msg("tempShots.clearTooltip")
         carouselToggle.toolTipText = msg("tempShots.carouselTooltip")
         coordToggle.toolTipText = msg("tempShots.coordTooltip")
-        for (b in listOf(pasteButton, captureButton, clearButton, carouselToggle, coordToggle)) {
+        for (b in listOf<javax.swing.AbstractButton>(
+            pasteButton, captureButton, hardForegroundCheck, clearButton, carouselToggle, coordToggle,
+        )) {
             b.isFocusable = false
             toolbar.add(b)
         }
@@ -379,8 +384,9 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
         captureButton.isEnabled = false
         statusLabel.text = msg("tempShots.capturing")
         val outputPath = store.newFilePath()
+        val methodOverride = HardForegroundToggle.methodOverride(hardForegroundCheck)
         CompletableFuture.supplyAsync {
-            ScreenshotCapture(project).captureInteractive(outputPath.toPath()) { config ->
+            ScreenshotCapture(project).captureInteractive(outputPath.toPath(), methodOverride) { config ->
                 statusLabel.text = msg("tempShots.detected", config.describe())
             }
         }.thenAccept { error ->

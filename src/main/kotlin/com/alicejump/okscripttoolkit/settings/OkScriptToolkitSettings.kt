@@ -35,6 +35,8 @@ class OkScriptToolkitSettings : SimplePersistentStateComponent<OkScriptToolkitSe
         var characterAvatarTemplateRegex by string("^battle[_-]?icon[_-]?")
         // Template assets settings
         var okTemplatesDirectory by string("ok_templates")
+        // Screenshot settings
+        var captureMethod by string("auto")
     }
 
     init {
@@ -43,6 +45,16 @@ class OkScriptToolkitSettings : SimplePersistentStateComponent<OkScriptToolkitSe
     }
 
     companion object {
+        /** 截图方式可选值，与 capture_game_window.py 的 --method 保持一致 */
+        val CAPTURE_METHODS = listOf("auto", "wgc", "bitblt", "foreground")
+
+        /** 面板上的「硬前台」复选框对应的方式：激活窗口到前台再读屏幕 */
+        const val CAPTURE_METHOD_FOREGROUND = "foreground"
+
+        /** 非法值（含旧配置残留）一律回退到 auto，避免把脏值传给 python 脚本 */
+        fun normalizeCaptureMethod(value: String?): String =
+            value?.trim()?.takeIf { it in CAPTURE_METHODS } ?: "auto"
+
         fun getInstance(project: Project): OkScriptToolkitSettings = project.service()
     }
 
@@ -60,4 +72,5 @@ class OkScriptToolkitSettings : SimplePersistentStateComponent<OkScriptToolkitSe
     fun characterLocaleFile(): String = state.characterLocaleFile.orEmpty().ifBlank { "assets/lang/characters.json" }
     fun characterAvatarTemplateRegex(): String = state.characterAvatarTemplateRegex.orEmpty().ifBlank { "^battle[_-]?icon[_-]?" }
     fun okTemplatesDirectory(): String = state.okTemplatesDirectory.orEmpty().ifBlank { "ok_templates" }
+    fun captureMethod(): String = normalizeCaptureMethod(state.captureMethod)
 }

@@ -52,6 +52,8 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     private val data = project.service<TemplateAssetDataService>()
 
     private val searchField = JBTextField()
+    /** 「硬前台」：本次截图强制把游戏窗口切到前台再截（会抢焦点），状态按项目持久化 */
+    private val hardForegroundCheck: JCheckBox = HardForegroundToggle.create(project)
     private val gridPanel = JPanel(GridLayout(0, ThumbGridPolicy.columnsFor(540), ThumbGridPolicy.HGAP_VALUE, ThumbGridPolicy.HGAP_VALUE)).apply {
         isOpaque = false
     }
@@ -107,6 +109,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             override fun changedUpdate(e: javax.swing.event.DocumentEvent?) = applyFilter()
         })
         toolbar.add(searchField, BorderLayout.CENTER)
+        toolbar.add(hardForegroundCheck, BorderLayout.WEST)
 
         val importAction = ToolbarAction(AllIcons.Actions.AddFile, OkScriptToolkitBundle.message("templateAsset.import")) { handleImport() }
         val screenshotAction = ToolbarAction(AllIcons.Actions.Preview, OkScriptToolkitBundle.message("templateAsset.screenshot")) { handleScreenshot() }
@@ -381,6 +384,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         val projectDir = ScreenshotCapture.detectProjectDir(project)
 
         statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotProbing")
+        val methodOverride = HardForegroundToggle.methodOverride(hardForegroundCheck)
         CompletableFuture.supplyAsync<Pair<Path?, String?>> {
             val projectRoot = projectDir.ifBlank { project.basePath.orEmpty() }
                 .ifBlank { return@supplyAsync null to "no project dir" }
@@ -393,7 +397,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             Files.createDirectories(outputDir)
             val ts = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
             val outputPath = outputDir.resolve("screenshot_$ts.png")
-            val error = ScreenshotCapture(project).captureInteractive(outputPath) { config ->
+            val error = ScreenshotCapture(project).captureInteractive(outputPath, methodOverride) { config ->
                 statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotDetected", config.describe())
             }
             outputPath to error
