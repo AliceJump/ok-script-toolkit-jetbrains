@@ -23,7 +23,8 @@
   **字段描述渲染**、**sub_configs 子配置树**（boolean 条件显隐+折叠组+groupSelector 隐藏）
 - 角色面板（只读+技能 CRUD+强化组）、**状态栏/表头去硬编码英文**
 - 素材库：**批量导入+数字序号自动命名（nextImageName）**、
-  **saveToAssets 导出可取消**、截图采集、标注基础操作、数据源、
+  **saveToAssets 导出可取消**、截图采集（**截图方式 auto/wgc/bitblt/foreground
+  + 面板「硬前台」单次覆盖**）、标注基础操作、数据源、
   **数据文件 watcher 自动刷新面板**（VFS 监听+300ms 防抖+相关性过滤）
 - **工具箱：游戏连接/断开（connect_game.py，未运行自动启动）、调试浮层开关
   （任务启动沿用 OK_TOOLKIT_USE_OVERLAY、运行中 stdin overlay_on/off 即时下发、
@@ -52,3 +53,6 @@
 - sub_configs 子配置树（91c5dd5）
 - 素材导出取消（b78b76f）
 - 父仓 6 语言过期键 okLangHints→okScriptToolkit（父仓 60ded3e）
+- 截图能力对齐父仓 9ab367f：设置项 captureMethod、ScreenshotCapture 传 --method、
+  素材与临时截图面板「硬前台」复选框（d53a948 / f007aa5 / cdca803）；
+  父仓 cecadb7 的 windows.args 走共享 python/，无需 Kotlin 改动
