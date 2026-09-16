@@ -30,6 +30,12 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
     private val characterAvatarTemplateRegex = JBTextField()
     // Template assets settings
     private val okTemplatesDirectory = JBTextField()
+    // Screenshot settings
+    private val captureMethod = javax.swing.JComboBox(OkScriptToolkitSettings.CAPTURE_METHODS.toTypedArray())
+
+    init {
+        captureMethod.toolTipText = OkScriptToolkitBundle.message("settings.captureMethodTooltip")
+    }
 
     override fun getDisplayName(): String = OkScriptToolkitBundle.message("settings.displayName")
 
@@ -89,6 +95,11 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
                 cell(okTemplatesDirectory).align(AlignX.FILL)
             }
         }
+        group(OkScriptToolkitBundle.message("settings.capture")) {
+            row(OkScriptToolkitBundle.message("settings.captureMethod")) {
+                cell(captureMethod)
+            }
+        }
     }.also { reset() }
 
     override fun isModified(): Boolean {
@@ -109,7 +120,8 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
             characterSkillsDirectory.text != state.characterSkillsDirectory.orEmpty() ||
             characterLocaleFile.text != state.characterLocaleFile.orEmpty() ||
             characterAvatarTemplateRegex.text != state.characterAvatarTemplateRegex.orEmpty() ||
-            okTemplatesDirectory.text != state.okTemplatesDirectory.orEmpty()
+            okTemplatesDirectory.text != state.okTemplatesDirectory.orEmpty() ||
+            (captureMethod.selectedItem as? String).orEmpty() != state.captureMethod.orEmpty()
     }
 
     override fun apply() {
@@ -131,6 +143,7 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
         settings.state.characterLocaleFile = characterLocaleFile.text.trim()
         settings.state.characterAvatarTemplateRegex = characterAvatarTemplateRegex.text.trim()
         settings.state.okTemplatesDirectory = okTemplatesDirectory.text.trim()
+        settings.state.captureMethod = (captureMethod.selectedItem as? String).orEmpty()
     }
 
     override fun reset() {
@@ -152,6 +165,7 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
         characterLocaleFile.text = state.characterLocaleFile.orEmpty()
         characterAvatarTemplateRegex.text = state.characterAvatarTemplateRegex.orEmpty()
         okTemplatesDirectory.text = state.okTemplatesDirectory.orEmpty()
+        captureMethod.selectedItem = state.captureMethod.orEmpty().ifBlank { "auto" }
     }
 
     private fun splitList(value: String): List<String> = value
