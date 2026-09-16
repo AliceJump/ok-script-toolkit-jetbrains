@@ -7,7 +7,7 @@ import com.alicejump.okscripttoolkit.ui.ToolbarAction
 import com.alicejump.okscripttoolkit.ui.openCharacterManager
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.ui.JBColor
-import com.intellij.ui.dsl.listCellRenderer.listCellRenderer
+import com.intellij.ui.dsl.listCellRenderer.textListCellRenderer
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
@@ -509,15 +509,26 @@ class TaskLauncherPanel(private val project: Project) {
         }
     }
 
-    /** 下拉/多选列表的显示渲染器：option_labels 按索引对应，无标签时显示原始值 */
+    /**
+     * 下拉/多选列表的显示渲染器：option_labels 按索引对应，无标签时显示原始值。
+     *
+     * 用 [textListCellRenderer] 而非 `listCellRenderer { text(...) }`：后者的 lambda 接收者是
+     * `LcrRow`，带 `@ApiStatus.Experimental`，Plugin Verifier 会对 2026.3 EAP 报 9 处
+     * experimental API usage（3×LcrRow 接口 + 3×getValue + 3×text$default）。
+     * [textListCellRenderer] 走同一套 Kotlin UI DSL 渲染管线（圆角选中、缩放、无障碍），
+     * 但签名里不出现 `LcrRow`，也是平台在 `SimpleListCellRenderer.create` 废弃说明里指定的替代品。
+     *
+     * 注意只能用它**单参**重载：`textListCellRenderer(nullValue, textExtractor)` 在 251 里
+     * 还是 `@ApiStatus.Internal`，会触发 verifier 的 INTERNAL_API_USAGES（进而让 verifyPlugin 失败）。
+     * 空值因此由 lambda 自己兜底成 ""。
+     */
     private fun optionLabelRenderer(options: List<*>, labels: List<*>): javax.swing.ListCellRenderer<Any?> =
-        listCellRenderer<Any?> {
-            val value = value
-            if (value != null) {
-                val index = options.indexOf(value)
-                text(if (index >= 0) labels.getOrNull(index)?.toString() ?: value.toString() else value.toString())
+        textListCellRenderer<Any?> { value ->
+            if (value == null) {
+                ""
             } else {
-                text("")
+                val index = options.indexOf(value)
+                if (index >= 0) labels.getOrNull(index)?.toString() ?: value.toString() else value.toString()
             }
         }
 
@@ -962,17 +973,17 @@ class TaskLauncherPanel(private val project: Project) {
                 leafField.isVisible = false
                 val groupCombo = JComboBox(options.keys.toTypedArray())
                 // 对齐 VSCode buildCascadeSelect：组名/叶子用本地化标签，保存原始值
-                groupCombo.renderer = listCellRenderer<Any?> {
-                    val group = value?.toString()
-                    text((categoryLabels?.get(group) ?: group)?.toString() ?: "")
+                groupCombo.renderer = textListCellRenderer<Any?> { group ->
+                    val key = group?.toString()
+                    (categoryLabels?.get(key) ?: key)?.toString() ?: ""
                 }
                 val leafCombo = JComboBox<String>()
-                leafCombo.renderer = listCellRenderer<Any?> {
-                    val leaf = value?.toString()
+                leafCombo.renderer = textListCellRenderer<Any?> { leafValue ->
+                    val leaf = leafValue?.toString()
                     val values = options[groupCombo.selectedItem] as? List<*>
                     val idx = values?.indexOfFirst { it?.toString() == leaf } ?: -1
                     val labelsForGroup = (groupCombo.selectedItem as? String)?.let { leafLabels?.get(it) } as? List<*>
-                    text(labelsForGroup?.getOrNull(idx)?.toString() ?: leaf ?: "")
+                    labelsForGroup?.getOrNull(idx)?.toString() ?: leaf ?: ""
                 }
                 fun fillLeaves(group: Any?) {
                     leafCombo.removeAllItems()
