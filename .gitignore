@@ -6,6 +6,9 @@ next_error/
 # IntelliJ IDEA
 .idea/
 *.iml
+# IDE 编译输出目录（含 .kt 副本与 resources 副本，无 .class）。
+# 不加这条的话，RELEASING.md 里的 `git add .` 会把 87 个文件 / 1.1 MB 提交进仓库。
+bin/
 
 # Local environment
 local.properties
