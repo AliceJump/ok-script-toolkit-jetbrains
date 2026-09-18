@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="icon.png" alt="ok-script Toolkit for JetBrains" width="128" height="128">
+
 # ok-script Toolkit for JetBrains
 
 **The JetBrains Platform / PyCharm port of the [ok-script Toolkit](../README.md) VS Code extension.**
