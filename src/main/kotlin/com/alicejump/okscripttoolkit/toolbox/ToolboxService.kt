@@ -99,6 +99,16 @@ class ToolboxService(private val project: Project) : Disposable {
     @Volatile
     private var overlayHostProjectDir = ""
 
+    /** 最近一次浮层开关的上下文：执行器退出后要把独立宿主拉回来时复用 */
+    @Volatile
+    private var lastOverlayProjectDir = ""
+    @Volatile
+    private var lastOverlayPythonPath = ""
+
+    /** 执行器是否在跑（浮层互斥用，见 onExecutorRunningChanged） */
+    @Volatile
+    private var executorRunning = false
+
     /** 连接进行中标记（防重入；UI 据此禁用连接按钮） */
     private val connecting = AtomicBoolean(false)
 
@@ -279,11 +289,37 @@ class ToolboxService(private val project: Project) : Disposable {
             return
         }
         saveState(projectDir) { it.copy(overlay = enabled) }
+        // 记下上下文：执行器退出后要把独立宿主拉回来时用得上（见 onExecutorRunningChanged）
+        lastOverlayProjectDir = projectDir
+        lastOverlayPythonPath = pythonPath
         sendOverlayCommand(enabled)
         if (enabled && loadState(projectDir).game != null) {
             startOverlayHost(projectDir, pythonPath)
         } else if (!enabled) {
             stopOverlayHost()
+        }
+    }
+
+    /**
+     * 执行器启停通知（任务面板调用）——**浮层互斥**。
+     *
+     * 执行器进程自己持有 Win32GdiOverlay，它跑着的时候独立浮层宿主必须让位，否则同一个
+     * 游戏窗口上会有两个 overlay 重复绘制边框 / 识别框，Alt+右键框选也会互相抢占。
+     * 执行器退出后，若浮层开关仍开着且工具箱这边还连着游戏，就把宿主拉回来 ——
+     * 否则会出现「跑完一次任务，浮层就没了」。
+     */
+    fun onExecutorRunningChanged(running: Boolean) {
+        if (executorRunning == running) return
+        executorRunning = running
+        if (running) {
+            stopOverlayHost()
+            return
+        }
+        val dir = lastOverlayProjectDir
+        if (dir.isBlank()) return
+        val state = loadState(dir)
+        if (state.overlay && state.game != null) {
+            startOverlayHost(dir, lastOverlayPythonPath)
         }
     }
 
@@ -309,9 +345,15 @@ class ToolboxService(private val project: Project) : Disposable {
 
     // ── Persistent overlay host ───────────────────────────────────────
 
-    /** 拉起常驻浮层宿主（同项目已运行则复用） */
+    /**
+     * 拉起常驻浮层宿主（同项目已运行则复用）。
+     *
+     * **浮层互斥**：执行器进程自带 overlay，它跑着的时候独立宿主直接让位
+     * （见 onExecutorRunningChanged），避免同一窗口上两个 overlay 重复绘制。
+     */
     fun startOverlayHost(projectDir: String, pythonPath: String) {
         if (projectDir.isBlank()) return
+        if (executorRunning) return
         val existing = overlayHost
         if (existing != null && overlayHostProjectDir == projectDir && existing.isAlive) return
         stopOverlayHost()
