@@ -103,19 +103,17 @@ class PythonScriptRunner(private val project: Project) {
     fun parseExtraArgs(value: String?): List<String> = PythonScriptUtils.parseExtraArgs(value)
 
     /**
-     * 构建运行任务的命令行参数。
-     * 对应 VS Code 版本的 buildRunTaskCommand 函数。
+     * 构建常驻执行器命令行。对应 VS Code 版本的 buildExecutorCommand 函数。
+     *
+     * 单进程模型：一次启动即连接游戏，随后由框架 TaskExecutor 循环轮询全部已启用的
+     * 触发任务；一次性任务经 stdin 的 onetime_enqueue 命令入队，不再是启动参数。
      */
-    fun buildRunTaskCommand(
+    fun buildExecutorCommand(
         pythonScriptDir: String,
-        taskClassName: String,
-        taskModule: String,
         configModule: String = "src.config",
     ): List<String> {
         return listOf(
-            "$pythonScriptDir/run_task.py",
-            "--task", taskClassName,
-            "--task-module", taskModule,
+            "$pythonScriptDir/run_executor.py",
             "--config-module", configModule,
         )
     }
@@ -132,6 +130,7 @@ object PythonScriptLocator {
     val BUNDLED_SCRIPTS = listOf(
         "parse_config_tasks.py",
         "probe_task_schemas.py",
+        "run_executor.py",
         "run_task.py",
         "capture_game_window.py",
         "probe_window_config.py",

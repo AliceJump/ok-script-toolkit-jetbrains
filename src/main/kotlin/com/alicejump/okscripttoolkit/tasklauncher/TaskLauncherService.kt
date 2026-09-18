@@ -25,7 +25,9 @@ class TaskLauncherService(private val project: Project) {
 
         private const val PARSE_CONFIG_SCRIPT = "parse_config_tasks.py"
         private const val PROBE_SCHEMA_SCRIPT = "probe_task_schemas.py"
-        private const val RUN_TASK_SCRIPT = "run_task.py"
+
+        /** 常驻执行器：单进程连接 + 多触发任务轮询，取代旧的 run_task.py 单任务启动 */
+        private const val EXECUTOR_SCRIPT = "run_executor.py"
         private const val TASKS_CONFIG_FILE = ".idea/ok-script-toolkit-tasks.json"
         private const val SCHEMA_CACHE_FILE = ".idea/ok-script-toolkit-schema.json"
     }
@@ -38,6 +40,11 @@ class TaskLauncherService(private val project: Project) {
         val module: String,
         @JsonProperty("class") val className: String,
         val displayName: String = className,
+        /**
+         * 任务类型：触发任务走「勾选启用 → 入列轮询」，一次性任务走「运行 → 入队执行一次」。
+         * 由 parse_config_tasks.py 直接给出，不依赖 schema 采集完成。
+         */
+        val kind: String? = null,
     )
 
     data class TaskListResult(
@@ -92,6 +99,8 @@ class TaskLauncherService(private val project: Project) {
     ) {
         data class ProjectConfig(
             val tasks: Map<String, TaskConfig> = emptyMap(),
+            /** 已勾选「启用」的触发任务 key（module::Class），重开工具窗 / IDE 自动入列 */
+            val enabledTriggers: List<String> = emptyList(),
         )
     }
 
@@ -138,6 +147,7 @@ class TaskLauncherService(private val project: Project) {
                         module = node.get("module").asText(),
                         className = node.get("class").asText(),
                         displayName = node.get("name")?.asText(null) ?: node.get("class").asText(),
+                        kind = "onetime",
                     ),
                 )
             }
@@ -147,6 +157,7 @@ class TaskLauncherService(private val project: Project) {
                         module = node.get("module").asText(),
                         className = node.get("class").asText(),
                         displayName = node.get("name")?.asText(null) ?: node.get("class").asText(),
+                        kind = "trigger",
                     ),
                 )
             }
@@ -248,14 +259,16 @@ class TaskLauncherService(private val project: Project) {
 
     // ── Run command builder ───────────────────────────────────────────
 
-    fun buildRunTaskCommand(
-        task: TaskInfo,
-        configModule: String = "src.config",
-    ): List<String> {
-        return pythonRunner.buildRunTaskCommand(
+    /**
+     * 常驻执行器命令行：单一进程连接游戏并轮询全部已启用的触发任务。
+     *
+     * 与旧 run_task.py 的差异见 python/run_executor.py 顶部说明 —— 旧路径走
+     * `ok.run_task(config, task=<单个任务>)`，框架会把 executor.trigger_tasks
+     * 收窄成单个任务并 disable 其余触发任务，因此无法多触发任务串连轮询。
+     */
+    fun buildExecutorCommand(configModule: String = "src.config"): List<String> {
+        return pythonRunner.buildExecutorCommand(
             pythonScriptDir = getPythonScriptDir(),
-            taskClassName = task.className,
-            taskModule = task.module,
             configModule = configModule,
         )
     }
@@ -304,7 +317,13 @@ class TaskLauncherService(private val project: Project) {
                     },
                 )
             }
-            projects[projectDir] = TaskConfigStore.ProjectConfig(tasks = tasks)
+            projects[projectDir] = TaskConfigStore.ProjectConfig(
+                tasks = tasks,
+                enabledTriggers = projectNode.get("enabledTriggers")
+                    ?.takeIf { it.isArray }
+                    ?.mapNotNull { it.asText(null) }
+                    ?: emptyList(),
+            )
         }
         return TaskConfigStore(projects = projects)
     }
@@ -332,6 +351,23 @@ class TaskLauncherService(private val project: Project) {
         val tasks = projectConfig.tasks.toMutableMap()
         tasks[taskKey] = config
         val updated = store.copy(projects = projects.apply { put(getProjectRoot(), projectConfig.copy(tasks = tasks)) })
+        saveTaskConfigs(updated)
+        configStoreCache = updated
+    }
+
+    // ── 触发任务启用集合 ──────────────────────────────────────────────
+
+    /** 已勾选的触发任务 key 列表（module::Class） */
+    fun loadEnabledTriggers(): List<String> =
+        loadTaskConfigs().projects[getProjectRoot()]?.enabledTriggers ?: emptyList()
+
+    fun saveEnabledTriggers(keys: List<String>) {
+        val store = loadTaskConfigs()
+        val projects = store.projects.toMutableMap()
+        val projectConfig = projects[getProjectRoot()] ?: TaskConfigStore.ProjectConfig()
+        val updated = store.copy(projects = projects.apply {
+            put(getProjectRoot(), projectConfig.copy(enabledTriggers = keys))
+        })
         saveTaskConfigs(updated)
         configStoreCache = updated
     }
@@ -382,7 +418,8 @@ class TaskLauncherService(private val project: Project) {
         }
     }
 
-    fun parseExtraArgs(value: String?): List<String> = pythonRunner.parseExtraArgs(value)
+    // 注：原来的 parseExtraArgs 已移除 —— 常驻执行器把全部任务跑在同一进程里，
+    // 进程级额外参数无法再按任务区分，UI 早已不再提供该入口。
 
     fun getProjectName(): String = project.name
 }

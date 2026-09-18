@@ -7,37 +7,57 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
+import com.fasterxml.jackson.databind.ObjectMapper
 import java.io.File
 import java.io.OutputStreamWriter
+import java.util.Timer
+import java.util.TimerTask
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
-import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.SwingUtilities
 
 /**
- * 任务运行器（项目级服务）：持有运行中任务的进程与控制状态，对应 VSCode 版
- * TaskLauncherViewProvider 中与 UI 无关的进程管理部分。
+ * 执行器会话（项目级服务）：持有**唯一的常驻执行器进程**及其状态，
+ * 对应 VSCode 版 TaskLauncherViewProvider 中与 UI 无关的进程管理部分。
  *
- * 任务的生命周期独立于任务工具窗：关闭工具窗只解绑视图，任务继续在后台运行，
- * 重新打开工具窗时回放输出缓冲并重新同步状态；项目关闭（dispose）才终止任务。
+ * 进程模型与旧版「一次启动 = 一个任务进程」完全不同：
+ * python/run_executor.py 只启动一次，连接一次游戏，然后由 ok-script 框架原生的
+ * TaskExecutor 循环轮询全部已启用的触发任务；一次性任务以入队方式交给同一个进程。
+ * 因此这里维护的是「执行器状态快照」而不是「当前任务」。
+ *
+ * 执行器的生命周期独立于任务工具窗：关闭工具窗只解绑视图，执行器继续在后台运行，
+ * 重新打开工具窗时回放输出缓冲并重新同步状态；项目关闭（dispose）才终止执行器。
  */
 @Service(Service.Level.PROJECT)
 class TaskRunnerService(private val project: Project) : Disposable {
 
     companion object {
         private val LOG = Logger.getInstance(TaskRunnerService::class.java)
+        private val objectMapper = ObjectMapper()
 
         fun getInstance(project: Project): TaskRunnerService = project.service()
 
         private const val MAX_RECENT_LINES = 2000
+
+        /** 收到 stop 后仍未退出则强杀进程树的兜底延时（毫秒） */
+        private const val FORCE_KILL_DELAY_MS = 12_000L
+
+        private const val MARKER_STATE = "OK_TOOLKIT_STATE:"
     }
 
-    data class RunnerState(
-        val running: Boolean = false,
+    /** 执行器状态快照（由 run_executor.py 的 OK_TOOLKIT_STATE 标记行驱动） */
+    data class ExecutorState(
+        /** idle（未启动）/ connecting（启动中）/ running（已连接并轮询） */
+        val status: String = "idle",
         val paused: Boolean = false,
-        val stopping: Boolean = false,
-        val task: TaskLauncherService.TaskInfo? = null,
-        /** 任务结束原因（已停止/完成/失败 + 退出码），运行中为 null */
+        /** 当前正在执行的任务 key（module::Class），空闲为空串 */
+        val current: String = "",
+        val currentIsTrigger: Boolean = false,
+        /** 一次性任务等待队列 */
+        val onetimeQueue: List<String> = emptyList(),
+        /** 执行器侧的触发任务启用集合（权威值） */
+        val enabledTriggers: List<String> = emptyList(),
+        /** 执行器结束原因（关闭/异常退出），运行中为 null */
         val finishMessage: String? = null,
         /** 最近一次控制命令错误（OK_TOOLKIT_ERROR 标记行） */
         val controlError: String? = null,
@@ -47,21 +67,28 @@ class TaskRunnerService(private val project: Project) : Disposable {
 
     @Volatile
     private var process: Process? = null
+
     @Volatile
-    private var currentTask: TaskLauncherService.TaskInfo? = null
+    private var connecting = false
+
     @Volatile
     private var currentProjectDir = ""
-    private val stopping = AtomicBoolean(false)
 
-    @Volatile
-    private var paused = false
-
-    /** 调试浮层当前是否生效（启动沿用工具箱状态，运行中经 overlay_* 标记行同步） */
+    /** 调试浮层当前是否生效（启动沿用工具箱状态，运行中经 overlay_* 标记同步） */
     @Volatile
     private var overlayActive = false
 
+    /** 最新状态快照；进程结束后只保留 enabledTriggers（UI 勾选态不丢） */
+    @Volatile
+    private var snapshot = ExecutorState()
+
+    private val forceKillTimer = Timer("ok-script-executor-kill", true)
+
+    @Volatile
+    private var forceKillTask: TimerTask? = null
+
     private val outputListeners = CopyOnWriteArrayList<(String) -> Unit>()
-    private val stateListeners = CopyOnWriteArrayList<(RunnerState) -> Unit>()
+    private val stateListeners = CopyOnWriteArrayList<(ExecutorState) -> Unit>()
 
     /** 输出环形缓冲：工具窗重开时回放，上限 [MAX_RECENT_LINES] 行 */
     private val recentOutput = ArrayDeque<String>()
@@ -71,12 +98,18 @@ class TaskRunnerService(private val project: Project) : Disposable {
 
     fun isRunning(): Boolean = process?.isAlive == true
 
-    fun currentState(): RunnerState = RunnerState(
-        running = isRunning(),
-        paused = paused,
-        stopping = stopping.get(),
-        task = currentTask,
+    fun currentState(): ExecutorState = snapshot.copy(
+        status = when {
+            // connecting 优先于 isRunning()：进程是异步 spawn 的，在它真正起来之前
+            // isRunning() 仍为 false，不能让 UI 闪回 idle
+            connecting -> "connecting"
+            !isRunning() -> "idle"
+            else -> "running"
+        },
     )
+
+    /** 已入列的触发任务 key（执行器未启动时沿用上次快照，UI 勾选态不丢） */
+    fun enabledTriggers(): List<String> = snapshot.enabledTriggers
 
     fun addOutputListener(listener: (String) -> Unit) {
         outputListeners.add(listener)
@@ -86,11 +119,11 @@ class TaskRunnerService(private val project: Project) : Disposable {
         outputListeners.remove(listener)
     }
 
-    fun addStateListener(listener: (RunnerState) -> Unit) {
+    fun addStateListener(listener: (ExecutorState) -> Unit) {
         stateListeners.add(listener)
     }
 
-    fun removeStateListener(listener: (RunnerState) -> Unit) {
+    fun removeStateListener(listener: (ExecutorState) -> Unit) {
         stateListeners.remove(listener)
     }
 
@@ -111,7 +144,7 @@ class TaskRunnerService(private val project: Project) : Disposable {
         outputListeners.forEach { it(line) }
     }
 
-    private fun emitState(transform: (RunnerState) -> RunnerState = { it }) {
+    private fun emitState(transform: (ExecutorState) -> ExecutorState = { it }) {
         val state = currentState().let(transform)
         SwingUtilities.invokeLater {
             stateListeners.forEach { it(state) }
@@ -120,21 +153,24 @@ class TaskRunnerService(private val project: Project) : Disposable {
 
     // ── Lifecycle ─────────────────────────────────────────────────────
 
+    /**
+     * 启动常驻执行器；已在运行则返回 false。
+     * 环境变量由调用方准备（含 OK_TOOLKIT_TRIGGERS 启用集合与参数覆盖）。
+     */
     fun start(
-        task: TaskLauncherService.TaskInfo,
         pythonPath: String,
         command: List<String>,
         projectDir: String,
         env: Map<String, String>,
-    ) {
-        if (isRunning()) return
-        stopping.set(false)
-        paused = false
-        overlayActive = false
+        enabledTriggers: List<String>,
+    ): Boolean {
+        if (isRunning()) return false
+        connecting = true
         currentProjectDir = projectDir
+        snapshot = ExecutorState(status = "connecting", enabledTriggers = enabledTriggers)
         synchronized(recentOutputLock) { recentOutput.clear() }
+        emitState()
 
-        recordAndEmit("=== ${task.displayName} ===")
         CompletableFuture.runAsync {
             try {
                 val processBuilder = ProcessBuilder(listOf(pythonPath) + command)
@@ -143,9 +179,10 @@ class TaskRunnerService(private val project: Project) : Disposable {
 
                 val proc = processBuilder.start()
                 process = proc
-                currentTask = task
                 // 浮层开关等工具箱命令改经服务转发（与视图生命周期解耦）
                 toolboxService.registerTaskCommandWriter(::sendCommand)
+                // 浮层互斥：执行器进程自带 overlay，通知工具箱停掉独立浮层宿主
+                toolboxService.onExecutorRunningChanged(true)
                 emitState()
 
                 Thread {
@@ -171,40 +208,87 @@ class TaskRunnerService(private val project: Project) : Disposable {
                     } catch (e: InterruptedException) {
                         null
                     }
-                    onTaskProcessExit(exitCode)
+                    onExecutorExit(exitCode)
                 }.apply { isDaemon = true; start() }
 
             } catch (e: Exception) {
-                LOG.error("Failed to run task", e)
+                LOG.error("Failed to start executor", e)
                 recordAndEmit(OkScriptToolkitBundle.message("taskLauncher.launchFailed", e.message ?: ""))
-                emitState()
+                onExecutorExit(null)
             }
         }
+        return true
     }
 
-    private fun onTaskProcessExit(exitCode: Int?) {
-        val message = when {
-            exitCode == null -> OkScriptToolkitBundle.message("taskLauncher.taskStopped")
-            stopping.get() -> OkScriptToolkitBundle.message("taskLauncher.taskStopped")
-            exitCode == 0 -> OkScriptToolkitBundle.message("taskLauncher.taskCompleted")
-            else -> OkScriptToolkitBundle.message("taskLauncher.taskFailed") + " (exit code $exitCode)"
-        }
-        stopping.set(false)
-        paused = false
-        overlayActive = false
-        currentTask = null
+    private fun onExecutorExit(exitCode: Int?) {
+        val wasForced = forceKillTask != null
+        cancelForceKill()
         process = null
+        connecting = false
+        val message = when {
+            exitCode == null -> OkScriptToolkitBundle.message("taskLauncher.executorClosed")
+            exitCode == 0 -> OkScriptToolkitBundle.message("taskLauncher.executorClosed")
+            else -> OkScriptToolkitBundle.message("taskLauncher.executorExitCode", exitCode)
+        }
+        if (!wasForced && exitCode != null && exitCode != 0) {
+            LOG.warn("Executor exited with code $exitCode")
+        }
+        snapshot = ExecutorState(
+            status = "idle",
+            // 保留启用集合，重开工具窗 / 重启执行器时沿用用户勾选
+            enabledTriggers = snapshot.enabledTriggers,
+            finishMessage = message,
+        )
         toolboxService.registerTaskCommandWriter(null)
-        emitState { it.copy(running = false, paused = false, stopping = false, finishMessage = message) }
+        // 浮层互斥：执行器退出，把独立浮层宿主交还给工具箱
+        // （error / 正常退出都走这里，onExecutorRunningChanged 内部会去重）
+        toolboxService.onExecutorRunningChanged(false)
+        emitState()
     }
 
-    /** 停止任务：Windows 上 taskkill /F /T 终止进程树（阻塞调用已移出 EDT） */
-    fun stop() {
+    // ── 命令 ──────────────────────────────────────────────────────────
+
+    /** 触发任务入列 / 出列（等价 ok-script GUI 的启用开关） */
+    fun setTriggerEnabled(key: String, enabled: Boolean): Boolean =
+        sendCommand(if (enabled) "trigger_enable $key" else "trigger_disable $key")
+
+    /** 一次性任务入队：由常驻执行器执行一次后自动出队 */
+    fun enqueueOnetime(key: String): Boolean = sendCommand("onetime_enqueue $key")
+
+    /** 停掉当前正在执行的任务，轮询继续 */
+    fun stopCurrent(): Boolean = sendCommand("task_disable")
+
+    /** 参数覆盖即时推送（执行器是常驻进程，不推就要重启才生效） */
+    fun pushParams(json: String): Boolean = sendCommand("params $json")
+
+    /** 关闭执行器：先请它自己退出，超时再强杀进程树 */
+    fun stopExecutor() {
         val proc = process ?: return
         if (!proc.isAlive) return
-        stopping.set(true)
-        recordAndEmit("--- ${OkScriptToolkitBundle.message("taskLauncher.taskStopped")} ---")
-        emitState()
+        recordAndEmit("--- ${OkScriptToolkitBundle.message("taskLauncher.stoppingExecutor")} ---")
+        if (!sendCommand("stop")) {
+            killProcessTree(proc)
+            return
+        }
+        cancelForceKill()
+        val task = object : TimerTask() {
+            override fun run() {
+                forceKillTask = null
+                val alive = process
+                if (alive != null && alive.isAlive) killProcessTree(alive)
+            }
+        }
+        forceKillTask = task
+        forceKillTimer.schedule(task, FORCE_KILL_DELAY_MS)
+    }
+
+    private fun cancelForceKill() {
+        forceKillTask?.cancel()
+        forceKillTask = null
+    }
+
+    /** Windows 上 taskkill /F /T 终止进程树（阻塞调用已移出 EDT） */
+    private fun killProcessTree(proc: Process) {
         CompletableFuture.runAsync {
             try {
                 val pid = proc.pid()
@@ -217,15 +301,15 @@ class TaskRunnerService(private val project: Project) : Disposable {
                     proc.destroyForcibly()
                 }
             } catch (e: Exception) {
-                LOG.warn("Failed to stop task process", e)
+                LOG.warn("Failed to kill executor process", e)
                 proc.destroyForcibly()
             }
         }
     }
 
     /**
-     * 向任务进程 stdin 写入控制命令（pause/resume/overlay_on/off）。
-     * 无运行任务返回 false；调用线程任意。
+     * 向执行器 stdin 写入控制命令（trigger_enable / onetime_enqueue / pause / resume /
+     * overlay_on|off / stop …）。无运行进程返回 false；调用线程任意。
      */
     fun sendCommand(command: String): Boolean {
         val proc = process ?: return false
@@ -244,15 +328,21 @@ class TaskRunnerService(private val project: Project) : Disposable {
 
     // ── Control markers ───────────────────────────────────────────────
 
-    /** 按行扫描 run_task.py 输出的控制标记（标记行本身也会进输出缓冲） */
+    /** 按行扫描 run_executor.py 输出的控制标记（标记行本身也会进输出缓冲） */
     private fun scanControlMarkers(line: String) {
         when {
+            line.contains(MARKER_STATE) -> applySnapshot(line.substringAfter(MARKER_STATE).trim())
+            line.contains("OK_TOOLKIT_EXECUTOR_READY") -> {
+                connecting = false
+                snapshot = snapshot.copy(controlError = null)
+                emitState()
+            }
             line.contains("OK_TOOLKIT_PAUSED") -> {
-                paused = true
+                snapshot = snapshot.copy(paused = true, controlError = null)
                 emitState()
             }
             line.contains("OK_TOOLKIT_RESUMED") -> {
-                paused = false
+                snapshot = snapshot.copy(paused = false, controlError = null)
                 emitState()
             }
             line.contains("OK_TOOLKIT_OVERLAY_ON") -> setTaskOverlayActive(true)
@@ -260,13 +350,45 @@ class TaskRunnerService(private val project: Project) : Disposable {
             line.contains("OK_TOOLKIT_ERROR:") -> {
                 val error = line.substringAfter("OK_TOOLKIT_ERROR:").trim()
                 if (error.isNotBlank()) {
-                    emitState { it.copy(controlError = error) }
+                    snapshot = snapshot.copy(controlError = error)
+                    emitState()
                 }
             }
         }
     }
 
-    /** 调试浮层以 run_task.py 的确认标记行为准；翻转时同步日志并回写工具箱共享状态 */
+    /**
+     * 应用执行器状态快照（执行器侧的启用集合是权威值）。
+     * 命令失败后 run_executor.py 不会回推状态，所以快照到达即视为上一次错误已翻篇。
+     */
+    private fun applySnapshot(payload: String) {
+        if (payload.isBlank()) return
+        val parsed = try {
+            objectMapper.readTree(payload)
+        } catch (e: Exception) {
+            LOG.warn("Failed to parse executor state", e)
+            return
+        }
+        val triggers = parsed.get("triggers")
+        val enabled = if (triggers != null && triggers.isArray) {
+            triggers.mapNotNull { node ->
+                if (node.get("enabled")?.asBoolean() == true) node.get("key")?.asText(null) else null
+            }
+        } else {
+            snapshot.enabledTriggers
+        }
+        snapshot = snapshot.copy(
+            paused = parsed.get("paused")?.asBoolean() ?: false,
+            current = parsed.get("current")?.asText(null) ?: "",
+            currentIsTrigger = parsed.get("currentIsTrigger")?.asBoolean() ?: false,
+            onetimeQueue = parsed.get("onetimeQueue")?.mapNotNull { it.asText(null) } ?: emptyList(),
+            enabledTriggers = enabled,
+            controlError = null,
+        )
+        emitState()
+    }
+
+    /** 调试浮层以 run_executor.py 的确认标记行为准；翻转时同步日志并回写工具箱共享状态 */
     private fun setTaskOverlayActive(active: Boolean) {
         if (overlayActive == active) return
         overlayActive = active
@@ -280,7 +402,9 @@ class TaskRunnerService(private val project: Project) : Disposable {
     }
 
     override fun dispose() {
+        cancelForceKill()
+        forceKillTimer.cancel()
         toolboxService.registerTaskCommandWriter(null)
-        stop()
+        stopExecutor()
     }
 }

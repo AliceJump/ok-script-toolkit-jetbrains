@@ -97,6 +97,7 @@ class ModifyListDialog(
             override fun removeUpdate(e: javax.swing.event.DocumentEvent?) = filterOptions()
             override fun changedUpdate(e: javax.swing.event.DocumentEvent?) = filterOptions()
         })
+        renderList()
     }
 
     override fun createCenterPanel(): JComponent {
