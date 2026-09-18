@@ -121,7 +121,8 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
             characterLocaleFile.text != state.characterLocaleFile.orEmpty() ||
             characterAvatarTemplateRegex.text != state.characterAvatarTemplateRegex.orEmpty() ||
             okTemplatesDirectory.text != state.okTemplatesDirectory.orEmpty() ||
-            (captureMethod.selectedItem as? String).orEmpty() != state.captureMethod.orEmpty()
+            (captureMethod.selectedItem as? String).orEmpty() !=
+                OkScriptToolkitSettings.normalizeCaptureMethod(state.captureMethod)
     }
 
     override fun apply() {
@@ -165,7 +166,7 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
         characterLocaleFile.text = state.characterLocaleFile.orEmpty()
         characterAvatarTemplateRegex.text = state.characterAvatarTemplateRegex.orEmpty()
         okTemplatesDirectory.text = state.okTemplatesDirectory.orEmpty()
-        captureMethod.selectedItem = state.captureMethod.orEmpty().ifBlank { "auto" }
+        captureMethod.selectedItem = OkScriptToolkitSettings.normalizeCaptureMethod(state.captureMethod)
     }
 
     private fun splitList(value: String): List<String> = value

@@ -95,6 +95,8 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
     }
     private val renderGeneration = java.util.concurrent.atomic.AtomicInteger(0)
     private var gridCols = 5
+    @Volatile
+    private var disposed = false
 
     /** 最近活动的 Python 编辑器（对齐 VSCode 版 lastPythonEditor：插入表达式优先落到最近编辑过的编辑器） */
     private var lastPythonEditor: com.intellij.openapi.editor.Editor? = null
@@ -165,6 +167,7 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
             data.refresh(force)
             val features = data.features()
             SwingUtilities.invokeLater {
+                thumbs.clear()
                 templates = features
                 renderGrid()
             }
@@ -236,15 +239,19 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
 
         card.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
+                if (e.isPopupTrigger || SwingUtilities.isRightMouseButton(e)) return
                 when {
                     e.clickCount == 2 -> copyExpression(template)
-                    SwingUtilities.isRightMouseButton(e) -> showCardMenu(e, template)
                     e.clickCount == 1 -> insertExpression(template)
                 }
             }
 
             override fun mousePressed(e: MouseEvent) {
-                if (SwingUtilities.isRightMouseButton(e)) showCardMenu(e, template)
+                if (e.isPopupTrigger) showCardMenu(e, template)
+            }
+
+            override fun mouseReleased(e: MouseEvent) {
+                if (e.isPopupTrigger) showCardMenu(e, template)
             }
         })
         return card
@@ -267,12 +274,24 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
 
     /** 异步生成网格缩略图（bbox 裁剪），完成后回填到已渲染的卡片，避免旧数据回流。 */
     private fun requestThumb(template: FeatureTemplate, generation: Int) {
+        if (disposed) return
         requestedThumbs.add(template.name)
         thumbExecutor.submit {
             val icon = loadThumb(template)
-            thumbs[template.name] = icon
             SwingUtilities.invokeLater {
-                if (renderGeneration.get() != generation) return@invokeLater
+                // 清除请求标记，允许后续渲染重新请求
+                requestedThumbs.remove(template.name)
+                if (disposed) return@invokeLater
+                if (generation != renderGeneration.get()) {
+                    // 过期请求：重新请求当前生成的缩略图
+                    pendingThumbLabels[template.name]?.let {
+                        templates.firstOrNull { current -> current.name == template.name }?.let { current ->
+                            requestThumb(current, renderGeneration.get())
+                        }
+                    }
+                    return@invokeLater
+                }
+                if (icon != null) thumbs[template.name] = icon
                 pendingThumbLabels.remove(template.name)?.forEach { label ->
                     label.icon = icon
                     label.repaint()
@@ -440,6 +459,7 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
     }
 
     override fun dispose() {
+        disposed = true
         thumbExecutor.shutdownNow()
     }
 }

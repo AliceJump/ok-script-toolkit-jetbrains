@@ -157,13 +157,13 @@ class EffectPickerField(
         listScroll.minimumSize = Dimension(260, 160)
         paramsScroll.minimumSize = Dimension(240, 160)
 
-        val split = if (idsOnly) null else Splitter(false, 0.5f).apply {
+        val split = Splitter(false, if (idsOnly) 0.75f else 0.5f).apply {
             firstComponent = listScroll
             secondComponent = paramsScroll
         }
 
         add(filterRow, BorderLayout.NORTH)
-        add(split ?: listScroll, BorderLayout.CENTER)
+        add(split, BorderLayout.CENTER)
         add(JPanel(BorderLayout()).apply { add(countLabel, BorderLayout.WEST) }, BorderLayout.SOUTH)
 
         preferredSize = Dimension(760, 320)

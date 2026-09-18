@@ -140,11 +140,13 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
         carouselToggle.toolTipText = msg("tempShots.carouselTooltip")
         coordToggle.toolTipText = msg("tempShots.coordTooltip")
         for (b in listOf<javax.swing.AbstractButton>(
-            pasteButton, captureButton, hardForegroundCheck, clearButton, carouselToggle, coordToggle,
+            pasteButton, captureButton, clearButton, carouselToggle, coordToggle,
         )) {
             b.isFocusable = false
             toolbar.add(b)
         }
+        hardForegroundCheck.toolTipText = OkScriptToolkitBundle.message("capture.hardForegroundTooltip")
+        toolbar.add(hardForegroundCheck)
         pasteButton.addActionListener { handlePaste() }
         captureButton.addActionListener { handleCapture() }
         clearButton.addActionListener { handleClear() }

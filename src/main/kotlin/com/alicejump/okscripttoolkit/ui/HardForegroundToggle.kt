@@ -22,7 +22,6 @@ object HardForegroundToggle {
     fun create(project: Project): JCheckBox =
         JCheckBox(OkScriptToolkitBundle.message("capture.hardForeground")).apply {
             toolTipText = OkScriptToolkitBundle.message("capture.hardForegroundTooltip")
-            isFocusable = false
             isSelected = PropertiesComponent.getInstance(project).getBoolean(KEY, false)
             addActionListener {
                 PropertiesComponent.getInstance(project).setValue(KEY, isSelected, false)
