@@ -69,9 +69,11 @@
             anchor="right"
             icon="/icons/tempShots.svg"
             factoryClass="com.alicejump.okscripttoolkit.ui.TempScreenshotToolWindowFactory"/>
+        <!-- 任务启动器改成左（列表）/ 右（参数）主从分栏，需要纵向空间，所以停靠右侧；
+             日志本身不在这里，而是输出到 Run 工具窗口的「ok-script 执行器」标签页。 -->
         <toolWindow
             id="ok-script Tasks"
-            anchor="bottom"
+            anchor="right"
             icon="/icons/task.svg"
             factoryClass="com.alicejump.okscripttoolkit.tasklauncher.TaskLauncherToolWindowFactory"/>
 

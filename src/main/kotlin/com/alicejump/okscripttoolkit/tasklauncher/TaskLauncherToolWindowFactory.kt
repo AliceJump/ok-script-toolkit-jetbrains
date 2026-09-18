@@ -20,14 +20,16 @@ import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
-import com.intellij.ui.components.JBTextArea
 import com.intellij.util.ui.UIUtil
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.content.ContentManagerEvent
 import com.intellij.ui.content.ContentManagerListener
 import com.intellij.ui.table.JBTable
 import java.awt.BorderLayout
+import java.awt.Component
 import java.awt.Dimension
+import java.awt.FlowLayout
+import java.awt.Font
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.Insets
@@ -39,6 +41,7 @@ import java.nio.file.Paths
 import javax.swing.*
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
+import javax.swing.table.DefaultTableCellRenderer
 import javax.swing.table.DefaultTableModel
 
 class TaskLauncherToolWindowFactory : ToolWindowFactory {
@@ -65,11 +68,26 @@ class TaskLauncherPanel(private val project: Project) {
     companion object {
         private val LOG = Logger.getInstance(TaskLauncherPanel::class.java)
         private const val DEFAULT_PYTHON_PATH = "python"
-        private const val MAX_CONSOLE_CHARS = 400_000
         private val OK_BORDER = JBColor(Color(40, 120, 40), Color(76, 175, 80))
         private const val LF_CHAR: Char = 0x0A.toChar()
         private const val OK_JSON_FIELD = "ok-script.jsonField"
         private val BAD_BORDER = JBColor(Color(180, 40, 40), Color(239, 83, 80))
+
+        /** 左侧列表里参数标签列的最小宽度：所有行的标签右对齐在同一条竖线上 */
+        private const val LABEL_COLUMN_WIDTH = 88
+
+        // 状态语义色（亮 / 暗主题各一套）；色调编号见 TaskRowState.TONE_*
+        private val COLOR_GOOD = JBColor(Color(0x36, 0x9B, 0x47), Color(0x5F, 0xAD, 0x65))
+        private val COLOR_WARN = JBColor(Color(0xB8, 0x77, 0x00), Color(0xE8, 0xA3, 0x3D))
+        private val COLOR_BAD = JBColor(Color(0xDB, 0x3B, 0x4B), Color(0xF2, 0x6D, 0x6D))
+        private val COLOR_TRIGGER = JBColor(Color(0x7A, 0x5A, 0xF8), Color(0x9B, 0x8A, 0xFB))
+
+        private fun colorForTone(tone: Int): JBColor = when (tone) {
+            TaskRowState.TONE_GOOD -> COLOR_GOOD
+            TaskRowState.TONE_WARN -> COLOR_WARN
+            TaskRowState.TONE_BAD -> COLOR_BAD
+            else -> JBColor.GRAY
+        }
     }
 
     val mainPanel: JPanel
@@ -79,17 +97,24 @@ class TaskLauncherPanel(private val project: Project) {
     /** 每行的任务类型（trigger / onetime），供表格勾选列判断可编辑性 */
     private val rowKinds = mutableListOf<String>()
 
+    /** 每行状态的语义色调（见 TONE_*），状态列渲染器据此着色 */
+    private val rowTones = mutableListOf<Int>()
+
     /** 程序化改写表格时抑制 TableModelListener 的副作用 */
     private var updatingTableModel = false
 
     /** 已勾选「启用」的触发任务 key（module::Class），持久化到 .idea/ok-script-toolkit-tasks.json */
     private val enabledTriggers = linkedSetOf<String>()
 
+    /**
+     * 左栏是「主」列表：启用 / 任务 / 状态三列。
+     * 类型不再单占一列（左栏收窄后放不下），改由任务名前的图标 + 悬浮提示表达，
+     * 右侧详情区还有一枚类型 chip。
+     */
     private val taskTableModel = object : DefaultTableModel(
         arrayOf(
             OkScriptToolkitBundle.message("taskLauncher.enableColumn"),
             OkScriptToolkitBundle.message("taskLauncher.taskColumn"),
-            OkScriptToolkitBundle.message("taskLauncher.typeColumn"),
             OkScriptToolkitBundle.message("taskLauncher.statusColumn"),
         ),
         0,
@@ -103,7 +128,7 @@ class TaskLauncherPanel(private val project: Project) {
 
         /** 只有触发任务可以勾选启用；一次性任务用工具栏的「运行」入队 */
         override fun isCellEditable(row: Int, column: Int): Boolean =
-            column == 0 && rowKinds.getOrElse(row) { "onetime" } == "trigger"
+            column == 0 && rowKinds.getOrElse(row) { TaskRowState.ONETIME } == TaskRowState.TRIGGER
     }
     private val taskTable = JBTable(taskTableModel)
     private val refreshAction = ToolbarAction(AllIcons.Actions.Refresh, OkScriptToolkitBundle.message("taskLauncher.refresh")) { loadTasks() }
@@ -122,8 +147,18 @@ class TaskLauncherPanel(private val project: Project) {
     private var tasks = listOf<TaskLauncherService.TaskInfo>()
     private var configModule = "src.config"
     private var schemas = mapOf<String, TaskLauncherService.TaskSchema>()
-    private val consoleArea = JBTextArea()
     private val saveTimer = javax.swing.Timer(400, null)
+
+    // ── 右侧详情区（选中谁就显示谁）──
+    private val detailTitle = JBLabel()
+    private val detailKindChip = JBLabel()
+    private val detailStateChip = JBLabel()
+    private val detailActionButton = JButton()
+    /** 详情区当前展示的任务；null = 未选中，显示占位提示 */
+    private var detailTask: TaskLauncherService.TaskInfo? = null
+
+    /** 状态栏右侧的「查看日志」入口：把 Run 工具窗口的控制台拉到前台 */
+    private val viewLogButton = JButton(OkScriptToolkitBundle.message("taskLauncher.viewLog"))
 
     /** 任务进程与运行状态由项目级服务持有：工具窗关闭不影响后台任务 */
     private val taskRunner = TaskRunnerService.getInstance(project)
@@ -151,9 +186,6 @@ class TaskLauncherPanel(private val project: Project) {
     private val toolboxStatusListener: (String) -> Unit = { text ->
         SwingUtilities.invokeLater { toolboxStatusLabel.text = text }
     }
-    private val runnerOutputListener: (String) -> Unit = { line ->
-        SwingUtilities.invokeLater { appendConsole(line) }
-    }
     private val runnerStateListener: (TaskRunnerService.ExecutorState) -> Unit = { state ->
         SwingUtilities.invokeLater { syncRunnerState(state) }
     }
@@ -167,9 +199,7 @@ class TaskLauncherPanel(private val project: Project) {
         toolboxService.addStatusListener(toolboxStatusListener)
         renderToolbox(toolboxService.loadState(detectProjectPath()))
         // 回放后台任务的既有输出并同步运行状态（工具窗重开场景）
-        taskRunner.recentOutputLines().forEach { appendConsole(it) }
         syncRunnerState(taskRunner.currentState())
-        taskRunner.addOutputListener(runnerOutputListener)
         taskRunner.addStateListener(runnerStateListener)
         loadTasks()
     }
@@ -197,12 +227,18 @@ class TaskLauncherPanel(private val project: Project) {
         statusLabel.text = state.controlError?.let { "$it — $statusText" } ?: statusText
         syncTriggerCheckboxes(state)
         renderTaskStatuses(state)
+        // 状态 chip 与「启用/停用轮询」按钮文案跟着执行器状态走
+        renderDetailHeader(detailTask, state)
     }
 
+    /**
+     * 布局：左「主」列表 / 右「详」参数，只有一个水平分隔条。
+     *
+     * 旧版是上（列表）/ 中（参数）/ 下（日志）三段纵向堆叠，列表与参数都被拉满整个
+     * 窗口宽度 —— 一行就是一条又矮又长的条条。现在日志交给 Run 工具窗口
+     * （见 [TaskRunnerService.showConsole]），面板只留列表 + 参数，改成左右分栏。
+     */
     private fun initUI() {
-        val clearConsoleAction = ToolbarAction(AllIcons.Actions.GC, OkScriptToolkitBundle.message("taskLauncher.clearConsole")) {
-            consoleArea.text = ""
-        }
         stopCurrentAction.isEnabled2 = false
         closeExecutorAction.isEnabled2 = false
         pauseAction.isEnabled2 = false
@@ -210,7 +246,6 @@ class TaskLauncherPanel(private val project: Project) {
 
         val actionGroup = com.intellij.openapi.actionSystem.DefaultActionGroup(
             refreshAction, runAction, stopCurrentAction, closeExecutorAction, pauseAction, resumeAction,
-            clearConsoleAction,
         )
         actionToolbar = com.intellij.openapi.actionSystem.ActionManager.getInstance()
             .createActionToolbar("ok-script-tasks", actionGroup, true)
@@ -221,10 +256,13 @@ class TaskLauncherPanel(private val project: Project) {
         taskTable.selectionModel.selectionMode = ListSelectionModel.SINGLE_SELECTION
         taskTable.showHorizontalLines = true
         taskTable.showVerticalLines = false
+        taskTable.rowHeight = 24
         taskTable.selectionModel.addListSelectionListener {
             val selectedRow = taskTable.selectedRow
             if (selectedRow >= 0 && selectedRow < tasks.size) {
                 loadTaskParams(tasks[selectedRow])
+            } else {
+                showDetailPlaceholder()
             }
         }
         // 触发任务的勾选列：勾上 = 入列轮询，取消 = 出列（等价 ok-script GUI 的启用开关）
@@ -234,46 +272,39 @@ class TaskLauncherPanel(private val project: Project) {
                 return@addTableModelListener
             }
             val row = event.firstRow
-            if (row < 0 || row >= tasks.size || rowKinds.getOrElse(row) { "onetime" } != "trigger") {
+            if (row < 0 || row >= tasks.size || rowKinds.getOrElse(row) { TaskRowState.ONETIME } != TaskRowState.TRIGGER) {
                 return@addTableModelListener
             }
             setTriggerEnabled(tasks[row], taskTableModel.getValueAt(row, 0) == true)
         }
-        taskTable.columnModel.getColumn(0).apply {
-            preferredWidth = 44
-            maxWidth = 44
-            resizable = false
-        }
-        taskTable.columnModel.getColumn(1).preferredWidth = 240
-        taskTable.columnModel.getColumn(2).preferredWidth = 70
-        taskTable.columnModel.getColumn(3).preferredWidth = 120
+        installTableRenderers()
 
         val tableScrollPane = JBScrollPane(taskTable)
+        tableScrollPane.border = BorderFactory.createEmptyBorder()
 
         val paramScrollPane = JBScrollPane(paramPanel)
-        paramScrollPane.border = BorderFactory.createTitledBorder(OkScriptToolkitBundle.message("taskLauncher.parameters"))
+        paramScrollPane.border = BorderFactory.createEmptyBorder()
 
-        val statusBar = JPanel(BorderLayout())
+        val detailPane = JPanel(BorderLayout())
+        detailPane.add(buildDetailHeader(), BorderLayout.NORTH)
+        detailPane.add(paramScrollPane, BorderLayout.CENTER)
+
+        val splitPane = com.intellij.openapi.ui.Splitter(false, 0.42f)
+        splitPane.firstComponent = tableScrollPane
+        splitPane.secondComponent = detailPane
+
+        val statusBar = JPanel(BorderLayout(8, 0))
         statusBar.border = BorderFactory.createEmptyBorder(2, 4, 2, 4)
         statusBar.add(statusLabel, BorderLayout.CENTER)
-        progressBar.preferredSize = Dimension(200, 20)
+        progressBar.preferredSize = Dimension(120, 20)
         progressBar.isVisible = false
-        statusBar.add(progressBar, BorderLayout.EAST)
-
-        val splitPane = com.intellij.openapi.ui.Splitter(true, 0.5f)
-        splitPane.firstComponent = tableScrollPane
-        splitPane.secondComponent = paramScrollPane
-
-        // 输出控制台：对齐 VSCode 版的专属输出频道，展示任务 stdout/stderr
-        consoleArea.isEditable = false
-        consoleArea.lineWrap = false
-        consoleArea.rows = 6
-        val consoleScrollPane = JBScrollPane(consoleArea)
-        consoleScrollPane.border = BorderFactory.createTitledBorder(OkScriptToolkitBundle.message("taskLauncher.console"))
-
-        val centerPane = com.intellij.openapi.ui.Splitter(true, 0.62f)
-        centerPane.firstComponent = splitPane
-        centerPane.secondComponent = consoleScrollPane
+        viewLogButton.toolTipText = OkScriptToolkitBundle.message("taskLauncher.viewLogHint")
+        viewLogButton.addActionListener { taskRunner.showConsole() }
+        val statusEast = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0))
+        statusEast.isOpaque = false
+        statusEast.add(progressBar)
+        statusEast.add(viewLogButton)
+        statusBar.add(statusEast, BorderLayout.EAST)
 
         val northPane = JPanel(BorderLayout())
         northPane.add(toolbar, BorderLayout.NORTH)
@@ -281,8 +312,164 @@ class TaskLauncherPanel(private val project: Project) {
         northPane.add(buildToolboxBar(), BorderLayout.SOUTH)
 
         mainPanel.add(northPane, BorderLayout.NORTH)
-        mainPanel.add(centerPane, BorderLayout.CENTER)
+        mainPanel.add(splitPane, BorderLayout.CENTER)
         mainPanel.add(statusBar, BorderLayout.SOUTH)
+
+        showDetailPlaceholder()
+    }
+
+    // ── 左列表：渲染器 ────────────────────────────────────────────────
+
+    /**
+     * 勾选列渲染器见 [TriggerCheckboxRenderer]：一次性任务在模型里存 null（不是 false），
+     * 于是那一格连复选框都不画。
+     */
+    private fun installTableRenderers() {
+        taskTable.columnModel.getColumn(0).apply {
+            cellRenderer = TriggerCheckboxRenderer()
+            preferredWidth = 30
+            maxWidth = 30
+            resizable = false
+        }
+        taskTable.columnModel.getColumn(1).apply {
+            cellRenderer = TaskNameRenderer()
+            preferredWidth = 160
+        }
+        taskTable.columnModel.getColumn(2).apply {
+            cellRenderer = StatusToneRenderer()
+            preferredWidth = 64
+            maxWidth = 96
+        }
+    }
+
+    /** 任务列渲染器：名字前按类型挂图标（触发 = 轮询循环，一次性 = 运行三角），类型不再单占一列 */
+    private inner class TaskNameRenderer : DefaultTableCellRenderer() {
+        override fun getTableCellRendererComponent(
+            table: JTable,
+            value: Any?,
+            isSelected: Boolean,
+            hasFocus: Boolean,
+            row: Int,
+            column: Int,
+        ): Component {
+            val component = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column)
+            val isTrigger = rowKinds.getOrElse(row) { TaskRowState.ONETIME } == TaskRowState.TRIGGER
+            icon = if (isTrigger) AllIcons.Actions.RerunAutomatically else AllIcons.Actions.Execute
+            toolTipText = OkScriptToolkitBundle.message(
+                if (isTrigger) "taskLauncher.triggerTask" else "taskLauncher.oneTimeTask",
+            )
+            return component
+        }
+    }
+
+    /** 状态列渲染器：按语义着色（运行中绿 / 等待琥珀 / 异常红 / 其余次要色） */
+    private inner class StatusToneRenderer : DefaultTableCellRenderer() {
+        override fun getTableCellRendererComponent(
+            table: JTable,
+            value: Any?,
+            isSelected: Boolean,
+            hasFocus: Boolean,
+            row: Int,
+            column: Int,
+        ): Component {
+            val component = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column)
+            val tone = rowTones.getOrElse(row) { TaskRowState.TONE_NEUTRAL }
+            foreground = if (isSelected) table.selectionForeground else colorForTone(tone)
+            return component
+        }
+    }
+
+    // ── 右详情区：任务头 ──────────────────────────────────────────────
+
+    /**
+     * 详情区头部：任务名 + 类型 chip + 状态 chip + 主操作按钮。
+     * 触发任务的主操作是「启用/停用轮询」（等价左侧勾选框），一次性任务是「运行任务」。
+     */
+    private fun buildDetailHeader(): JPanel {
+        detailTitle.font = detailTitle.font.deriveFont(Font.BOLD)
+        val titleRow = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
+        titleRow.isOpaque = false
+        titleRow.add(detailTitle)
+        titleRow.add(detailKindChip)
+        titleRow.add(detailStateChip)
+
+        detailActionButton.addActionListener { onDetailAction() }
+        val actionRow = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
+        actionRow.isOpaque = false
+        actionRow.add(detailActionButton)
+
+        return JPanel(BorderLayout(0, 6)).apply {
+            isOpaque = false
+            border = BorderFactory.createEmptyBorder(8, 8, 6, 8)
+            add(titleRow, BorderLayout.NORTH)
+            add(actionRow, BorderLayout.CENTER)
+        }
+    }
+
+    /** 类型/状态 chip：细圆角描边 + 同色文字（随主题） */
+    private fun styleChip(label: JBLabel, color: JBColor, text: String) {
+        label.text = text
+        label.foreground = color
+        label.border = BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(color, 1, true),
+            BorderFactory.createEmptyBorder(0, 6, 0, 6),
+        )
+    }
+
+    /** 未选中任务时的占位提示（右栏不该是空白） */
+    private fun showDetailPlaceholder() {
+        paramPanel.removeAll()
+        paramFields.clear()
+        visibilityRefresher = null
+        currentRenderer = null
+        paramPanel.add(
+            JBLabel(OkScriptToolkitBundle.message("taskLauncher.detailPlaceholder")),
+            GridBagConstraints().apply { insets = Insets(28, 12, 12, 12) },
+        )
+        paramPanel.revalidate()
+        paramPanel.repaint()
+        renderDetailHeader(null)
+    }
+
+    private fun renderDetailHeader(
+        task: TaskLauncherService.TaskInfo?,
+        state: TaskRunnerService.ExecutorState = taskRunner.currentState(),
+    ) {
+        detailTask = task
+        val visible = task != null
+        detailTitle.isVisible = visible
+        detailKindChip.isVisible = visible
+        detailStateChip.isVisible = visible
+        detailActionButton.isVisible = visible
+        if (task == null) return
+
+        val isTrigger = taskKindOf(task) == TaskRowState.TRIGGER
+        detailTitle.text = task.displayName
+        styleChip(
+            detailKindChip,
+            if (isTrigger) COLOR_TRIGGER else JBColor.BLUE,
+            OkScriptToolkitBundle.message(
+                if (isTrigger) "taskLauncher.triggerTask" else "taskLauncher.oneTimeTask",
+            ),
+        )
+        val cell = statusCellFor(task, state)
+        styleChip(detailStateChip, colorForTone(cell.tone), cell.text)
+        detailActionButton.text = when {
+            !isTrigger -> OkScriptToolkitBundle.message("taskLauncher.run")
+            enabledTriggers.contains(taskKeyOf(task)) -> OkScriptToolkitBundle.message("taskLauncher.disableTrigger")
+            else -> OkScriptToolkitBundle.message("taskLauncher.enableTrigger")
+        }
+    }
+
+    /** 详情区主操作：触发任务 = 切换入列轮询，一次性任务 = 入队执行一次 */
+    private fun onDetailAction() {
+        val task = detailTask ?: return
+        if (taskKindOf(task) == TaskRowState.TRIGGER) {
+            setTriggerEnabled(task, !enabledTriggers.contains(taskKeyOf(task)))
+            renderDetailHeader(task)
+        } else {
+            enqueueTask(task)
+        }
     }
 
     /**
@@ -472,22 +659,25 @@ class TaskLauncherPanel(private val project: Project) {
                     enabledTriggers.clear()
                     enabledTriggers.addAll(taskService.loadEnabledTriggers())
 
+                    // 刷新后尽量保住原来的选中项（按 module::Class 找回）
+                    val previousSelection = detailTask?.let { taskKeyOf(it) }
                     updatingTableModel = true
                     try {
                         taskTableModel.rowCount = 0
                         rowKinds.clear()
+                        rowTones.clear()
                         for (task in tasks) {
                             val kind = taskKindOf(task)
                             rowKinds.add(kind)
+                            rowTones.add(TaskRowState.TONE_NEUTRAL)
                             taskTableModel.addRow(
                                 // 显式 Any? 元素类型：混合 Boolean / String 时 arrayOf 会推导出
-                                // Comparable<...> & Serializable 交叉类型并触发告警
+                                // Comparable<...> & Serializable 交叉类型并触发告警。
+                                // 第一格走 TaskRowState.checkboxValue：一次性任务得到 null，
+                                // 配合 TriggerCheckboxRenderer 才做到「连复选框都不画」。
                                 arrayOf<Any?>(
-                                    kind == "trigger" && enabledTriggers.contains(taskKeyOf(task)),
+                                    TaskRowState.checkboxValue(kind, enabledTriggers.contains(taskKeyOf(task))),
                                     task.displayName,
-                                    OkScriptToolkitBundle.message(
-                                        if (kind == "trigger") "taskLauncher.triggerTask" else "taskLauncher.oneTimeTask",
-                                    ),
                                     "",
                                 ),
                             )
@@ -497,6 +687,7 @@ class TaskLauncherPanel(private val project: Project) {
                     }
                     syncTriggerCheckboxes(taskRunner.currentState())
                     renderTaskStatuses(taskRunner.currentState())
+                    restoreSelection(previousSelection)
 
                     statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.loaded", tasks.size)
                 } else {
@@ -524,6 +715,8 @@ class TaskLauncherPanel(private val project: Project) {
         paramPanel.removeAll()
         paramFields.clear()
         visibilityRefresher = null
+        // 右栏头部跟着选中项走：名称 / 类型 chip / 状态 chip / 主操作按钮
+        renderDetailHeader(task)
 
         val taskKey = "${task.module}::${task.className}"
         val schema = schemas[taskKey]
@@ -802,25 +995,42 @@ class TaskLauncherPanel(private val project: Project) {
             if (!duplicate) renderedFields.add(key)
 
             val label = JBLabel("${field.displayKey ?: field.key}:")
+            label.horizontalAlignment = SwingConstants.RIGHT
+            val indent = if (subConfig) 24 else 0
+            // 标签列定宽 + 右对齐：所有行的冒号落在同一条竖线上（子配置多缩进一档）
+            label.preferredSize = Dimension(LABEL_COLUMN_WIDTH + indent, label.preferredSize.height)
             val control = createFieldComponent(field, task)
             val component = withFieldDescription(field, control)
-            val indent = if (subConfig) 24 else 0
             val grow = nextRow(container)
             container.add(label, GridBagConstraints().apply {
                 gridx = 0; gridy = grow
+                fill = GridBagConstraints.HORIZONTAL
                 anchor = GridBagConstraints.WEST
-                insets = Insets(3, 8 + indent, 3, 4)
+                insets = Insets(4, 6, 4, 6)
             })
-            container.add(component, GridBagConstraints().apply {
+            container.add(naturalWidth(component), GridBagConstraints().apply {
                 gridx = 1; gridy = grow
                 fill = GridBagConstraints.HORIZONTAL
                 weightx = 1.0
-                insets = Insets(3, 4 + indent, 3, 6)
+                insets = Insets(4, 0, 4, 6)
             })
             paramFields[key] = valueControlOf(control)
             rowsByKey.getOrPut(key) { mutableListOf() }.add(label to component)
             return true
         }
+
+        /**
+         * 把控件包进左对齐的 FlowLayout。
+         *
+         * 外层格子照旧吃掉横向剩余空间（fill + weightx），但 FlowLayout 不会拉伸子组件 ——
+         * 控件保持自然宽度。旧版直接给控件 `weightx = 1.0` + `fill = HORIZONTAL`，
+         * 文本框/下拉会被拉满整行宽度，就是「又矮又长的条条」的来源。
+         */
+        private fun naturalWidth(component: JComponent): JComponent =
+            JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+                isOpaque = false
+                add(component)
+            }
 
         /** 可折叠子配置组：组键命中的字段作为组头，组体默认收起（展开状态跨重渲染保留） */
         private fun renderGroup(
@@ -1413,17 +1623,7 @@ class TaskLauncherPanel(private val project: Project) {
         )
     }
 
-    private fun appendConsole(line: String) {
-        SwingUtilities.invokeLater {
-            var text = consoleArea.text
-            if (text.length > MAX_CONSOLE_CHARS) text = text.substring(text.length / 2)
-            consoleArea.text = text
-            consoleArea.append(line + "\n")
-            consoleArea.caretPosition = consoleArea.document.length
-        }
-    }
-
-    /** 一次性任务：入队到常驻执行器，执行一次后自动出队（触发任务改用勾选列） */
+    /** 工具栏「运行」：对当前选中的一次性任务入队（触发任务走勾选列或右侧按钮） */
     private fun enqueueSelectedTask() {
         val selectedRow = taskTable.selectedRow
         if (selectedRow < 0 || selectedRow >= tasks.size) {
@@ -1436,7 +1636,7 @@ class TaskLauncherPanel(private val project: Project) {
             return
         }
         val task = tasks[selectedRow]
-        if (taskKindOf(task) == "trigger") {
+        if (taskKindOf(task) == TaskRowState.TRIGGER) {
             JOptionPane.showMessageDialog(
                 mainPanel,
                 OkScriptToolkitBundle.message("taskLauncher.triggerUsesCheckbox"),
@@ -1445,9 +1645,13 @@ class TaskLauncherPanel(private val project: Project) {
             )
             return
         }
+        enqueueTask(task)
+    }
+
+    /** 一次性任务：入队到常驻执行器，执行一次后自动出队 */
+    private fun enqueueTask(task: TaskLauncherService.TaskInfo) {
         if (!ensureExecutor()) return
-        val key = taskKeyOf(task)
-        if (!taskRunner.enqueueOnetime(key)) {
+        if (!taskRunner.enqueueOnetime(taskKeyOf(task))) {
             statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.executorNotRunning")
             return
         }
@@ -1557,7 +1761,18 @@ class TaskLauncherPanel(private val project: Project) {
     private fun taskKeyOf(task: TaskLauncherService.TaskInfo): String = "${task.module}::${task.className}"
 
     private fun taskKindOf(task: TaskLauncherService.TaskInfo): String =
-        task.kind ?: schemas[taskKeyOf(task)]?.kind ?: "onetime"
+        task.kind ?: schemas[taskKeyOf(task)]?.kind ?: TaskRowState.ONETIME
+
+    /** 刷新列表后恢复原选中行（按 module::Class 找回）；找不到就回到占位提示 */
+    private fun restoreSelection(taskKey: String?) {
+        val index = if (taskKey == null) -1 else tasks.indexOfFirst { taskKeyOf(it) == taskKey }
+        if (index >= 0) {
+            taskTable.selectionModel.setSelectionInterval(index, index)
+        } else {
+            taskTable.clearSelection()
+            showDetailPlaceholder()
+        }
+    }
 
     /** 勾选列与持久化集合对齐；执行器运行中以它的快照为准 */
     private fun syncTriggerCheckboxes(state: TaskRunnerService.ExecutorState) {
@@ -1570,7 +1785,7 @@ class TaskLauncherPanel(private val project: Project) {
         updatingTableModel = true
         try {
             for (row in tasks.indices) {
-                if (rowKinds.getOrElse(row) { "onetime" } != "trigger") continue
+                if (rowKinds.getOrElse(row) { TaskRowState.ONETIME } != TaskRowState.TRIGGER) continue
                 val want = enabledTriggers.contains(taskKeyOf(tasks[row]))
                 if (taskTableModel.getValueAt(row, 0) != want) taskTableModel.setValueAt(want, row, 0)
             }
@@ -1579,36 +1794,50 @@ class TaskLauncherPanel(private val project: Project) {
         }
     }
 
+    /** 状态单元格：文案 + 语义色调（色调给状态列渲染器与详情区 chip 共用） */
+    private data class StatusCell(val text: String, val tone: Int)
+
     /** 状态列：触发任务看入列 / 轮询，一次性任务看排队 / 执行 / schema 健康度 */
     private fun renderTaskStatuses(state: TaskRunnerService.ExecutorState) {
+        while (rowTones.size < tasks.size) rowTones.add(TaskRowState.TONE_NEUTRAL)
+        if (rowTones.size > tasks.size) rowTones.subList(tasks.size, rowTones.size).clear()
         for (row in tasks.indices) {
-            val text = statusTextFor(tasks[row], state)
-            if (taskTableModel.getValueAt(row, 3) != text) taskTableModel.setValueAt(text, row, 3)
+            val cell = statusCellFor(tasks[row], state)
+            rowTones[row] = cell.tone
+            if (taskTableModel.getValueAt(row, 2) != cell.text) taskTableModel.setValueAt(cell.text, row, 2)
         }
     }
 
-    private fun statusTextFor(task: TaskLauncherService.TaskInfo, state: TaskRunnerService.ExecutorState): String {
+    private fun statusCellFor(
+        task: TaskLauncherService.TaskInfo,
+        state: TaskRunnerService.ExecutorState,
+    ): StatusCell {
         val key = taskKeyOf(task)
-        val isTrigger = taskKindOf(task) == "trigger"
-        if (state.current == key) {
-            return OkScriptToolkitBundle.message(
+        val isTrigger = taskKindOf(task) == TaskRowState.TRIGGER
+        val schema = schemas[key]
+        val text = when {
+            state.current == key -> OkScriptToolkitBundle.message(
                 if (isTrigger) "taskLauncher.triggerPolling" else "taskLauncher.taskExecuting",
             )
-        }
-        if (isTrigger) {
-            return OkScriptToolkitBundle.message(
+            isTrigger -> OkScriptToolkitBundle.message(
                 if (enabledTriggers.contains(key)) "taskLauncher.triggerEnqueued" else "taskLauncher.triggerDisabled",
             )
-        }
-        if (state.onetimeQueue.contains(key)) {
-            return OkScriptToolkitBundle.message("taskLauncher.taskQueued")
-        }
-        val schema = schemas[key]
-        return when {
+            state.onetimeQueue.contains(key) -> OkScriptToolkitBundle.message("taskLauncher.taskQueued")
             schema?.broken == true -> OkScriptToolkitBundle.message("taskLauncher.schemaBroken")
             schema?.error != null -> OkScriptToolkitBundle.message("taskLauncher.schemaError")
             else -> OkScriptToolkitBundle.message("taskLauncher.statusReady")
         }
+        return StatusCell(
+            text = text,
+            tone = TaskRowState.statusTone(
+                kind = if (isTrigger) TaskRowState.TRIGGER else TaskRowState.ONETIME,
+                running = state.current == key,
+                enabled = enabledTriggers.contains(key),
+                queued = state.onetimeQueue.contains(key),
+                schemaBroken = schema?.broken == true,
+                schemaError = schema?.error != null,
+            ),
+        )
     }
 
     /** 触发任务勾选：更新持久化集合并即时入列 / 出列；未启动执行器时按需拉起 */
@@ -1648,10 +1877,10 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     fun onDispose() {
-        // 只解绑视图：常驻执行器由 TaskRunnerService 持有，工具窗关闭后继续在后台运行
+        // 只解绑视图：常驻执行器由 TaskRunnerService 持有，工具窗关闭后继续在后台运行，
+        // 日志也留在 Run 工具窗口里
         toolboxService.removeStateListener(toolboxStateListener)
         toolboxService.removeStatusListener(toolboxStatusListener)
-        taskRunner.removeOutputListener(runnerOutputListener)
         taskRunner.removeStateListener(runnerStateListener)
     }
 }

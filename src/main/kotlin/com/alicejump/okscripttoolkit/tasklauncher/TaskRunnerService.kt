@@ -2,18 +2,34 @@ package com.alicejump.okscripttoolkit.tasklauncher
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.toolbox.ToolboxService
+import com.intellij.execution.executors.DefaultRunExecutor
+import com.intellij.execution.filters.TextConsoleBuilderFactory
+import com.intellij.execution.ui.ConsoleView
+import com.intellij.execution.ui.ConsoleViewContentType
+import com.intellij.execution.ui.RunContentDescriptor
+import com.intellij.execution.ui.RunContentManager
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.actionSystem.ActionManager
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Disposer
 import com.fasterxml.jackson.databind.ObjectMapper
+import java.awt.BorderLayout
 import java.io.File
 import java.io.OutputStreamWriter
 import java.util.Timer
 import java.util.TimerTask
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
+import javax.swing.JComponent
+import javax.swing.JPanel
 import javax.swing.SwingUtilities
 
 /**
@@ -43,6 +59,9 @@ class TaskRunnerService(private val project: Project) : Disposable {
         private const val FORCE_KILL_DELAY_MS = 12_000L
 
         private const val MARKER_STATE = "OK_TOOLKIT_STATE:"
+
+        /** Run 标签页里那条件工具栏的 ActionPlace（自定义 place，纯图标按钮） */
+        private const val CONSOLE_TOOLBAR_PLACE = "ok-script-executor-console"
     }
 
     /** 执行器状态快照（由 run_executor.py 的 OK_TOOLKIT_STATE 标记行驱动） */
@@ -90,9 +109,17 @@ class TaskRunnerService(private val project: Project) : Disposable {
     private val outputListeners = CopyOnWriteArrayList<(String) -> Unit>()
     private val stateListeners = CopyOnWriteArrayList<(ExecutorState) -> Unit>()
 
-    /** 输出环形缓冲：工具窗重开时回放，上限 [MAX_RECENT_LINES] 行 */
+    /** 输出环形缓冲：控制台被关掉后重开时回放，上限 [MAX_RECENT_LINES] 行 */
     private val recentOutput = ArrayDeque<String>()
     private val recentOutputLock = Object()
+
+    // ── Run 工具窗口控制台 ─────────────────────────────────────────────
+    // 日志不再进插件面板，而是显示成 Run 工具窗口里的一张标签页（等价 IDE 跑一个
+    // run configuration 的观感）。字段只在 EDT 上读写，consoleLock 只用于跨线程可见性。
+
+    private var consoleView: ConsoleView? = null
+    private var consoleDescriptor: RunContentDescriptor? = null
+    private val consoleLock = Object()
 
     // ── State ─────────────────────────────────────────────────────────
 
@@ -142,6 +169,136 @@ class TaskRunnerService(private val project: Project) : Disposable {
             while (recentOutput.size > MAX_RECENT_LINES) recentOutput.removeFirst()
         }
         outputListeners.forEach { it(line) }
+        // 统一走 EDT：保证控制台里行的先后顺序与缓冲一致
+        SwingUtilities.invokeLater { printLine(line) }
+    }
+
+    // ── Run 工具窗口控制台 ─────────────────────────────────────────────
+
+    /**
+     * 打开（必要时创建）Run 工具窗口里的「ok-script 执行器」标签页。
+     *
+     * [fresh] = true 表示执行器重新启动：先关掉旧标签页再开一张新的，
+     * 与 IDE 里「重新运行会开新标签页」的行为一致。调用线程任意。
+     */
+    fun showConsole(fresh: Boolean = false) {
+        if (!SwingUtilities.isEventDispatchThread()) {
+            SwingUtilities.invokeLater { showConsole(fresh) }
+            return
+        }
+        try {
+            val manager = RunContentManager.getInstance(project)
+            val executor = DefaultRunExecutor.getRunExecutorInstance()
+
+            if (fresh) {
+                consoleDescriptor?.let { previous ->
+                    synchronized(consoleLock) {
+                        if (consoleDescriptor === previous) {
+                            consoleView = null
+                            consoleDescriptor = null
+                        }
+                    }
+                    manager.removeRunContent(executor, previous)
+                }
+            }
+
+            val existing = consoleView
+            val existingDescriptor = consoleDescriptor
+            if (existing != null && existingDescriptor != null) {
+                manager.toFrontRunContent(executor, existingDescriptor)
+                return
+            }
+
+            val console = TextConsoleBuilderFactory.getInstance().createBuilder(project).console
+            val descriptor = RunContentDescriptor(
+                console,
+                null,
+                buildConsoleComponent(console),
+                OkScriptToolkitBundle.message("taskLauncher.consoleTitle"),
+                AllIcons.Actions.Execute,
+            )
+            descriptor.isActivateToolWindowWhenAdded = true
+            descriptor.isSelectContentWhenAdded = true
+            // 用户关掉标签页时平台会 dispose 掉 descriptor（连带 console），
+            // 这里同步清空引用，下次 showConsole() 才会重建而不是往死控制台里写
+            Disposer.register(descriptor) {
+                synchronized(consoleLock) {
+                    if (consoleDescriptor === descriptor) {
+                        consoleView = null
+                        consoleDescriptor = null
+                    }
+                }
+            }
+            synchronized(consoleLock) {
+                consoleView = console
+                consoleDescriptor = descriptor
+            }
+            manager.showRunContent(executor, descriptor)
+            // 控制台被关掉后重开：回放环形缓冲，历史不至于断掉
+            for (line in recentOutputLines()) console.print(line + "\n", contentTypeFor(line))
+        } catch (e: Exception) {
+            LOG.warn("Failed to open the executor run console", e)
+        }
+    }
+
+    /** 控制台标签页是否开着（决定「查看日志」按钮是拉前台还是新建） */
+    fun hasConsole(): Boolean = synchronized(consoleLock) { consoleView != null }
+
+    /**
+     * 控制台内容 = 顶部工具栏 + ConsoleView。
+     *
+     * 平台只在走 `ProgramRunner` 的常规运行路径时才用 RunContentBuilder 装配工具栏；
+     * 直接 `showRunContent()` 一个自建 descriptor 是不带工具栏的，所以这里自己拼一条：
+     * 前两个是本插件动作（停止当前任务 / 关闭执行器），后面接 ConsoleView 自带的
+     * 清除、滚动到末尾、暂停输出、自动换行等动作。
+     */
+    private fun buildConsoleComponent(console: ConsoleView): JComponent {
+        val group = DefaultActionGroup()
+        group.add(executorAction(
+            OkScriptToolkitBundle.message("taskLauncher.stopCurrent"),
+            AllIcons.Actions.Suspend,
+        ) { stopCurrent() })
+        group.add(executorAction(
+            OkScriptToolkitBundle.message("taskLauncher.closeExecutor"),
+            AllIcons.Actions.Cancel,
+        ) { stopExecutor() })
+        group.addSeparator()
+        for (action in console.createConsoleActions()) group.add(action)
+
+        val toolbar = ActionManager.getInstance()
+            .createActionToolbar(CONSOLE_TOOLBAR_PLACE, group, true)
+        toolbar.targetComponent = console.component
+        return JPanel(BorderLayout()).apply {
+            add(toolbar.component, BorderLayout.NORTH)
+            add(console.component, BorderLayout.CENTER)
+        }
+    }
+
+    /** Run 工具栏上的执行器动作：可用性按「当前是否有任务在跑」实时刷新 */
+    private fun executorAction(text: String, icon: javax.swing.Icon, onClick: () -> Unit): AnAction =
+        object : AnAction(text, text, icon) {
+            override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+
+            override fun update(e: AnActionEvent) {
+                e.presentation.isEnabled = isRunning()
+            }
+
+            override fun actionPerformed(e: AnActionEvent) {
+                onClick()
+            }
+        }
+
+    /** 只往控制台写：控制台被用户关掉时静默丢弃（日志仍在环形缓冲里） */
+    private fun printLine(line: String) {
+        val console = consoleView ?: return
+        console.print(line + "\n", contentTypeFor(line))
+    }
+
+    private fun contentTypeFor(line: String): ConsoleViewContentType = when {
+        line.contains("ERROR") || line.contains("Traceback") || line.contains("Exception") ->
+            ConsoleViewContentType.ERROR_OUTPUT
+        line.contains("WARN") -> ConsoleViewContentType.LOG_WARNING_OUTPUT
+        else -> ConsoleViewContentType.NORMAL_OUTPUT
     }
 
     private fun emitState(transform: (ExecutorState) -> ExecutorState = { it }) {
@@ -169,6 +326,8 @@ class TaskRunnerService(private val project: Project) : Disposable {
         currentProjectDir = projectDir
         snapshot = ExecutorState(status = "connecting", enabledTriggers = enabledTriggers)
         synchronized(recentOutputLock) { recentOutput.clear() }
+        // 每次启动都开一张新的 Run 标签页（等价 IDE 的「重新运行」），日志从第一行起就在那儿
+        showConsole(fresh = true)
         emitState()
 
         CompletableFuture.runAsync {
