@@ -9,12 +9,13 @@
 Brings ok-script language keys, OCR fixes, templates, effects and tasks into your IDE.
 
 [![JetBrains Marketplace](https://img.shields.io/badge/JetBrains%20Marketplace-OK%20Script%20Toolkit-000000?logo=jetbrains&logoColor=white)](https://plugins.jetbrains.com/plugin/34091-ok-script-toolkit)
+[![Downloads](https://img.shields.io/jetbrains/plugin/d/34091)](https://plugins.jetbrains.com/plugin/34091-ok-script-toolkit)
 [![Version](https://img.shields.io/badge/version-1.5.0-blue)](gradle.properties)
 [![Platform](https://img.shields.io/badge/Platform-2025.1%2B-000000?logo=jetbrains&logoColor=white)](gradle.properties)
 [![Kotlin](https://img.shields.io/badge/Kotlin-JDK%2021-7F52FF?logo=kotlin&logoColor=white)](build.gradle.kts)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-[Features](#features) · [Build](#build) · [Releases](#releases) · [Development](#agent-skills)
+[Install](#install) · [Features](#features) · [Build](#build) · [Releases](#releases) · [Development](#agent-skills)
 
 </div>
 
@@ -31,6 +32,17 @@ model, so an ok-script project behaves the same way in either IDE.
   <img src="screenshots/hero.gif" alt="ok-script Toolkit for JetBrains demo" width="900">
 </p>
 -->
+
+## Install
+
+Install **ok-script Toolkit** from JetBrains Marketplace:
+
+- **In your IDE** — <kbd>Settings</kbd> → <kbd>Plugins</kbd> → <kbd>Marketplace</kbd>, then search for `ok-script Toolkit`.
+- **On the web** — open the [plugin page](https://plugins.jetbrains.com/plugin/34091-ok-script-toolkit) and use **Install to IDE**.
+
+Requires platform **2025.1** or newer, and a Python-capable IDE — PyCharm, or IntelliJ IDEA Ultimate with the Python plugin.
+
+To build the plugin from source instead, see [Build](#build).
 
 ## Features
 
