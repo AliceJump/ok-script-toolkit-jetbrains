@@ -1,5 +1,6 @@
 package com.alicejump.okscripttoolkit.core
 
+import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -169,12 +170,24 @@ class EffectDataMutationsTest {
     }
 
     @Test
-    fun `atomicWriteText keeps a backup and replaces the target`() {
+    fun `atomicWriteText replaces the target, keeps a backup, and stays out of the source tree`() {
         val dir = createTempDirectory("ok-atomic-write").toFile()
         val file = dir.resolve("sample.txt").apply { writeText("old", Charsets.UTF_8) }
         EffectDataMutations.atomicWriteText(file.absolutePath, "new")
         assertEquals("new", file.readText(Charsets.UTF_8))
-        assertEquals("old", file.parentFile.resolve("sample.txt.bak").readText(Charsets.UTF_8))
         assertTrue(dir.resolve("sample.txt.ok-script-toolkit.tmp").exists().not(), "临时文件应已清理")
+
+        // 关键回归：备份**不得**落进用户源码树（原先就在目标文件旁边，会被误提交 / 被收进产物）
+        assertTrue(
+            dir.listFiles().orEmpty().none { it.name.endsWith(".bak") },
+            "备份必须移出源码目录；实际残留：${dir.listFiles().orEmpty().map { it.name }}",
+        )
+        val backups = File(System.getProperty("java.io.tmpdir"))
+            .listFiles { f -> f.name.startsWith(AtomicWritePaths.BACKUP_PREFIX) }
+            .orEmpty()
+        assertTrue(
+            backups.isNotEmpty(),
+            "备份应写到系统临时目录（前缀 ${AtomicWritePaths.BACKUP_PREFIX}），否则回滚能力就丢了",
+        )
     }
 }

@@ -13,3 +13,7 @@ bin/
 # Local environment
 local.properties
 .kotlin/
+
+# 原子写的临时产物（写入中的 .tmp 与旧版备份）
+*.ok-script-toolkit.tmp
+*.bak

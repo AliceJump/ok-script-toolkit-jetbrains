@@ -23,14 +23,18 @@ object CharacterDataMutations {
 
     class MutationException(message: String) : Exception(message)
 
-    /** 原子写 JSON：.bak 备份 -> tmp 写入 -> 回读校验 -> 原子替换。 */
+    /**
+     * 原子写 JSON：.bak 备份 -> tmp 写入 -> 回读校验 -> 原子替换。
+     *
+     * 备份放系统临时目录（[AtomicWritePaths]），**不再**写进用户的 `ok_templates/` 源码树。
+     * `.tmp` 仍留在目标同目录 —— 跨文件系统的 `ATOMIC_MOVE` 会退化成复制，原子性就没了。
+     */
     fun atomicWriteJson(path: Path, root: JsonNode) {
         val target = path.toFile()
-        val backup = File(target.parentFile, target.name + ".bak")
-        if (target.exists()) {
+        AtomicWritePaths.backupTarget(target)?.let { backup ->
             Files.copy(target.toPath(), backup.toPath(), StandardCopyOption.REPLACE_EXISTING)
         }
-        val tmp = File(target.parentFile, target.name + ".ok-script-toolkit.tmp")
+        val tmp = AtomicWritePaths.tempBeside(target)
         JSON.writerWithDefaultPrettyPrinter().writeValue(tmp, root)
         // 回读校验
         JSON.readTree(tmp)

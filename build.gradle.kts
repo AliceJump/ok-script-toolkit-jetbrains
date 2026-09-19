@@ -51,6 +51,11 @@ val copyPython = tasks.register<Copy>("copyPythonScripts") {
         // test_*.py 放回 python/ 就被 `**/*.py` 静默收进 jar。
         exclude("tests/**")
         exclude("test_*.py")
+        // 原子写的临时产物：`.tmp` 是写一半的中间文件，`.bak` 是旧版实现留在
+        // python 目录旁边的备份。两者都是运行时垃圾，不该进 jar（AGENT.md 打包红线）。
+        // 新版实现已把备份移到系统临时目录，这条是针对历史残留与手滑的兜底。
+        exclude("**/*.ok-script-toolkit.tmp")
+        exclude("**/*.bak")
     }
     into(project.layout.buildDirectory.dir("resources/main/python"))
 }

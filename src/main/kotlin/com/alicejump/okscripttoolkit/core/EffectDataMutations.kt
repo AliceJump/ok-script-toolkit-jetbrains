@@ -168,14 +168,18 @@ object EffectDataMutations {
         atomicWriteText(effectsFile, doc.text)
     }
 
-    /** 原子写文本：.bak 备份 -> tmp -> rename。 */
+    /**
+     * 原子写文本：.bak 备份 -> tmp -> rename。
+     *
+     * 备份位置与 `.tmp` 位置的取舍见 [AtomicWritePaths] —— 简言之：备份去系统临时目录
+     * （别污染用户源码树），`.tmp` 留在目标旁边（保住 `ATOMIC_MOVE` 的原子性）。
+     */
     fun atomicWriteText(path: String, content: String) {
         val target = File(path)
-        val backup = File(target.parentFile, target.name + ".bak")
-        if (target.exists()) {
+        AtomicWritePaths.backupTarget(target)?.let { backup ->
             Files.copy(target.toPath(), backup.toPath(), StandardCopyOption.REPLACE_EXISTING)
         }
-        val tmp = File(target.parentFile, target.name + ".ok-script-toolkit.tmp")
+        val tmp = AtomicWritePaths.tempBeside(target)
         tmp.writeText(content, StandardCharsets.UTF_8)
         try {
             Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
