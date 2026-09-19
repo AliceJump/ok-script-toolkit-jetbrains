@@ -1730,6 +1730,9 @@ class TaskLauncherPanel(private val project: Project) {
         env["PYTHONUTF8"] = "1"
         // 触发任务启用集合：执行器以它为准，项目 configs 里残留的 _enabled 会被覆盖
         env["OK_TOOLKIT_TRIGGERS"] = ObjectMapper().writeValueAsString(enabledTriggers.toList())
+        // 配置沙箱：执行器把 ok 框架的配置/截图读写全部改道到这里，绝不碰项目 configs/。
+        // IntelliJ 侧数据文件都在 .idea 下，故沙箱与之并列（VS Code 版对应 .vscode）。
+        env["OK_TOOLKIT_RUN_DIR"] = File(projectDir, ".idea/ok-script-toolkit").path
         val overrides = allParamOverrides()
         if (overrides.isNotEmpty()) {
             env["OK_LANG_HINTS_INJECT"] = ObjectMapper().writeValueAsString(overrides)
