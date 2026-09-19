@@ -132,6 +132,8 @@ class TaskLauncherPanel(private val project: Project) {
     }
     private val taskTable = JBTable(taskTableModel)
     private val refreshAction = ToolbarAction(AllIcons.Actions.Refresh, OkScriptToolkitBundle.message("taskLauncher.refresh")) { loadTasks() }
+    /** 显式启动执行器：勾选触发任务不再隐式拉起，启动行为集中在这里 */
+    private val startExecutorAction = ToolbarAction(AllIcons.Actions.Execute, OkScriptToolkitBundle.message("taskLauncher.startExecutor")) { startExecutorManual() }
     private val runAction = ToolbarAction(AllIcons.Actions.Execute, OkScriptToolkitBundle.message("taskLauncher.run")) { enqueueSelectedTask() }
     private val stopCurrentAction = ToolbarAction(AllIcons.Actions.Suspend, OkScriptToolkitBundle.message("taskLauncher.stopCurrent")) { stopCurrentTask() }
     private val closeExecutorAction = ToolbarAction(AllIcons.Actions.Cancel, OkScriptToolkitBundle.message("taskLauncher.closeExecutor")) { closeExecutor() }
@@ -207,6 +209,8 @@ class TaskLauncherPanel(private val project: Project) {
     /** 按执行器状态刷新工具栏按钮、状态栏与勾选列（EDT） */
     private fun syncRunnerState(state: TaskRunnerService.ExecutorState) {
         val active = state.status == "running" || state.status == "connecting"
+        // 显式启动：执行器起来之前才可用，起来后让位给暂停/停止（对齐 VSCode 端按钮显隐）
+        startExecutorAction.isEnabled2 = !active
         runAction.isEnabled2 = state.status != "connecting"
         stopCurrentAction.isEnabled2 = state.current.isNotEmpty()
         closeExecutorAction.isEnabled2 = active
@@ -245,7 +249,7 @@ class TaskLauncherPanel(private val project: Project) {
         resumeAction.isEnabled2 = false
 
         val actionGroup = com.intellij.openapi.actionSystem.DefaultActionGroup(
-            refreshAction, runAction, stopCurrentAction, closeExecutorAction, pauseAction, resumeAction,
+            refreshAction, startExecutorAction, runAction, stopCurrentAction, closeExecutorAction, pauseAction, resumeAction,
         )
         actionToolbar = com.intellij.openapi.actionSystem.ActionManager.getInstance()
             .createActionToolbar("ok-script-tasks", actionGroup, true)
@@ -1682,6 +1686,14 @@ class TaskLauncherPanel(private val project: Project) {
         enqueueTask(task)
     }
 
+    /**
+     * 工具栏「启动执行器」：显式拉起常驻执行器。已勾选的触发任务会按启用集合入列轮询。
+     * 环境不满足时 [ensureExecutor] 会自己弹错误提示。
+     */
+    private fun startExecutorManual() {
+        if (ensureExecutor()) renderTaskStatuses(taskRunner.currentState())
+    }
+
     /** 一次性任务：入队到常驻执行器，执行一次后自动出队 */
     private fun enqueueTask(task: TaskLauncherService.TaskInfo) {
         if (!ensureExecutor()) return
@@ -1856,9 +1868,17 @@ class TaskLauncherPanel(private val project: Project) {
             state.current == key -> OkScriptToolkitBundle.message(
                 if (isTrigger) "taskLauncher.triggerPolling" else "taskLauncher.taskExecuting",
             )
-            isTrigger -> OkScriptToolkitBundle.message(
-                if (enabledTriggers.contains(key)) "taskLauncher.triggerEnqueued" else "taskLauncher.triggerDisabled",
-            )
+            // 执行器没跑时不能显示「已入列」—— 那时根本没在轮询，会误导用户。
+            // 改成「已启用」表达「已记录，待启动」（对齐 VSCode 端 armed 徽标）。
+            isTrigger -> {
+                val armed = enabledTriggers.contains(key)
+                val running = state.status == "running" || state.status == "connecting"
+                when {
+                    !armed -> OkScriptToolkitBundle.message("taskLauncher.triggerDisabled")
+                    running -> OkScriptToolkitBundle.message("taskLauncher.triggerEnqueued")
+                    else -> OkScriptToolkitBundle.message("taskLauncher.triggerArmed")
+                }
+            }
             state.onetimeQueue.contains(key) -> OkScriptToolkitBundle.message("taskLauncher.taskQueued")
             schema?.broken == true -> OkScriptToolkitBundle.message("taskLauncher.schemaBroken")
             schema?.error != null -> OkScriptToolkitBundle.message("taskLauncher.schemaError")
@@ -1877,7 +1897,13 @@ class TaskLauncherPanel(private val project: Project) {
         )
     }
 
-    /** 触发任务勾选：更新持久化集合并即时入列 / 出列；未启动执行器时按需拉起 */
+    /**
+     * 触发任务勾选：只更新持久化集合并即时入列 / 出列。
+     *
+     * 这里**不会**拉起执行器 —— 勾选只是「记录我要跑哪些触发任务」的意图，
+     * 不等于「现在开始跑」。想真正启动请点工具栏的启动按钮（[startExecutorManual]）。
+     * 执行器已在运行时勾选依然即时生效（对齐 VSCode 端 setTriggerEnabled）。
+     */
     private fun setTriggerEnabled(task: TaskLauncherService.TaskInfo, enabled: Boolean) {
         val key = taskKeyOf(task)
         if (enabled) enabledTriggers.add(key) else enabledTriggers.remove(key)
@@ -1887,8 +1913,6 @@ class TaskLauncherPanel(private val project: Project) {
             if (!taskRunner.setTriggerEnabled(key, enabled)) {
                 statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.executorNotRunning")
             }
-        } else if (enabled) {
-            ensureExecutor()
         }
     }
 
