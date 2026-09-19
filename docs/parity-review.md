@@ -15,6 +15,15 @@ Next review should override this table and update the status.
 > The previous revision (2026-09-07, baseline v1.4.0) was badly stale: it listed the
 > advanced annotation-editor interactions as TODO, but most were implemented afterwards
 > without a doc update. This revision re-verified every row against the code.
+>
+> **2026-09-20 追加复核**：本文档的「局部结论」本身也会漂移。同一次复核里发现
+> 「6 语言 UI 完整对等」的旧说法不成立（4 个语言包各缺 13 个键，详见下文 ⚠️ 标注），
+> 已补齐并配了构建期检查。**读本表请按「待验证」处理，以代码与测试为准。**
+>
+> **2026-09-20 follow-up**: even this document's per-row conclusions drift. The same pass
+> found the "6-language UI fully aligned" claim false (4 bundles were each missing 13 keys —
+> see the ⚠️ note below). Now fixed, with a build-time check. **Treat this table as
+> unverified; the code and the tests are authoritative.**
 
 ---
 
@@ -61,6 +70,11 @@ Next review should override this table and update the status.
 - 临时截图：10 张上限（`TempShotFiles.MAX_SHOTS`）、粘贴/截屏入列、0.1s 轮播、
   框选复制归一化坐标、缩略图拖到素材面板导入（`TempShotTransferable` 自定义 DataFlavor）
 - 6 语言 UI、设置项、PythonScriptLocator 只从插件 JAR 提取脚本
+  - ⚠️ 2026-09-20 复核：**语言包并非完整对等**。`zh_TW`/`ja`/`ko`/`es` 各缺 13 个
+    `characterManager.*` 键（`enhancements` / `addEnhancement` / `deleteEnhancementConfirm` …），
+    `ResourceBundle` 会静默回落成英文 —— 界面中英夹杂而无人报错。已补齐译文，
+    并新增 `src/test/.../core/BundleParityTest.kt` 把「6 个 properties 键集必须逐一对等」钉死，
+    以后漂移会在构建期失败而不是等用户发现。
 
 ### ⚠️ 待办
 

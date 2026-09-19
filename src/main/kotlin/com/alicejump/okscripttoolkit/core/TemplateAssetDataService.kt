@@ -497,16 +497,31 @@ class TemplateAssetDataService(private val project: Project) {
         }
     }
 
-    /** 由分类标签生成 Python 枚举文件（对齐 VSCode 版 generateLabelEnum）。 */
+    /**
+     * 由分类标签生成 Python 枚举文件（对齐 VSCode 版 generateLabelEnum）。
+     *
+     * 标签来自用户输入的分类名，会**直接拼进 Python 源码**，所以两处都必须处理：
+     *
+     * 1. **值**走 [pythonStringLiteral] 显式转义（不能直接用 Jackson 的 writeValueAsString ——
+     *    JSON 与 Python 的单引号转义规则不重合）；
+     * 2. **成员名**走 [memberNameFor] 规范化成合法标识符。分类名带空格 / 连字符 / 中文时，
+     *    `    洗手 台 = '...'` 这种行会让整个文件 `SyntaxError`，用户拿到的枚举文件直接不能用。
+     */
     fun generateLabelEnum(filePath: String, labels: List<String>) {
         val file = File(filePath)
         file.parentFile?.mkdirs()
-        val className = file.nameWithoutExtension
+        val rawClassName = file.nameWithoutExtension
+        // 类名同样进源码：非法标识符直接退回一个安全的默认名，而不是生成坏文件
+        val className = if (PYTHON_IDENTIFIER.matches(rawClassName)) rawClassName else "LabelEnum"
         val content = buildString {
             append("from enum import Enum\n\n\n")
             append("class ").append(className).append("(str, Enum):\n")
+            if (labels.isEmpty()) {
+                // 空枚举的类体不能什么都没有 —— 否则是 IndentationError: expected an indented block
+                append("    pass\n")
+            }
             for (label in labels) {
-                append("    ").append(label).append(" = '").append(label).append("'\n")
+                append("    ").append(memberNameFor(label)).append(" = ").append(pythonStringLiteral(label)).append('\n')
             }
         }
         file.writeText(content, Charsets.UTF_8)
@@ -574,4 +589,59 @@ class TemplateAssetDataService(private val project: Project) {
         if (count > 0) save()
         return count
     }
+}
+
+/** Python 标识符：`[A-Za-z_][A-Za-z0-9_]*`（ASCII only，中文成员名刻意排除，见 [memberNameFor]） */
+private val PYTHON_IDENTIFIER = Regex("[A-Za-z_][A-Za-z0-9_]*")
+
+/**
+ * 把一段用户输入变成合法的 Python 单引号字符串字面量（含引号）。
+ *
+ * 为什么不用 Jackson 的 `writeValueAsString`：JSON 与 Python 的字符串转义规则**不完全重合**。
+ * JSON 里单引号无需转义，而 Python 单引号字面量里 `\'` 是必需的。所以这里逐字符显式转义。
+ *
+ * 与 VSCode 版 `templateAssetData.ts` 的 `pythonStringLiteral` 是同一份规则，
+ * 改动需两端同步（本仓库的"跨仓一致性"约定）。
+ */
+internal fun pythonStringLiteral(value: String): String {
+    val out = StringBuilder(value.length + 2)
+    out.append('\'')
+    for (ch in value) {
+        when (ch) {
+            '\\' -> out.append("\\\\")
+            '\'' -> out.append("\\'")
+            '\n' -> out.append("\\n")
+            '\r' -> out.append("\\r")
+            '\t' -> out.append("\\t")
+            else -> if (ch.code < 0x20 || ch.code == 0x7f) {
+                // 控制字符（\x00-\x1f 与 \x7f）一律走 \xNN，避免源文件里出现裸控制字符
+                out.append("\\x").append(ch.code.toString(16).padStart(2, '0'))
+            } else {
+                out.append(ch)
+            }
+        }
+    }
+    out.append('\'')
+    return out.toString()
+}
+
+/**
+ * 把分类名转成合法的 Python 枚举成员名。
+ *
+ * Python 标识符不允许空格、连字符、数字开头；非 ASCII 中文虽然**语法上**能当标识符，
+ * 但枚举成员会被 `LabelEnum.洗手台` 这样引用，中文成员名在大多数工具链里都是坑，
+ * 因此统一规范化成 `cat_<hex>` 形式的纯 ASCII 名。
+ *
+ * **成员名与值相互独立**：值保留原始标签（[pythonStringLiteral]），
+ * 所以 `LabelEnum.cat_6d17_53f0.value == '洗手台'` 依然成立 —— 规范化不丢信息。
+ */
+internal fun memberNameFor(label: String): String {
+    val ascii = label.replace(Regex("[^A-Za-z0-9_]"), "_")
+    if (PYTHON_IDENTIFIER.matches(ascii)) return ascii
+
+    // 剩下两类：以数字开头，或规范化后一个有效字符都没有（全中文 / 全符号）
+    val suffix = label.map { it.code.toString(16) }.joinToString("_")
+    val prefix = if (ascii.firstOrNull()?.isDigit() == true) "n" else "cat"
+    val candidate = if (suffix.isEmpty()) prefix else "${prefix}_$suffix"
+    return if (PYTHON_IDENTIFIER.matches(candidate)) candidate else "cat"
 }

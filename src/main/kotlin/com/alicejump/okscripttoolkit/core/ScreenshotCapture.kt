@@ -11,6 +11,7 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 
 /**
@@ -94,14 +95,31 @@ class ScreenshotCapture(private val project: Project) {
                 .directory(File(projectDir.ifBlank { "." }))
                 .redirectErrorStream(false)
                 .start()
-            val stdout = process.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            val stderr = process.errorStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+
+            // 必须**先 waitFor 再读流**。原先的顺序是先 readText() 再 waitFor(timeout)：
+            // readText() 会一直阻塞到子进程关闭管道，也就是"超时上限根本管不住它"——
+            // 脚本卡住时这里会永久挂住调用线程，10s 超时形同虚设。
+            // 现在改成：并发起两个抽干线程（避免大输出把管道写满导致双向死锁）-> waitFor -> 收集。
+            val stdoutFuture = CompletableFuture.supplyAsync {
+                process.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            }
+            val stderrFuture = CompletableFuture.supplyAsync {
+                process.errorStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            }
+
             val completed = process.waitFor(10, TimeUnit.SECONDS)
             if (!completed) {
                 process.destroyForcibly()
+                // 给进程一点时间真正退出，再取消读取线程，避免读到半截内容
+                process.waitFor(5, TimeUnit.SECONDS)
+                stdoutFuture.cancel(true)
+                stderrFuture.cancel(true)
                 LOG.warn("probe_window_config timed out")
                 return null
             }
+
+            val stdout = runCatching { stdoutFuture.get(5, TimeUnit.SECONDS) }.getOrDefault("")
+            val stderr = runCatching { stderrFuture.get(5, TimeUnit.SECONDS) }.getOrDefault("")
             if (process.exitValue() != 0) {
                 LOG.warn("probe_window_config failed (exit=${process.exitValue()}): $stderr")
                 return null

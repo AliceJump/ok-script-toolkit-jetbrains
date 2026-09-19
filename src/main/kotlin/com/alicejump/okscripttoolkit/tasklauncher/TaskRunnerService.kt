@@ -420,13 +420,24 @@ class TaskRunnerService(private val project: Project) : Disposable {
     /** 参数覆盖即时推送（执行器是常驻进程，不推就要重启才生效） */
     fun pushParams(json: String): Boolean = sendCommand("params $json")
 
-    /** 关闭执行器：先请它自己退出，超时再强杀进程树 */
+    /**
+     * 关闭执行器：先请它自己退出，超时再强杀进程树。
+     *
+     * 三处状态都必须让用户看得见，否则 UI 会停在"执行器还开着"的错误认知上：
+     * 1. 已经没在执行器 —— 也要给一行反馈，不然用户点了按钮毫无动静，只会以为卡了；
+     * 2. `stop` 命令没送出去 —— 要说明接下来是强杀，而不是静默换一种终止方式；
+     * 3. 超时强杀 —— 由 [killProcessTree] 在真正动手时记录。
+     */
     fun stopExecutor() {
-        val proc = process ?: return
-        if (!proc.isAlive) return
+        val proc = process
+        if (proc == null || !proc.isAlive) {
+            recordAndEmit(OkScriptToolkitBundle.message("taskLauncher.executorNotRunning"))
+            return
+        }
         recordAndEmit("--- ${OkScriptToolkitBundle.message("taskLauncher.stoppingExecutor")} ---")
         if (!sendCommand("stop")) {
-            killProcessTree(proc)
+            recordAndEmit(OkScriptToolkitBundle.message("taskLauncher.executorForceKilling"))
+            killProcessTree(proc, OkScriptToolkitBundle.message("taskLauncher.executorForceKilling"))
             return
         }
         cancelForceKill()
@@ -434,7 +445,9 @@ class TaskRunnerService(private val project: Project) : Disposable {
             override fun run() {
                 forceKillTask = null
                 val alive = process
-                if (alive != null && alive.isAlive) killProcessTree(alive)
+                if (alive != null && alive.isAlive) {
+                    killProcessTree(alive, OkScriptToolkitBundle.message("taskLauncher.executorKillTimeout"))
+                }
             }
         }
         forceKillTask = task
@@ -446,8 +459,14 @@ class TaskRunnerService(private val project: Project) : Disposable {
         forceKillTask = null
     }
 
-    /** Windows 上 taskkill /F /T 终止进程树（阻塞调用已移出 EDT） */
-    private fun killProcessTree(proc: Process) {
+    /**
+     * Windows 上 taskkill /F /T 终止进程树（阻塞调用已移出 EDT）。
+     *
+     * [reason] 会被记录到输出面板：强杀是"最后手段"，用户必须能区分
+     * "执行器自己优雅退出了" 和 "被我们打死了" —— 后者往往意味着退出流程有 bug。
+     */
+    private fun killProcessTree(proc: Process, reason: String) {
+        recordAndEmit("--- $reason ---")
         CompletableFuture.runAsync {
             try {
                 val pid = proc.pid()
