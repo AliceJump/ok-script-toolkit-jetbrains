@@ -278,7 +278,7 @@ class CharacterDataService(private val project: Project) {
                     continue
                 }
 
-                var characterId = root.get("character_id")?.asText()?.takeIf { it.isNotBlank() }
+                var characterId = root.get("character_id").textOrNull()?.takeIf { it.isNotBlank() }
                 if (characterId == null) {
                     characterId = file.nameWithoutExtension
                     issues.add(CharacterIssue(nextIssueId(), IssueSeverity.ERROR, "missing-character-id",
@@ -295,12 +295,14 @@ class CharacterDataService(private val project: Project) {
                 seenCharacterIds.add(characterId)
                 characterFileMap[characterId] = file.absolutePath
 
-                val name = root.get("name")?.asText() ?: characterId
+                // 全部走 textOr：这些字段都可能是显式 JSON null，
+                // 直接用 `?.asText() ?: x` 会把 "null" 当成真实值（见 JsonNodeExt）。
+                val name = root.get("name").textOr(characterId)
                 val star = root.get("star")?.asInt() ?: 0
-                val element = root.get("element")?.asText() ?: ""
-                val profession = root.get("profession")?.asText() ?: ""
-                val weaponType = root.get("weapon_type")?.asText() ?: ""
-                val wikiItemId = root.get("wiki_item_id")?.let { if (it.isNull) "" else it.asText() } ?: ""
+                val element = root.get("element").textOr("")
+                val profession = root.get("profession").textOr("")
+                val weaponType = root.get("weapon_type").textOr("")
+                val wikiItemId = root.get("wiki_item_id").textOr("")
 
                 val skillsArray = root.get("skills")
                 if (skillsArray == null || !skillsArray.isArray) {
@@ -322,7 +324,7 @@ class CharacterDataService(private val project: Project) {
                         continue
                     }
 
-                    var skillId = skillNode.get("skill_id")?.asText()?.takeIf { it.isNotBlank() }
+                    var skillId = skillNode.get("skill_id").textOrNull()?.takeIf { it.isNotBlank() }
                     if (skillId == null) {
                         skillId = "${characterId}_skill_${idx + 1}"
                         issues.add(CharacterIssue(nextIssueId(), IssueSeverity.ERROR, "missing-skill-id",
@@ -337,17 +339,17 @@ class CharacterDataService(private val project: Project) {
                     }
                     seenSkillIds.add(skillId)
 
-                    val skillName = skillNode.get("name")?.asText() ?: skillId
-                    val skillType = skillNode.get("skill_type")?.asText() ?: "uncategorized"
-                    val skillElement = skillNode.get("element")?.asText() ?: element
-                    val description = skillNode.get("description")?.asText() ?: ""
-                    val damageMultiplier = skillNode.get("damage_multiplier")?.let {
-                        if (it.isNull) "" else it.asText()
-                    } ?: ""
+                    val skillName = skillNode.get("name").textOr(skillId)
+                    val skillType = skillNode.get("skill_type").textOr("uncategorized")
+                    // `element` 是**实测踩到过的那个**：VSCode 侧 sanitizeSkill 用
+                    // `optionalString(data.element) || null`，空元素会写成 `"element": null`；
+                    // 这里原先是 `?.asText() ?: element`，于是把字面量 "null" 当成元素名显示。
+                    // 对端 characterData.ts:577 用 stringValue 兜底到角色元素，此处对齐。
+                    val skillElement = skillNode.get("element").textOrNull() ?: element
+                    val description = skillNode.get("description").textOr("")
+                    val damageMultiplier = skillNode.get("damage_multiplier").textOr("")
                     val staggerValue = skillNode.get("stagger_value")?.asInt() ?: 0
-                    val cooldown = skillNode.get("cooldown")?.let {
-                        if (it.isNull) "" else it.asText()
-                    } ?: ""
+                    val cooldown = skillNode.get("cooldown").textOr("")
                     val spiritCost = skillNode.get("spirit_cost")?.asInt() ?: 0
                     val hasEnhancement = skillNode.get("has_enhancement")?.asBoolean() ?: false
                     val isCustom = skillNode.get("_ok_lang_hints_custom")?.asBoolean() ?: false
@@ -410,7 +412,7 @@ class CharacterDataService(private val project: Project) {
             for (masterId in masterCharacterIds) {
                 if (masterId !in seenCharacterIds) {
                     val entry = masterEntries?.get(masterId)
-                    val zhName = entry?.get("zh")?.asText() ?: ""
+                    val zhName = (entry?.get("zh")).textOr("")
                     issues.add(CharacterIssue(nextIssueId(), IssueSeverity.WARNING, "missing-skill-file",
                         "Master entry '$masterId' ($zhName) has no corresponding skill file",
                         CharacterIssueSource(SourceKind.MASTER, characterId = masterId)))
@@ -422,7 +424,7 @@ class CharacterDataService(private val project: Project) {
             for (parsed in parsedCharacters) {
                 val masterEntry = masterEntries?.get(parsed.characterId)
                 if (masterEntry != null) {
-                    val masterZh = masterEntry.get("zh")?.asText() ?: ""
+                    val masterZh = masterEntry.get("zh").textOr("")
                     if (masterZh.isNotBlank() && masterZh != parsed.name) {
                         issues.add(CharacterIssue(nextIssueId(), IssueSeverity.WARNING, "character-name-mismatch",
                             "Character '${parsed.characterId}': master name '$masterZh' != skill name '${parsed.name}'",
@@ -444,8 +446,8 @@ class CharacterDataService(private val project: Project) {
                 val localeEntry = localeData?.get(parsed.characterId)
                 if (localeEntry != null && localeEntry.isObject) {
                     localeEntry.forEachField { localeCode, node ->
-                        val value = node.get("string")?.asText()?.takeIf { it.isNotBlank() }
-                            ?: node.get("pattern")?.asText()?.takeIf { it.isNotBlank() }
+                        val value = node.get("string").textOrNull()?.takeIf { it.isNotBlank() }
+                            ?: node.get("pattern").textOrNull()?.takeIf { it.isNotBlank() }
                         if (value != null) locales[localeCode] = value
                     }
                 }
@@ -458,8 +460,8 @@ class CharacterDataService(private val project: Project) {
                 val master = masterEntry?.let {
                     CharacterMasterView(
                         parsed.characterId,
-                        it.get("zh")?.asText() ?: "",
-                        it.get("en")?.asText() ?: "",
+                        it.get("zh").textOr(""),
+                        it.get("en").textOr(""),
                         it.get("stars")?.asInt() ?: 0,
                     )
                 }
@@ -683,13 +685,13 @@ class CharacterDataService(private val project: Project) {
                 return CharacterEffectRef(effectId, effectId, known = false)
             }
             if (!node.isObject) return null
-            val effectId = node.get("effect_id")?.asText()?.takeIf { it.isNotBlank() } ?: return null
+            val effectId = node.get("effect_id").textOrNull()?.takeIf { it.isNotBlank() } ?: return null
             return CharacterEffectRef(
                 effectId = effectId,
                 displayName = effectId,
                 value = node.get("value")?.let { if (it.isNull) null else JSON.convertValue(it, Any::class.java) },
                 duration = node.get("duration")?.let { if (it.isNull) null else JSON.convertValue(it, Any::class.java) },
-                target = node.get("target")?.asText(),
+                target = node.get("target").textOrNull(),
                 count = node.get("count")?.asInt(),
                 known = false,
             )
@@ -706,8 +708,10 @@ class CharacterDataService(private val project: Project) {
             effectTermMap: Map<String, String>,
             definedEffectIds: Set<String>?,
         ): CharacterEnhancementView? {
-            val name = node.get("name")?.asText() ?: return null
-            val enhancementEffect = node.get("enhancement_effect")?.asText() ?: ""
+            // `name` 为显式 null 时按"缺名字"处理（跳过该强化组），
+            // 而不是把它当成名叫 "null" 的强化组。
+            val name = node.get("name").textOrNull() ?: return null
+            val enhancementEffect = node.get("enhancement_effect").textOr("")
             val visiblePulse = node.get("enhancement_visible_pulse")?.asBoolean() ?: false
 
             val triggerCondition = node.get("trigger_condition")
@@ -719,7 +723,7 @@ class CharacterDataService(private val project: Project) {
                 if (triggerCondition.isTextual) {
                     triggerText = triggerCondition.asText()
                 } else if (triggerCondition.isObject) {
-                    triggerText = triggerCondition.get("text")?.asText() ?: ""
+                    triggerText = triggerCondition.get("text").textOr("")
                     val effectsNode = triggerCondition.get("effects")
                     if (effectsNode != null) {
                         if (effectsNode.isArray) {
@@ -816,8 +820,8 @@ class CharacterDataService(private val project: Project) {
             val localeCandidates = listOf(projectLocale, "zh_CN", "en_US").distinct()
             for (locale in localeCandidates) {
                 val node = entry.get(locale) ?: continue
-                val value = node.get("string")?.asText()?.takeIf { it.isNotBlank() }
-                    ?: node.get("pattern")?.asText()?.takeIf { it.isNotBlank() }
+                val value = node.get("string").textOrNull()?.takeIf { it.isNotBlank() }
+                    ?: node.get("pattern").textOrNull()?.takeIf { it.isNotBlank() }
                 if (value != null) return value
             }
             return effectId

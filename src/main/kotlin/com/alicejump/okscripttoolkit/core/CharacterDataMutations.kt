@@ -13,11 +13,11 @@ import java.nio.file.StandardCopyOption
 
 /**
  * 角色技能数据的写回（对齐 VSCode 版 mutateCharacter）：
- * 原子写入（.bak 备份 -> tmp -> 回读校验 -> rename）、技能增删改、
- * 自定义技能标记 _ok_lang_hints_custom。
+ * 原子写入（.bak 备份 -> tmp -> 回读校验 -> rename）、技能增删改
+ * （含自定义技能的改名与重名检查）、自定义技能标记 _ok_lang_hints_custom。
  *
  * 同步技能（`_ok_lang_hints_custom != true`）的保护粒度见 [SyncedSkillPolicy]：
- * **可改数值与效果，仅标识/语义字段锁定**；不可删除。
+ * **可改数值与效果，仅标识/语义字段锁定**；不可删除、不可改名。
  */
 object CharacterDataMutations {
 
@@ -111,8 +111,10 @@ object CharacterDataMutations {
         val (root, skills, file) = skillFile(path)
         ensureSkillIdFree(skills, skillId, excludeSelf = null)
         val node = skills.addObject()
+        // 先写表单、再落 skill_id：表单里也有 skill_id（与入参同源），但入参是
+        // 经过非空校验的权威值，不能被表单的空值 remove 语义覆盖掉。
+        applySkillForm(node, form.filterKeys { it != "skill_id" })
         node.put("skill_id", skillId)
-        applySkillForm(node, form)
         node.put("_ok_lang_hints_custom", true)
         // 对齐 VSCode：新技能默认无强化
         if (!node.has("has_enhancement")) node.put("has_enhancement", false)
@@ -126,6 +128,11 @@ object CharacterDataMutations {
      * （见 [SyncedSkillPolicy]）：数值与效果照常写入。这与 VSCode 的
      * `updateSkill` 一致 —— 那边非 custom 时把五个标识字段还原为原值，
      * 其余字段正常落盘。
+     *
+     * `skillId` 是**定位键**（原 ID）；表单里的 `skill_id` 是**目标 ID**，
+     * 两者不同即表示改名，需查重（对齐 VSCode `characterPanel.ts:406-408`）。
+     * 同步技能的表单已被 [SyncedSkillPolicy.filterForm] 摘掉 `skill_id`，
+     * 所以改名对它们天然无效 —— 这正是"标识字段锁定"的体现。
      *
      * 注意这里**不再** `put("_ok_lang_hints_custom", true)`：
      * 原先那行在"同步技能一律抛错"的前提下不可达，一旦放开限制就会把
@@ -142,7 +149,15 @@ object CharacterDataMutations {
             ?: throw MutationException("Skill not found: $skillId")
         val custom = skill.get("_ok_lang_hints_custom")?.asBoolean(false) == true
         val synced = SyncedSkillPolicy.isSynced(custom)
-        applySkillForm(skill, SyncedSkillPolicy.filterForm(form, synced))
+        val effective = SyncedSkillPolicy.filterForm(form, synced)
+        val requestedId = effective["skill_id"]?.trim().orEmpty()
+        if (requestedId.isNotEmpty() && requestedId != skillId) {
+            ensureSkillIdFree(skills, requestedId, excludeSelf = skillId)
+        }
+        // skill_id 单独落盘：applySkillForm 对空字符串走 `remove` 语义，
+        // 会把 ID 这个必填标识整个删掉。空输入一律视为"未修改"。
+        applySkillForm(skill, effective.filterKeys { it != "skill_id" })
+        if (requestedId.isNotEmpty()) skill.put("skill_id", requestedId)
         atomicWriteJson(file.toPath(), root)
     }
 

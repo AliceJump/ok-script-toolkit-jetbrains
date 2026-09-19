@@ -181,7 +181,19 @@ class SkillDialog(
 
     fun enteredSkillId(): String = skillIdField.text.trim()
 
+    /**
+     * 表单字段。
+     *
+     * `skill_id` **必须在里面**：EDIT 模式下这个输入框原本是装饰性的 ——
+     * `runSkillDialog` 用 `editSkillId` 当定位键，而这里不含 `skill_id`，
+     * 于是用户改了 ID 保存后**静默无效**（P3-6 同源缺陷）。
+     * VSCode 的 `sanitizeSkill` 也把 `skillId` 作为必填字段放进 payload。
+     *
+     * 同步技能不受影响：`SyncedSkillPolicy.LOCKED_FIELDS` 含 `skill_id`，
+     * 数据层会把它连同其它标识字段一起摘掉。
+     */
     fun formValues(): Map<String, String> = mapOf(
+        "skill_id" to skillIdField.text.trim(),
         "name" to nameField.text.trim(),
         "skill_type" to (skillTypeBox.selectedItem as? String).orEmpty().trim(),
         "element" to (elementBox.selectedItem as? String).orEmpty().trim(),

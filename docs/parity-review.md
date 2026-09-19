@@ -64,6 +64,14 @@ Next review should override this table and update the status.
     编辑入口无条件开放（删除仍限自定义），标识字段在对话框内只读并显示
     `syncedSkillLocked` 提示，数值与效果照常可改。规则收敛到纯对象
     `core/SyncedSkillPolicy.kt`，由 `SyncedSkillPolicyTest.kt` 钉住（含破坏性对照）。
+  - ⚠️ 2026-09-20 复核并修复：**读取层把显式 JSON `null` 读成了字符串 `"null"`**。
+    Jackson 的 `get()` 在字段值为 `null` 时返回 `NullNode`（不是 Kotlin `null`），
+    而 `NullNode.asText()` 返回**字面量 `"null"`** —— 于是 `node.get(k)?.asText() ?: 兜底`
+    既不触发兜底、又把 `"null"` 当成真实值。技能 `element` 上实测到：父仓
+    `sanitizeSkill` 写的是 `optionalString(...) || null`，空元素**就是** `"element": null`，
+    子仓会把它显示成元素名 "null"。父仓 `characterData.ts:577` 的 `stringValue` 会兜底到
+    角色元素。现已新增 `JsonNodeExt.textOrNull()` / `textOr()` 统一该语义，并应用到
+    角色/技能/效果引用/强化组的全部字符串读取点（`JsonNodeExtTest` + `CharacterDataServiceTest` 覆盖）。
 - 素材库：**批量导入+数字序号自动命名（nextImageName）**、**saveToAssets 导出可取消**、
   截图采集（**截图方式 auto/wgc/bitblt/foreground + 面板「硬前台」单次覆盖**）、
   标注基础操作、数据源、**数据文件 watcher 自动刷新面板**（VFS 监听+300ms 防抖）
@@ -157,6 +165,16 @@ Remaining gaps are two kinds: **one annotation-editor save-semantics difference*
     fields are read-only in the dialog with a `syncedSkillLocked` notice, and numeric/effect fields
     remain editable. The rule lives in the pure object `core/SyncedSkillPolicy.kt` and is pinned by
     `SyncedSkillPolicyTest.kt` (with destructive controls).
+  - ⚠️ 2026-09-20 reviewed and fixed: **the reader turned an explicit JSON `null` into the literal
+    string `"null"`**. Jackson's `get()` returns a `NullNode` (not Kotlin `null`) when a field's value
+    is `null`, and `NullNode.asText()` returns the **literal `"null"`** — so the common idiom
+    `node.get(k)?.asText() ?: fallback` neither triggers the fallback nor avoids the bogus value.
+    Observed on the skill `element`: the parent's `sanitizeSkill` writes
+    `optionalString(...) || null`, so an empty element really is `"element": null`, and the sub-repo
+    displayed it as the element name "null". The parent's `stringValue` (`characterData.ts:577`)
+    falls back to the character element. Fixed by adding `JsonNodeExt.textOrNull()` / `textOr()` and
+    applying it to every string read in the character/skill/effect-ref/enhancement paths
+    (covered by `JsonNodeExtTest` + `CharacterDataServiceTest`).
 - Asset library: **batch import + numbered naming**, **saveToAssets cancelable**, screenshot capture
   (auto/wgc/bitblt/foreground + "hard foreground" override), annotation basics, data sources,
   **data file watcher auto-refresh** (VFS + 300ms debounce)

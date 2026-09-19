@@ -4,6 +4,7 @@ import java.io.File
 import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -235,5 +236,113 @@ class SyncedSkillPolicyTest {
         val skill = readSkill(file)
         assertEquals("新名称", skill["name"], "自定义技能必须能改名")
         assertEquals("300%", skill["damage_multiplier"], "自定义技能的数值同样可改")
+    }
+
+    // ── skill_id 改名（对齐 VSCode characterPanel.ts:406-408）──────────
+
+    /**
+     * 自定义技能可以改 `skill_id`。
+     *
+     * 原先编辑对话框的 ID 输入框是**装饰性的**：`runSkillDialog` 用原 ID 定位、
+     * `formValues()` 又不含 `skill_id`，用户改完保存**静默无效**。
+     * VSCode 的 `sanitizeSkill` 把 `skillId` 当必填字段放进 payload，改了就生效。
+     */
+    @Test
+    fun `renaming a custom skill writes the new skill_id`() {
+        val file = skillFile(custom = true)
+
+        CharacterDataMutations.updateSkill(
+            file.absolutePath,
+            "test_char_skill",
+            mapOf("skill_id" to "test_char_skill_v2", "name" to "改名后", "effects" to "[]"),
+        )
+
+        assertEquals(
+            "test_char_skill_v2", readSkill(file)["skill_id"],
+            "自定义技能改名必须真正落盘 —— 否则输入框就是在骗用户",
+        )
+    }
+
+    /** 改名撞上已有 ID 必须报错，不能静默产生重复 ID。 */
+    @Test
+    fun `renaming onto an existing skill_id is rejected`() {
+        val dir = createTempDirectory("ok-skill-rename-dup").toFile()
+        val file = File(dir, "skills.json")
+        file.writeText(
+            """
+            {
+              "character_id": "test_char",
+              "skills": [
+                {"_ok_lang_hints_custom": true, "skill_id": "alpha", "name": "A",
+                 "skill_type": "技能", "element": "火", "description": "",
+                 "damage_multiplier": "100%", "stagger_value": 1, "cooldown": "1s",
+                 "spirit_cost": 1, "effects": []},
+                {"_ok_lang_hints_custom": true, "skill_id": "beta", "name": "B",
+                 "skill_type": "技能", "element": "冰", "description": "",
+                 "damage_multiplier": "100%", "stagger_value": 1, "cooldown": "1s",
+                 "spirit_cost": 1, "effects": []}
+              ]
+            }
+            """.trimIndent(),
+            Charsets.UTF_8,
+        )
+
+        val error = assertFailsWith<CharacterDataMutations.MutationException> {
+            CharacterDataMutations.updateSkill(
+                file.absolutePath, "alpha",
+                mapOf("skill_id" to "beta", "effects" to "[]"),
+            )
+        }
+        assertTrue(error.message.orEmpty().contains("beta"), "报错要指明撞了哪个 ID：${error.message}")
+
+        @Suppress("UNCHECKED_CAST")
+        val root = com.fasterxml.jackson.databind.ObjectMapper()
+            .readValue(file, Map::class.java) as Map<String, Any?>
+        @Suppress("UNCHECKED_CAST")
+        val ids = (root["skills"] as List<Map<String, Any?>>).map { it["skill_id"] }
+        assertEquals(listOf("alpha", "beta"), ids, "报错后两个技能都不能被改动")
+    }
+
+    /**
+     * 同步技能**不可改名** —— 表单里的 `skill_id` 被 [SyncedSkillPolicy] 摘掉。
+     *
+     * 这是"标识字段锁定"在改名这条路径上的体现：不是额外加一道判断，
+     * 而是同一份 `LOCKED_FIELDS` 自然生效。
+     */
+    @Test
+    fun `renaming a synced skill is ignored`() {
+        val file = skillFile(custom = false)
+
+        CharacterDataMutations.updateSkill(
+            file.absolutePath,
+            "test_char_skill",
+            mapOf("skill_id" to "hijacked_id", "damage_multiplier" to "250%", "effects" to "[]"),
+        )
+
+        val skill = readSkill(file)
+        assertEquals("test_char_skill", skill["skill_id"], "同步技能的 ID 受保护，改名请求必须被忽略")
+        assertEquals("250%", skill["damage_multiplier"], "同一请求里的数值改动仍应生效")
+    }
+
+    /**
+     * 表单里 `skill_id` 为空时**保持原 ID**，不得把标识字段删掉。
+     *
+     * 这是 `applySkillForm` → `writeSkillField` 的 `remove` 语义陷阱：
+     * 非数值字段遇到空串会 `node.remove(key)`，若直接让 skill_id 走那条路径，
+     * 用户清空输入框就会把技能 ID 整个抹掉。
+     */
+    @Test
+    fun `blank skill_id in the form leaves the existing id untouched`() {
+        val file = skillFile(custom = true)
+
+        CharacterDataMutations.updateSkill(
+            file.absolutePath,
+            "test_char_skill",
+            mapOf("skill_id" to "", "name" to "只改名字", "effects" to "[]"),
+        )
+
+        val skill = readSkill(file)
+        assertEquals("test_char_skill", skill["skill_id"], "空 ID 必须视为未修改，不能把 key 删掉")
+        assertEquals("只改名字", skill["name"], "同一表单里的其它改动照常生效")
     }
 }
