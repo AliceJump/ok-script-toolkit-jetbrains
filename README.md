@@ -35,13 +35,10 @@ This repository is the JetBrains Platform/PyCharm port of the VS Code extension 
 the repository root. Both editions share the same data sources and configuration
 model, so an ok-script project behaves the same way in either IDE.
 
-<!-- HERO: overall plugin demo GIF. Suggested 900px wide, single file < 5MB -->
-<!-- Suggested file: screenshots/hero.gif -->
-<!--
+<!-- HERO: overall plugin demo GIF. Hosted in the parent repo — this sub-repo has no screenshots/ of its own. -->
 <p align="center">
-  <img src="screenshots/hero.gif" alt="ok-script Toolkit for JetBrains demo" width="900">
+  <img src="https://raw.githubusercontent.com/AliceJump/ok-script-toolkit/main/screenshots/hero.gif" alt="ok-script Toolkit for JetBrains demo" width="900">
 </p>
--->
 
 ## 安装 / Install
 
@@ -71,13 +68,10 @@ To build the plugin from source instead, see [Build](#构建).
 
 ### 编辑辅助 / Editing assistance
 
-<!-- Demo GIF: code hints. Show self.lang inline hints + hover locale table. Width 900 -->
-<!-- Suggested file: screenshots/code-hints.gif -->
-<!--
+<!-- Demo GIF: code hints — self.lang inline hints + hover locale table. Hosted in the parent repo. -->
 <p align="center">
-  <img src="screenshots/code-hints.gif" alt="self.lang completion and locale hover" width="900">
+  <img src="https://raw.githubusercontent.com/AliceJump/ok-script-toolkit/main/screenshots/code-hints.gif" alt="self.lang completion and locale hover" width="900">
 </p>
--->
 
 | 功能 | 说明 |
 |---|---|
@@ -95,13 +89,14 @@ To build the plugin from source instead, see [Build](#构建).
 
 ### 工具窗口 / Tool windows
 
-<!-- Demo GIF: tool windows. Show the template gallery + temp shots area. Width 900 -->
-<!-- Suggested file: screenshots/tool-windows.gif -->
-<!--
+<!-- Demo GIFs: tool windows — template gallery + temp shots. Hosted in the parent repo. -->
 <p align="center">
-  <img src="screenshots/tool-windows.gif" alt="Template gallery and temp shots tool windows" width="900">
+  <img src="https://raw.githubusercontent.com/AliceJump/ok-script-toolkit/main/screenshots/template-panel.gif" alt="Template gallery tool window" width="900">
 </p>
--->
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/AliceJump/ok-script-toolkit/main/screenshots/temp-shots.gif" alt="Temp screenshots tool window" width="900">
+</p>
 
 - **模板画廊** — 带 bbox 裁剪的缩略图，支持插入/复制操作，以及源图片的红框标注预览。
 - **模板素材管理器** — 导入和删除图片，自动同步 COCO。
@@ -139,13 +134,10 @@ To build the plugin from source instead, see [Build](#构建).
 
 ### 编辑器 / Editors
 
-<!-- Demo GIF: character manager tab. Show the four tabs and filtering. Width 900 -->
-<!-- Suggested file: screenshots/character-manager.gif -->
-<!--
+<!-- Demo GIF: character manager tab — the four tabs and filtering. Hosted in the parent repo. -->
 <p align="center">
-  <img src="screenshots/character-manager.gif" alt="Character manager editor tab" width="900">
+  <img src="https://raw.githubusercontent.com/AliceJump/ok-script-toolkit/main/screenshots/character-manager.gif" alt="Character manager editor tab" width="900">
 </p>
--->
 
 - **标注编辑器** — 画框、删除，以及坐标模式（`C`），框选并复制归一化 `x,y,tox,toy` 而不创建标注框；同样的可调整框行为适用。
 - **角色管理器** — 作为完整编辑器标签页打开（而非工具窗口），因此拥有与 VS Code `ViewColumn.One` webview 相同的空间。由非物理的 `CharacterManagerFile` 加带 `FileEditorPolicy.HIDE_DEFAULT_EDITOR` 的 `FileEditorProvider` 承载。四个标签页 — 角色 / 效果 / locale / 问题 — 支持星级、元素、职业、技能类型、有强化组和有问题筛选，效果使用筛选（已用 / 未用 / 未定义），技能和强化组 CRUD，效果和分类插入到 `src/data/effects.py`，以及双击跳转到问题和效果的源码。
