@@ -1057,7 +1057,16 @@ class TaskLauncherPanel(private val project: Project) {
                 paramFields[headerField] = valueControlOf(control)
                 rowsByKey.getOrPut(headerField) { mutableListOf() }.add(fieldLabel to component)
                 inlineRules[headerField]?.let { rules ->
+                    // 该标题字段自身的内联子字段默认渲染在组内；但若同一批 key 也出现在
+                    // configGroups 的 children 里，下面的循环会渲染它们，此处必须跳过，
+                    // 否则每个子字段都会被渲染两遍（ok-gf2 的「活动层 -> 喝水/吃饭」曾因此重复）。
+                    val skip = SchemaTreeOverlap.inlineChildrenToSkip(
+                        headerField = headerField,
+                        groupChildren = children,
+                        inlineChildren = rules.values.flatten(),
+                    )
                     for (child in rules.values.flatten().distinct()) {
+                        if (child in skip) continue
                         renderFieldTree(child, body, setOf(headerField), subConfig = true, path = path + child)
                     }
                 }
