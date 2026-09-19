@@ -5,8 +5,10 @@ import com.alicejump.okscripttoolkit.core.CharacterSkillView
 import com.alicejump.okscripttoolkit.core.CharacterView
 import com.alicejump.okscripttoolkit.core.EffectParam
 import com.alicejump.okscripttoolkit.core.EffectParamCodec
+import com.alicejump.okscripttoolkit.core.SyncedSkillPolicy
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
+import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTextArea
 import com.intellij.ui.components.JBTextField
@@ -54,6 +56,21 @@ abstract class FormDialog(project: Project) : DialogWrapper(project) {
         form.add(component, GridBagConstraints().apply {
             gridx = 0; gridy = row; gridwidth = 2; fill = GridBagConstraints.BOTH
             weightx = 1.0; weighty = 1.0; insets = JBUI.insets(0, 4, 4, 4)
+        })
+        row++
+    }
+
+    /**
+     * 整行提示条（跨两列，无标签）。
+     *
+     * 用于「同步技能已锁定」这类**解释性**文案：被锁的控件在 Swing 里只会变灰，
+     * 不说明原因的话用户会以为是坏了。VSCode 侧对应
+     * `media/characterManager/app.js` 的 `.locked-notice`。
+     */
+    protected fun addNotice(text: String) {
+        form.add(JLabel(text).apply { foreground = JBColor.GRAY }, GridBagConstraints().apply {
+            gridx = 0; gridy = row; gridwidth = 2; anchor = GridBagConstraints.WEST
+            insets = JBUI.insets(2, 4, 6, 4)
         })
         row++
     }
@@ -124,6 +141,13 @@ class SkillDialog(
             skill?.effects?.map { it.toEffectParam() } ?: emptyList(),
             idsOnly = false,
         )
+        // 同步技能：标识/语义字段只读，数值与效果仍可编辑（对齐 VSCode）。
+        // 提示条放**最上面** —— VSCode 也是先 append notice 再排字段，
+        // 用户要先知道"为什么灰"，再看到灰控件。
+        if (synced) {
+            applySyncedLocks()
+            addNotice("🔒 " + msg("characterManager.syncedSkillLocked"))
+        }
         addField("skill_id", skillIdField)
         addField("name", nameField)
         addField(msg("characterManager.fieldSkillType"), skillTypeBox)
@@ -140,6 +164,21 @@ class SkillDialog(
         }
     }
 
+    /**
+     * 把 [SyncedSkillPolicy.LOCKED_FIELDS] 对应的控件设为只读/禁用。
+     *
+     * 这里**只锁 UI，不承担校验**：真正的兜底在 `CharacterDataMutations.updateSkill`
+     * （它按同一份规则裁剪表单）。两处都做是因为 UI 可能被绕过
+     * （例如将来新增别的调用路径），而数据层的静默写坏代价更高。
+     */
+    private fun applySyncedLocks() {
+        skillIdField.isEditable = false
+        nameField.isEditable = false
+        skillTypeBox.isEnabled = false
+        elementBox.isEnabled = false
+        descriptionArea.isEditable = false
+    }
+
     fun enteredSkillId(): String = skillIdField.text.trim()
 
     fun formValues(): Map<String, String> = mapOf(
@@ -154,7 +193,12 @@ class SkillDialog(
         "effects" to EffectParamCodec.encode(effectPicker.selectedParams()),
     )
 
-    /** 同步技能不可改 ID/类型等字段（与 VSCode 的 syncedSkillLocked 一致）。 */
+    /**
+     * 是否同步技能。同步时 [createCenterPanel] 会把标识/语义字段设为只读。
+     *
+     * 字段清单的**唯一来源**是 [SyncedSkillPolicy.LOCKED_FIELDS] ——
+     * 别在这里另写一份，否则 UI 与数据层会各自漂移（P3-6 的成因就是两套规则）。
+     */
     fun isSynced(): Boolean = synced
 
     companion object {

@@ -5,6 +5,7 @@ import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -185,13 +186,33 @@ class CharacterDataMutationsTest {
         assertEquals(0, updated.get("spirit_cost").asInt())
     }
 
+    /**
+     * 同步技能的更新粒度：**标识字段受保护，数值字段可改**（P3-6）。
+     *
+     * 旧行为是"同步技能一律抛 `is synced and locked`"，与 VSCode 不一致 ——
+     * 同一个技能文件在 VSCode 能调数值、在 JetBrains 改不了，用户也看不出原因。
+     * 现在两端统一：`name`/`skill_type` 被丢弃保持原值，数值照常落盘。
+     *
+     * 注意本用例是**改写**自旧的 `updateSkill refuses to touch a synced skill`：
+     * 保护意图没变，变的是粒度。破坏性对照见 `SyncedSkillPolicyTest`。
+     */
     @Test
-    fun `updateSkill refuses to touch a synced skill`() {
+    fun `updateSkill protects synced identity fields but applies numeric edits`() {
         val file = writeSkill()
-        assertFailsWith<CharacterDataMutations.MutationException> {
-            CharacterDataMutations.updateSkill(file.absolutePath, "yi_feng_s1", mapOf("name" to "x"))
-        }
-        assertEquals("霜噬", JSON.readTree(file).get("skills").get(0).get("name").asText())
+
+        CharacterDataMutations.updateSkill(
+            file.absolutePath, "yi_feng_s1",
+            mapOf("name" to "被篡改", "skill_type" to "终结", "stagger_value" to "42"),
+        )
+
+        val skill = JSON.readTree(file).get("skills").get(0)
+        assertEquals("霜噬", skill.get("name").asText(), "同步技能的名称必须保持原值")
+        assertEquals("主动", skill.get("skill_type").asText(), "同步技能的类型必须保持原值")
+        assertEquals(42, skill.get("stagger_value").asInt(), "数值字段是同步技能唯一可调的部分，必须落盘")
+        assertNull(
+            skill.get("_ok_lang_hints_custom"),
+            "更新同步技能不得给它打上自定义标记 —— 否则它会静默逃过后续所有同步保护",
+        )
     }
 
     @Test

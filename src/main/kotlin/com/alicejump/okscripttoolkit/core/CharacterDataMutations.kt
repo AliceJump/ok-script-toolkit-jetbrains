@@ -14,7 +14,10 @@ import java.nio.file.StandardCopyOption
 /**
  * 角色技能数据的写回（对齐 VSCode 版 mutateCharacter）：
  * 原子写入（.bak 备份 -> tmp -> 回读校验 -> rename）、技能增删改、
- * 自定义技能标记 _ok_lang_hints_custom（同步技能锁定不可删）。
+ * 自定义技能标记 _ok_lang_hints_custom。
+ *
+ * 同步技能（`_ok_lang_hints_custom != true`）的保护粒度见 [SyncedSkillPolicy]：
+ * **可改数值与效果，仅标识/语义字段锁定**；不可删除。
  */
 object CharacterDataMutations {
 
@@ -116,7 +119,19 @@ object CharacterDataMutations {
         atomicWriteJson(file.toPath(), root)
     }
 
-    /** 更新技能：仅允许修改自定义技能（_ok_lang_hints_custom=true）。 */
+    /**
+     * 更新技能。
+     *
+     * 同步技能**不是整个禁止更新**，而是只保护标识/语义字段
+     * （见 [SyncedSkillPolicy]）：数值与效果照常写入。这与 VSCode 的
+     * `updateSkill` 一致 —— 那边非 custom 时把五个标识字段还原为原值，
+     * 其余字段正常落盘。
+     *
+     * 注意这里**不再** `put("_ok_lang_hints_custom", true)`：
+     * 原先那行在"同步技能一律抛错"的前提下不可达，一旦放开限制就会把
+     * 同步技能悄悄改标成自定义技能，从此逃过后续所有同步保护。
+     * VSCode 侧同样不在 updateSkill 里写这个标记。
+     */
     fun updateSkill(
         path: String,
         skillId: String,
@@ -125,11 +140,9 @@ object CharacterDataMutations {
         val (root, skills, file) = skillFile(path)
         val skill = findSkill(skills, skillId)
             ?: throw MutationException("Skill not found: $skillId")
-        if (skill.get("_ok_lang_hints_custom")?.asBoolean(false) != true) {
-            throw MutationException("Skill '$skillId' is synced and locked")
-        }
-        applySkillForm(skill, form)
-        skill.put("_ok_lang_hints_custom", true)
+        val custom = skill.get("_ok_lang_hints_custom")?.asBoolean(false) == true
+        val synced = SyncedSkillPolicy.isSynced(custom)
+        applySkillForm(skill, SyncedSkillPolicy.filterForm(form, synced))
         atomicWriteJson(file.toPath(), root)
     }
 

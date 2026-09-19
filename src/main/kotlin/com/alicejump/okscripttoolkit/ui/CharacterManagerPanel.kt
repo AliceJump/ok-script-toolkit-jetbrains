@@ -621,10 +621,14 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         titleRow.add(JBLabel(skill.name).apply { font = JBUI.Fonts.label().deriveFont(java.awt.Font.BOLD) })
         titleRow.add(subLabel("[${skill.skillType}] ${skill.skillId} · ${skill.source}"))
         titleRow.add(iconButton(AllIcons.Actions.Copy, msg("characterManager.copyId")) { copyText(skill.skillId) })
+        // 编辑按钮**无条件显示**（对齐 VSCode app.js:449）：同步技能也能进去改数值，
+        // 只是标识字段在对话框里只读。原先只在 custom 时给按钮，等于把同步技能的
+        // 数值调参入口整个藏了 —— 与 VSCode「能改数值」的语义直接矛盾（P3-6）。
+        titleRow.add(iconButton(AllIcons.Actions.Edit, msg("characterManager.editSkill")) {
+            runSkillDialog(char, SkillDialogMode.EDIT, skill.skillId)
+        })
+        // 删除仍然只给自定义技能（对齐 VSCode app.js:450）。
         if (skill.source == "custom") {
-            titleRow.add(iconButton(AllIcons.Actions.Edit, msg("characterManager.editSkill")) {
-                runSkillDialog(char, SkillDialogMode.EDIT, skill.skillId)
-            })
             titleRow.add(iconButton(AllIcons.Actions.GC, msg("characterManager.deleteSkill")) {
                 runDeleteSkill(char, skill.skillId)
             })

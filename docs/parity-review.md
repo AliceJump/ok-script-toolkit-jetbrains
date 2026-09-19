@@ -57,6 +57,13 @@ Next review should override this table and update the status.
   **列表字段 ModifyListDialog 弹窗**、**option_labels/category_labels 本地化标签**、
   **字段描述渲染**、**sub_configs 子配置树**
 - 角色面板（只读+技能 CRUD+强化组）、状态栏/表头去硬编码英文
+  - ⚠️ 2026-09-20 复核并修复：**同步技能的保护粒度两端不一致**（P3-6）。
+    父仓允许对同步技能改数值/效果，只锁 `skill_id`/`name`/`skill_type`/`element`/`description`；
+    子仓原先是「更新同步技能直接抛 `is synced and locked`」，**且编辑按钮只对自定义技能显示** ——
+    同一个技能文件在父仓能调参、在子仓连入口都没有。现已对齐父仓语义：
+    编辑入口无条件开放（删除仍限自定义），标识字段在对话框内只读并显示
+    `syncedSkillLocked` 提示，数值与效果照常可改。规则收敛到纯对象
+    `core/SyncedSkillPolicy.kt`，由 `SyncedSkillPolicyTest.kt` 钉住（含破坏性对照）。
 - 素材库：**批量导入+数字序号自动命名（nextImageName）**、**saveToAssets 导出可取消**、
   截图采集（**截图方式 auto/wgc/bitblt/foreground + 面板「硬前台」单次覆盖**）、
   标注基础操作、数据源、**数据文件 watcher 自动刷新面板**（VFS 监听+300ms 防抖）
@@ -141,6 +148,15 @@ Remaining gaps are two kinds: **one annotation-editor save-semantics difference*
 - Parameter controls: bool/number/dropdown/multi-select/cascading/condition-sequence JSON/configGroups,
   **ModifyListDialog**, **option_labels/category_labels**, **field descriptions**, **sub_configs tree**
 - Character panel (read-only + skill CRUD + enhancement groups), status bar / table header de-hardcoded
+  - ⚠️ 2026-09-20 reviewed and fixed: **synced-skill protection granularity differed across repos** (P3-6).
+    The parent lets you edit a synced skill's numeric/effect fields and locks only
+    `skill_id`/`name`/`skill_type`/`element`/`description`; the sub-repo used to throw
+    `is synced and locked` on any update, **and only showed the edit button for custom skills** —
+    so the same skill file was tunable in the parent but had no entry point at all in the sub-repo.
+    Now aligned with the parent: the edit button is unconditional (delete stays custom-only), identity
+    fields are read-only in the dialog with a `syncedSkillLocked` notice, and numeric/effect fields
+    remain editable. The rule lives in the pure object `core/SyncedSkillPolicy.kt` and is pinned by
+    `SyncedSkillPolicyTest.kt` (with destructive controls).
 - Asset library: **batch import + numbered naming**, **saveToAssets cancelable**, screenshot capture
   (auto/wgc/bitblt/foreground + "hard foreground" override), annotation basics, data sources,
   **data file watcher auto-refresh** (VFS + 300ms debounce)
