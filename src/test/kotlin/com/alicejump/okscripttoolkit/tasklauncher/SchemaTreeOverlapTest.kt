@@ -93,4 +93,77 @@ class SchemaTreeOverlapTest {
         val buggyRenderedPerField = inlineChildren.size + groupChildren.count { it != headerField }
         assertEquals(4, buggyRenderedPerField, "跳过规则失效时必须是重复渲染，说明本测试确实能捕获该 bug")
     }
+
+    @Test
+    fun `group keys always ignore their own inline rules`() {
+        val groupNames = setOf("社区每日", "活动层", "班组")
+        assertTrue(SchemaTreeOverlap.shouldIgnoreInlineRules(groupNames, "社区每日"))
+        assertTrue(SchemaTreeOverlap.shouldIgnoreInlineRules(groupNames, "活动层"))
+        assertTrue(SchemaTreeOverlap.shouldIgnoreInlineRules(groupNames, "班组"))
+    }
+
+    @Test
+    fun `non-group fields keep their inline rules`() {
+        val groupNames = setOf("活动层")
+        // ok-gf2「多账户模式」有独立显隐但不在 configGroups 里 —— 显隐必须照常生效
+        assertFalse(SchemaTreeOverlap.shouldIgnoreInlineRules(groupNames, "多账户模式"))
+        assertFalse(SchemaTreeOverlap.shouldIgnoreInlineRules(groupNames, "布尔开关"))
+    }
+
+    @Test
+    fun `absorb only picks up children missing from the group declaration`() {
+        // ok-gf2 形状：sub_configs 与 children 完全一致 -> 无需吸收
+        assertEquals(
+            emptyList(),
+            SchemaTreeOverlap.absorbedChildren(
+                declared = listOf("用户名", "密码"),
+                inlineChildren = listOf("用户名", "密码"),
+            ),
+        )
+        // 情况三：inline 里有 children 没有的项 -> 必须被吸收，否则字段会消失
+        assertEquals(
+            listOf("账号列表"),
+            SchemaTreeOverlap.absorbedChildren(
+                declared = listOf("高级选项"),
+                inlineChildren = listOf("账号列表"),
+            ),
+        )
+        // 混合：只吸收缺的那部分，已声明的不重复吸收
+        assertEquals(
+            listOf("c"),
+            SchemaTreeOverlap.absorbedChildren(
+                declared = listOf("a", "b"),
+                inlineChildren = listOf("a", "b", "c"),
+            ),
+        )
+    }
+
+    @Test
+    fun `absorb deduplicates repeated inline children`() {
+        assertEquals(
+            listOf("x"),
+            SchemaTreeOverlap.absorbedChildren(
+                declared = emptyList(),
+                inlineChildren = listOf("x", "x"),
+            ),
+        )
+    }
+
+    /**
+     * 破坏性对照：吸收规则是「情况三字段不丢失」的唯一保障。
+     * 若 removed（absorbedChildren 恒返回空），只在 inline 里的子项将失去渲染通道 ——
+     * 本断言锁死「它必须被吸收」这一事实。
+     */
+    @Test
+    fun `regression guard - dropping absorption would lose orphan fields`() {
+        val declared = listOf("declared")
+        val inline = listOf("declared", "orphan")
+        val absorbed = SchemaTreeOverlap.absorbedChildren(declared, inline)
+
+        assertEquals(listOf("orphan"), absorbed, "orphan 必须被吸收")
+        // 吸收后 children 完整：两个子项都能被容器渲染
+        assertEquals(setOf("declared", "orphan"), (declared + absorbed).toSet())
+        // 对照：不吸收时 orphan 不在 children 里，且其 inline 规则已被忽略 -> 无人渲染它
+        assertFalse("orphan" in declared, "orphan 原本不在 children 里，所以必须靠吸收救回")
+    }
 }

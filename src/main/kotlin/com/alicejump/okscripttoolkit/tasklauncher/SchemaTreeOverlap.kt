@@ -16,6 +16,37 @@ package com.alicejump.okscripttoolkit.tasklauncher
 internal object SchemaTreeOverlap {
 
     /**
+     * **折叠优先、显隐其次**：该 key 是否应当忽略自身的 inline 显隐规则。
+     *
+     * 同一个 key 不能既是折叠分组又带显隐 —— 折叠有权「吸收」显隐。任务项目常给每个
+     * 分组名也挂一份 `sub_configs`（如 ok-gf2 的 `_init_default_config_group` 循环），
+     * 此时两套机制会打架：折叠展开了、子项却仍被显隐判定为 hidden。
+     *
+     * 被吸收后，那些「只在 sub_configs 里、不在 children 里」的子项必须**补进 children**，
+     * 否则它们会因本规则失去唯一的渲染通道而彻底消失（见 [absorbedChildren]）。
+     *
+     * 注意：不在 configGroups 里的字段（如 ok-gf2「多账户模式」）显隐照常生效。
+     */
+    fun shouldIgnoreInlineRules(
+        groupNames: Set<String>,
+        key: String,
+    ): Boolean = key in groupNames
+
+    /**
+     * 分组名的 `sub_configs` 里，哪些子项需要被吸收进该分组的 children。
+     *
+     * 只返回「不在 children 里」的那些 —— 已在 children 里的本来就由容器渲染，
+     * 补进来反而会重复。
+     */
+    fun absorbedChildren(
+        declared: List<String>,
+        inlineChildren: List<String>,
+    ): List<String> {
+        val declaredSet = declared.toSet()
+        return inlineChildren.distinct().filter { it !in declaredSet }
+    }
+
+    /**
      * 组头字段的行内子字段里，哪些应当跳过渲染（因为同一批 key 已由 configGroups 的
      * children 覆盖）。
      *

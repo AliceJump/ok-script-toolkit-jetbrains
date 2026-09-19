@@ -860,6 +860,13 @@ class TaskLauncherPanel(private val project: Project) {
         private val taskKey = "${task.module}::${task.className}"
         private val fieldsByKey = schema.fields.associateBy { it.key }
         private val groups: Map<String, List<String>> = schema.configGroups.orEmpty()
+
+        /**
+         * 折叠吸收显隐后的实际分组表：分组名的 `sub_configs` 里「不在 children 中」的子项
+         * 会被补进 children。渲染与嵌套判定都必须读这张表，否则被吸收的子项会没有渲染通道。
+         * 由 [render] 在渲染前计算。
+         */
+        private var effectiveGroups: Map<String, List<String>> = groups
         private val selectorKey = schema.groupSelector?.takeIf { fieldsByKey.containsKey(it) }.orEmpty()
         private val groupLabels: Map<String, String> = schema.groupLabels.orEmpty()
 
@@ -886,7 +893,25 @@ class TaskLauncherPanel(private val project: Project) {
             if (initialRow > 0) {
                 rowCounter[host] = initialRow
             }
+            // 折叠吸收显隐（分组优先、显隐其次）：
+            //   1. 已是分组容器的 key，其 sub_configs 一律不再作为显隐规则；
+            //   2. 这些 sub_configs 里「不在 children 中」的子项被吸收进 children，
+            //      否则它们只剩 inline 一条渲染通道，会因规则 1 彻底消失；
+            //   3. 分组名自身的配置值仍照常渲染成控件。
+            val merged: MutableMap<String, List<String>> = HashMap(groups)
             for (field in schema.fields) {
+                if (field.key !in groups) continue
+                val rules = subConfigRules(field)?.booleanRules ?: continue
+                val declared = groups[field.key].orEmpty()
+                val extra = SchemaTreeOverlap.absorbedChildren(
+                    declared = declared,
+                    inlineChildren = rules.values.flatten(),
+                )
+                if (extra.isNotEmpty()) merged[field.key] = declared + extra
+            }
+            effectiveGroups = merged
+            for (field in schema.fields) {
+                if (SchemaTreeOverlap.shouldIgnoreInlineRules(groups.keys, field.key)) continue
                 subConfigRules(field)?.booleanRules?.let { rules ->
                     inlineRules[field.key] = rules
                     for (children in rules.values) {
@@ -908,7 +933,7 @@ class TaskLauncherPanel(private val project: Project) {
                 for (keys in rules.values) inlineControlled.addAll(keys)
             }
             val groupNames = groups.keys.toSet()
-            val groupChildren = groups.values.flatten().toSet()
+            val groupChildren = effectiveGroups.values.flatten().toSet()
 
             for (field in schema.fields) {
                 if (field.key == selectorKey || field.key in optionControlled ||
@@ -920,16 +945,16 @@ class TaskLauncherPanel(private val project: Project) {
             }
 
             val nestedGroups = HashSet<String>()
-            for ((parent, children) in groups) {
+            for ((parent, children) in effectiveGroups) {
                 for (child in children) {
-                    if (child != parent && groups.containsKey(child)) nestedGroups.add(child)
+                    if (child != parent && effectiveGroups.containsKey(child)) nestedGroups.add(child)
                 }
             }
             val renderRegisteredGroup = { key: String ->
                 renderGroup(
                     key = key,
                     label = groupLabels[key] ?: key,
-                    children = groups[key].orEmpty(),
+                    children = effectiveGroups[key].orEmpty(),
                     container = host,
                     path = listOf("config-group", key),
                     duplicateChildren = true,
@@ -1087,11 +1112,11 @@ class TaskLauncherPanel(private val project: Project) {
 
             val childKeys = children.distinct().filter { it != headerField }
             for (child in childKeys) {
-                if (groups.containsKey(child)) {
+                if (effectiveGroups.containsKey(child)) {
                     renderGroup(
                         key = child,
                         label = groupLabels[child] ?: child,
-                        children = groups[child].orEmpty(),
+                        children = effectiveGroups[child].orEmpty(),
                         container = body,
                         path = path + child,
                         duplicateChildren = duplicateChildren,
