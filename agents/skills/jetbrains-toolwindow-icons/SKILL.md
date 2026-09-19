@@ -3,7 +3,9 @@ name: jetbrains-toolwindow-icons
 description: JetBrains 插件工具窗（toolWindow）图标的 New UI 官方规范：四件套命名、尺寸、描边、色板值与变色机制。新增/修改工具窗图标时必须遵循本规范。
 ---
 
-# JetBrains 工具窗图标规范
+# JetBrains 工具窗图标规范 / JetBrains Tool Window Icon Specification
+
+## 中文
 
 适用于本仓库 `src/main/resources/icons/` 下所有工具窗图标，以及 plugin.xml 中
 `<toolWindow icon="...">` 的引用方式。依据：IntelliJ Platform SDK 文档
@@ -11,7 +13,7 @@ description: JetBrains 插件工具窗（toolWindow）图标的 New UI 官方规
 （`platform/icons/src/expui/toolwindows/`、`platform/util/ui/src/com/intellij/ui/icons/stroke.kt`、
 `SquareStripeButtonLook.kt`）与 CheckStyle-IDEA、SonarLint 插件先例。
 
-## 四件套命名（缺一不可）
+### 四件套命名（缺一不可）
 
 一个名为 `x` 的图标必须提供 4 个变体，放在同一目录：
 
@@ -24,13 +26,13 @@ description: JetBrains 插件工具窗（toolWindow）图标的 New UI 官方规
 
 `plugin.xml` 中只写基础名 `icon="/icons/x.svg"`，平台自动挑选正确变体。
 
-## 尺寸与描边
+### 尺寸与描边
 
 - 20×20：内容留约 2px 边距（有效绘图区 ≈16×16），`stroke-width="1.5"`。
 - 16×16：`stroke-width="1"`。
 - 圆角收尾：`stroke-linecap/linejoin="round"` 或矩形 `rx`（0.5/0.75/1）。
 
-## 色值（只允许平台调色板内的色）
+### 色值（只允许平台调色板内的色）
 
 | 用途 | light | dark |
 |---|---|---|
@@ -42,7 +44,7 @@ description: JetBrains 插件工具窗（toolWindow）图标的 New UI 官方规
 
 写法：直接硬编码在 `fill=` / `stroke=` 属性里。
 
-## 变色机制（为什么不能乱用色）
+### 变色机制（为什么不能乱用色）
 
 - **调色板色 → 选中态变色**：工具窗按钮选中时，平台 `SquareStripeButtonLook`
   调用 `toStrokeIcon(icon, selectedForeground)` 把调色板内的 fill/stroke 值
@@ -52,15 +54,81 @@ description: JetBrains 插件工具窗（toolWindow）图标的 New UI 官方规
   与选中态变色是两个独立机制，两者都要有。
 - `currentColor` 平台 SVG 加载器不处理，禁止使用。
 
-## 反面案例（本仓库曾踩过的坑）
+### 反面案例（本仓库曾踩过的坑）
 
 1. 24×24 + stroke 1.6 的图标：不在规范尺寸体系，平台缩放后笔画粗细失真。
 2. 只有单个 svg 无变体：深色主题下发黑、Compact 模式下发虚。
 3. `stroke="#000000"`：深色主题不可见。
 
-## 参考实现
+### 参考实现
 
 - 官方内置：intellij-community `platform/icons/src/expui/toolwindows/`
   （messages/commit/notifications 四件套原文）
 - 第三方正例：CheckStyle-IDEA（`checkstyle@20x20.svg` stroke-width 1.171875 按
   1.25 倍画布等比）、SonarLint（工具窗图标 + 状态 badge，红 badge 双主题换色）
+
+---
+
+## English
+
+Applies to all tool window icons under this repository's `src/main/resources/icons/` and
+the `<toolWindow icon="...">` reference style in plugin.xml. Based on: IntelliJ Platform SDK
+documentation (plugins.jetbrains.com/docs/intellij/icons.html), intellij-community source
+(`platform/icons/src/expui/toolwindows/`, `platform/util/ui/src/com/intellij/ui/icons/stroke.kt`,
+`SquareStripeButtonLook.kt`), and CheckStyle-IDEA / SonarLint plugin precedents.
+
+### Four-Variant Naming (All Required)
+
+An icon named `x` must provide 4 variants in the same directory:
+
+| File | Size | Theme | Purpose |
+|---|---|---|---|
+| `x@20x20.svg` | 20×20 | light | New UI default |
+| `x@20x20_dark.svg` | 20×20 | dark | New UI default (dark) |
+| `x.svg` | 16×16 | light | Compact mode |
+| `x_dark.svg` | 16×16 | dark | Compact mode (dark) |
+
+`plugin.xml` only references the base name `icon="/icons/x.svg"` — the platform auto-selects the correct variant.
+
+### Size & Stroke
+
+- 20×20: ~2px margin around content (effective drawing area ≈16×16), `stroke-width="1.5"`.
+- 16×16: `stroke-width="1"`.
+- Round line endings: `stroke-linecap/linejoin="round"` or rectangle `rx` (0.5/0.75/1).
+
+### Palette Colors (Only Platform Palette Colors Allowed)
+
+| Purpose | light | dark |
+|---|---|---|
+| Default stroke/fill | `#6C707E` | `#CED0D6` |
+| Semantic red (e.g., badge) | `#DB5860` | `#C75450` |
+| Semantic blue | `#3574F0` | `#3574F0` |
+| Semantic green | `#5FB865` | `#5FB865` |
+| Semantic yellow | `#F0A732` (use #EDA200 for light) | `#FCC75B` |
+
+Hardcode directly in `fill=` / `stroke=` attributes.
+
+### Tinting Mechanism (Why You Can't Use Arbitrary Colors)
+
+- **Palette color → selected state tinting**: When a tool window button is selected, the platform's
+  `SquareStripeButtonLook` calls `toStrokeIcon(icon, selectedForeground)` to recolor palette
+  fill/stroke values to the selected foreground color (white in New UI). **Colors outside the
+  palette are "intentionally untouched"** — using `currentColor`, `#000000`, or any custom color
+  means the icon won't turn white on selection, causing poor contrast in dark themes.
+- **`_dark` variant → dark theme default color**: The dark theme's regular display color comes from
+  the `_dark` file, which is independent from the selected-state tinting — both are required.
+- `currentColor` is not processed by the platform SVG loader and is prohibited.
+
+### Anti-Patterns (Lessons Learned from This Repository)
+
+1. 24×24 + stroke 1.6 icon: Outside the spec size system, causing distorted stroke width after platform scaling.
+2. Single SVG without variants: Appears black in dark theme, appears faint in Compact mode.
+3. `stroke="#000000"`: Invisible in dark theme.
+
+### Reference Implementations
+
+- Official built-in: intellij-community `platform/icons/src/expui/toolwindows/`
+  (messages/commit/notifications four-variant originals)
+- Third-party good examples: CheckStyle-IDEA (`checkstyle@20x20.svg` stroke-width 1.171875
+  scaled proportionally at 1.25x canvas), SonarLint (tool window icon + status badge,
+  red badge with dual-theme color switching)

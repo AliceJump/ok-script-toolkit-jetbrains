@@ -1,15 +1,24 @@
+﻿# Sub-repo vs Main-repo Feature Parity Review (Updated 2026-09-07)
+
 # 子仓库与主仓库功能差异审查（2026-09-07 更新）
 
 对照基准：主仓库 VSCode 扩展 v1.4.0、子仓库 JetBrains 插件 v1.4.0（含本轮对齐提交）。
 下次审查请覆盖本表并更新状态。
 
-## 结论概览
+Baseline: main repo VSCode extension v1.4.0, sub-repo JetBrains plugin v1.4.0 (including this round of alignment commits).
+Next review should override this table and update the status.
+
+---
+
+## 中文
+
+### 结论概览
 
 编辑器语言功能（补全/hover/inlay）完全对齐；工具箱（游戏连接+调试浮层）、
 列表弹窗、sub_configs 子配置树、任务后台存续、批量导入、文件 watcher、
 导出取消均已对齐；剩余大块为标注编辑器进阶交互与次要 UI 项。
 
-## ✅ 已对齐
+### ✅ 已对齐
 
 - 编辑器：4 类引用识别（lang/模板/效果/OCR）、5 场景补全（模板置顶、效果分类排序）、
   hover（全语言表格/缩略图预览/OCR 运行时说明）、行内提示 + tooltip、JSON 侧效果提示
@@ -36,7 +45,7 @@
   overlay_host.py 常驻宿主）**，状态持久化 .idea/ok-script-toolkit-toolbox.json
 - 6 语言 UI、设置项、PythonScriptLocator 只从插件 JAR 提取脚本（7 个脚本全量打包）
 
-## ⚠️ 待办
+### ⚠️ 待办
 
 | # | 问题 | 严重度 | 状态 |
 |---|---|---|---|
@@ -46,7 +55,7 @@
 | 4 | lastPythonEditor 跟踪（插入表达式定位最近编辑器） | 低 | 待办 |
 | 5 | 注释面板命令（VSCode annotationPanel 独立面板命令） | 低 | 待办 |
 
-## 已修复（本轮提交）
+### 已修复（本轮提交）
 
 - 脚本定位只从插件 JAR 提取（78885dd，与父仓 c7ac05d 配对）
 - 工具箱游戏连接+调试浮层（091065d）
@@ -61,3 +70,66 @@
 - 截图能力对齐父仓 9ab367f：设置项 captureMethod、ScreenshotCapture 传 --method、
   素材与临时截图面板「硬前台」复选框（d53a948 / f007aa5 / cdca803）；
   父仓 cecadb7 的 windows.args 走共享 python/，无需 Kotlin 改动
+
+---
+
+## English
+
+### Summary
+
+Editor language features (completion/hover/inlay) are fully aligned; toolbox (game connection + debug overlay),
+list dialog, sub_configs sub-config tree, task background persistence, batch import, file watcher,
+and export cancellation are all aligned; remaining gaps are advanced annotation editor interactions and minor UI items.
+
+### ✅ Aligned
+
+- Editor: 4 reference recognition types (lang/template/effect/OCR), 5 completion scenarios (template pinned, effect category sorting),
+  hover (full locale table / thumbnail preview / OCR runtime description), inline hints + tooltip, JSON-side effect hints
+- Template gallery: responsive grid, insert/copy/red-box annotated source image (ok_templates reverse lookup 30s TTL)
+- Task launcher: AST-based task listing (entries with `kind`, distinguishes trigger / one-time without waiting for schema collection),
+  schema probing & caching, **persistent executor** (`run_executor.py` one-time connection + framework `TaskExecutor`
+  polls all enabled trigger tasks; aligned on both sides), trigger task toggle / one-time task enqueue,
+  enabled set persistence, stop current task / close executor, pause/resume, output area, config persistence,
+  **task background persistence (tool window close does not kill process)**
+  - Change: **extraArgs / env no longer applied per-task** — the persistent executor runs all tasks in one process,
+    so process-level parameters can no longer be distinguished per-task; historical data is retained with a startup hint.
+    Parameter overrides now take effect in real-time via stdin `params` full push.
+- Parameter controls: bool/number/dropdown/multi-select/cascading dropdown/condition sequence JSON/configGroups grouping,
+  **list field ModifyListDialog dialog** (options_available dual-column + search + move up/down/remove +
+  allow_duplication), **option_labels/category_labels localized labels**,
+  **field description rendering**, **sub_configs sub-config tree** (boolean condition show/hide + collapsible group + groupSelector hidden)
+- Character panel (read-only + skill CRUD + enhancement groups), **status bar / table header de-hardcoded English**
+- Asset library: **batch import + numbered auto-naming (nextImageName)**,
+  **saveToAssets export cancelable**, screenshot capture (**capture method auto/wgc/bitblt/foreground
+  + panel "hard foreground" one-shot override**), annotation basic operations, data sources,
+  **data file watcher auto-refresh panel** (VFS listener + 300ms debounce + relevance filtering)
+- **Toolbox: game connect/disconnect (connect_game.py, auto-starts if not running), debug overlay toggle
+  (task launcher reuses OK_TOOLKIT_USE_OVERLAY, live stdin overlay_on/off dispatch during run,
+  overlay_host.py persistent host)**, state persistence in .idea/ok-script-toolkit-toolbox.json
+- 6-language UI, settings, PythonScriptLocator extracts scripts only from plugin JAR (all 7 scripts bundled)
+
+### ⚠️ TODO
+
+| # | Issue | Severity | Status |
+|---|---|---|---|
+| 1 | Advanced annotation editor interactions (undo/redo, copy/paste, 8-direction resize, drag-to-move, zoom/pan, cross-image navigation, double-click value edit, save-on-change) | Medium | TODO (skipped per user instruction 2026-09-07) |
+| 2 | Editor large gallery dual entry (embedded large gallery view in editor) | Low | TODO |
+| 3 | Task card-style UI (VSCode task list uses card layout) | Low | TODO |
+| 4 | lastPythonEditor tracking (insert expression locates nearest editor) | Low | TODO |
+| 5 | Annotation panel command (VSCode annotationPanel standalone panel command) | Low | TODO |
+
+### Fixed (this round)
+
+- Script extraction only from plugin JAR (78885dd, paired with parent c7ac05d)
+- Toolbox game connection + debug overlay (091065d)
+- List dialog ModifyListDialog semantics (3e676b3, including object array toString data corruption regression fix)
+- extraArgs/env application + option_labels/description + character panel de-hardcoding (c805b90)
+- TaskRunnerService task background persistence (0634706)
+- Asset batch import + numbered naming (982b785)
+- Data file watcher (eaca68a)
+- sub_configs sub-config tree (91c5dd5)
+- Asset export cancellation (b78b76f)
+- Parent repo 6-language stale keys okLangHints→okScriptToolkit (parent 60ded3e)
+- Screenshot capability alignment with parent 9ab367f: captureMethod setting, ScreenshotCapture --method pass,
+  asset & temp shots panel "hard foreground" checkbox (d53a948 / f007aa5 / cdca803);
+  parent cecadb7's windows.args goes through shared python/, no Kotlin changes needed
