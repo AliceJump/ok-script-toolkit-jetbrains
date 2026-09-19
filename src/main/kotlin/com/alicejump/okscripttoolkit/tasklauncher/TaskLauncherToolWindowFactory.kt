@@ -67,6 +67,8 @@ class TaskLauncherPanel(private val project: Project) {
 
     companion object {
         private val LOG = Logger.getInstance(TaskLauncherPanel::class.java)
+        /** Jackson 的 ObjectMapper 线程安全且构造昂贵；本文件原先在 6 处各 new 一个，这里收敛成一个 */
+        private val objectMapper = ObjectMapper()
         private const val DEFAULT_PYTHON_PATH = "python"
         private val OK_BORDER = JBColor(Color(40, 120, 40), Color(76, 175, 80))
         private const val LF_CHAR: Char = 0x0A.toChar()
@@ -1546,8 +1548,8 @@ class TaskLauncherPanel(private val project: Project) {
         if (text.isBlank()) return null
         if (area.getClientProperty(OK_JSON_FIELD) == true) {
             val parsed = runCatching {
-                val node = com.fasterxml.jackson.databind.ObjectMapper().readTree(text.trim())
-                com.fasterxml.jackson.databind.ObjectMapper().convertValue(node, Any::class.java)
+                val node = objectMapper.readTree(text.trim())
+                objectMapper.convertValue(node, Any::class.java)
             }.getOrNull()
             // JSON 字段：解析成功返回结构化值，失败返回最后有效的值
             if (parsed != null) return parsed
@@ -1564,7 +1566,7 @@ class TaskLauncherPanel(private val project: Project) {
         task: TaskLauncherService.TaskInfo,
         fieldKey: String,
     ): JComponent {
-        val mapper = com.fasterxml.jackson.databind.ObjectMapper()
+        val mapper = objectMapper
         // 跟踪最后有效的值，用于 JSON 无效时保留
         var lastValidValue: Any? = currentValue
         val area = JTextArea(
@@ -1637,6 +1639,20 @@ class TaskLauncherPanel(private val project: Project) {
         }
     }
 
+    /**
+     * 由表单当前值构建任务配置。
+     *
+     * **legacy 字段必须带过来**：`extraArgs` / `env` 在单进程执行器模型下已不生效
+     * （[warnLegacyPerTaskSettings] 会在启动时提示一次），但 UI 上早就没有它们的入口了 ——
+     * 如果这里只返回 `params`，用户的历史配置会在下一次自动保存时被**静默清空**。
+     *
+     * VS Code 版在 `taskLauncher.ts:406-408` 明确做了这件事
+     * （`if (!config.extraArgs && existing.extraArgs) config.extraArgs = existing.extraArgs;`），
+     * IntelliJ 侧原先漏了 —— 同一份 `tasks.json` 会在两端之间来回丢数据。
+     *
+     * 注意「不让用户手填的字段被清掉」比「及时清理废弃字段」更重要：
+     * 清理是单向不可逆的，而多留两个已知不生效的键只是噪音。
+     */
     private fun buildTaskConfig(task: TaskLauncherService.TaskInfo): TaskLauncherService.TaskConfig {
         val params = mutableMapOf<String, Any>()
         for ((key, component) in paramFields) {
@@ -1656,8 +1672,12 @@ class TaskLauncherPanel(private val project: Project) {
                 }
             }
         }
+        val existing = taskService.getTaskConfig(taskKeyOf(task))
         return TaskLauncherService.TaskConfig(
             params = params.ifEmpty { null },
+            // 原样保留：UI 已无入口，丢了就再也找不回来
+            extraArgs = existing.extraArgs,
+            env = existing.env,
         )
     }
 
@@ -1741,13 +1761,13 @@ class TaskLauncherPanel(private val project: Project) {
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
         // 触发任务启用集合：执行器以它为准，项目 configs 里残留的 _enabled 会被覆盖
-        env["OK_TOOLKIT_TRIGGERS"] = ObjectMapper().writeValueAsString(enabledTriggers.toList())
+        env["OK_TOOLKIT_TRIGGERS"] = objectMapper.writeValueAsString(enabledTriggers.toList())
         // 配置沙箱：执行器把 ok 框架的配置/截图读写全部改道到这里，绝不碰项目 configs/。
         // IntelliJ 侧数据文件都在 .idea 下，故沙箱与之并列（VS Code 版对应 .vscode）。
         env["OK_TOOLKIT_RUN_DIR"] = File(projectDir, ".idea/ok-script-toolkit").path
         val overrides = allParamOverrides()
         if (overrides.isNotEmpty()) {
-            env["OK_LANG_HINTS_INJECT"] = ObjectMapper().writeValueAsString(overrides)
+            env["OK_LANG_HINTS_INJECT"] = objectMapper.writeValueAsString(overrides)
         }
         warnLegacyPerTaskSettings()
 
@@ -1785,8 +1805,8 @@ class TaskLauncherPanel(private val project: Project) {
             ?: return emptyMap()
         val overrides = linkedMapOf<String, Map<String, Any>>()
         for ((key, config) in projectConfig.tasks) {
-            val params = config.params
-            if (!params.isNullOrEmpty()) overrides[key] = params
+            val filtered = TaskParamWhitelist.filter(config.params, schemas[key]?.fields)
+            if (filtered.isNotEmpty()) overrides[key] = filtered
         }
         return overrides
     }
@@ -1794,7 +1814,7 @@ class TaskLauncherPanel(private val project: Project) {
     /** 参数覆盖即时推送（执行器是常驻进程，不推就要重启才生效） */
     private fun pushParamOverrides() {
         if (!taskRunner.isRunning()) return
-        val json = ObjectMapper().writeValueAsString(allParamOverrides())
+        val json = objectMapper.writeValueAsString(allParamOverrides())
         taskRunner.pushParams(json)
     }
 

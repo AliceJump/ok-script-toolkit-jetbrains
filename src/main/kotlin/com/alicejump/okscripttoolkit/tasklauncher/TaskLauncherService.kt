@@ -59,7 +59,7 @@ class TaskLauncherService(private val project: Project) {
         val displayKey: String? = null,
         val default: Any? = null,
         val value: Any? = null,
-        @Suppress("UNCHECKED_CAST")
+        /** 字段类型描述（schema 原样透传给前端渲染器，不做校验） */
         val type: Map<String, Any>? = null,
         val desc: String? = null,
         val displayDesc: String? = null,
@@ -280,7 +280,21 @@ class TaskLauncherService(private val project: Project) {
     @Volatile
     private var configStoreCache: TaskConfigStore? = null
 
-    fun loadTaskConfigs(): TaskConfigStore {
+    /**
+     * 保护 `configStoreCache` 的「读 → 改 → 写 → 回填缓存」整条序列。
+     *
+     * `@Volatile` 只保证单次读 / 单次写的可见性，**不保证序列的原子性** ——
+     * 而 [saveTaskConfig] 与 [saveEnabledTriggers] 都会从 `loadTaskConfigs()` 取快照再整体写回，
+     * 且两者分别跑在 `CompletableFuture.runAsync`（commonPool）与 EDT 上，会真并发。
+     * 不加锁时后写的一方会用陈旧快照覆盖先写一方刚提交的字段（用户表现为"勾选偶尔丢失"）。
+     *
+     * 合并规则本身在 [TaskConfigMerge]（纯对象、可直测）；本锁只负责让序列不交错。
+     */
+    private val storeLock = Any()
+
+    fun loadTaskConfigs(): TaskConfigStore = synchronized(storeLock) { loadTaskConfigsLocked() }
+
+    private fun loadTaskConfigsLocked(): TaskConfigStore {
         configStoreCache?.let { return it }
         val configFile = Paths.get(getProjectRoot(), TASKS_CONFIG_FILE).toFile()
         val store = if (!configFile.exists()) {
@@ -312,8 +326,13 @@ class TaskLauncherService(private val project: Project) {
                         }
                         env
                     },
-                    params = taskNode.get("params")?.takeIf { it.isObject }?.let {
-                        objectMapper.convertValue(it, Map::class.java) as? Map<String, Any>
+                    params = taskNode.get("params")?.takeIf { it.isObject }?.let { paramsNode ->
+                        // 这里必须强转：Jackson 的 `convertValue(node, Map::class.java)` 只能给出
+                        // 擦除后的 `Map<*, *>`，而 TaskConfig.params 的签名是 `Map<String, Any>`。
+                        // 注解要贴在**发生强转的那个表达式**上 —— 只写在它外层函数/属性上是盖不住的
+                        // （原先 @Suppress 挂在上面的 TaskParamField.type 上，编译告警一直存在）。
+                        @Suppress("UNCHECKED_CAST")
+                        objectMapper.convertValue(paramsNode, Map::class.java) as? Map<String, Any>
                     },
                 )
             }
@@ -345,14 +364,12 @@ class TaskLauncherService(private val project: Project) {
     }
 
     fun saveTaskConfig(taskKey: String, config: TaskConfig) {
-        val store = loadTaskConfigs()
-        val projects = store.projects.toMutableMap()
-        val projectConfig = projects[getProjectRoot()] ?: TaskConfigStore.ProjectConfig()
-        val tasks = projectConfig.tasks.toMutableMap()
-        tasks[taskKey] = config
-        val updated = store.copy(projects = projects.apply { put(getProjectRoot(), projectConfig.copy(tasks = tasks)) })
-        saveTaskConfigs(updated)
-        configStoreCache = updated
+        synchronized(storeLock) {
+            val root = getProjectRoot()
+            val updated = TaskConfigMerge.withTask(loadTaskConfigsLocked(), root, taskKey, config)
+            saveTaskConfigs(updated)
+            configStoreCache = updated
+        }
     }
 
     // ── 触发任务启用集合 ──────────────────────────────────────────────
@@ -362,14 +379,12 @@ class TaskLauncherService(private val project: Project) {
         loadTaskConfigs().projects[getProjectRoot()]?.enabledTriggers ?: emptyList()
 
     fun saveEnabledTriggers(keys: List<String>) {
-        val store = loadTaskConfigs()
-        val projects = store.projects.toMutableMap()
-        val projectConfig = projects[getProjectRoot()] ?: TaskConfigStore.ProjectConfig()
-        val updated = store.copy(projects = projects.apply {
-            put(getProjectRoot(), projectConfig.copy(enabledTriggers = keys))
-        })
-        saveTaskConfigs(updated)
-        configStoreCache = updated
+        synchronized(storeLock) {
+            val root = getProjectRoot()
+            val updated = TaskConfigMerge.withEnabledTriggers(loadTaskConfigsLocked(), root, keys)
+            saveTaskConfigs(updated)
+            configStoreCache = updated
+        }
     }
 
     // ── Schema cache ──────────────────────────────────────────────────
