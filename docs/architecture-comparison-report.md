@@ -64,8 +64,11 @@ Based on `parity-review.md` (2026-09-06) and source code analysis, this report s
   ok-end-field 是 276 模板 / **16** 张图（**17:1**）—— 同一张图被解 17 遍。
   现改为**按源图分组**（`core/TemplateThumbBatch.kt` + 单测），与父仓 `warmCropCache`
   的"按图分组 + 一次解码多张裁剪"对齐。
-  **仍然没有的是持久缓存**（父仓有 content-hash 命名的磁盘缩略图缓存 + Worker 预热），
-  所以每次 IDE 重启、以及每次数据变更（`thumbs.clear()`）后仍要重新解码一遍。
+  **并补上了持久缓存**（`core/TemplateThumbCache.kt`）：键 = **原图内容 sha1 + bbox + 目标高度**，
+  落在 `<IDE system>/ok-script-toolkit/template-thumbs/<项目哈希>/`（与 `TempScreenshotStore`
+  同一套约定，**不写进项目目录**）。命中时**连原图都不用解码**，只读一张几 KB 的小 PNG。
+  内容 hash 按 (size, mtime) 记忆化，所以不是每次渲染都读整个文件；
+  用内容而不是路径做键，是因为"同路径换图后复用旧缩略图"正是父仓踩过的坑。
   **Single-Thread Thumbnail Loading**: the sub-repo loads thumbnails sequentially in
   `TemplatesToolWindowFactory`. **The single thread is deliberate**: decode one source image,
   crop all of its templates, release it — only one decoded image is ever held (a 2560×1440 ARGB
@@ -73,9 +76,13 @@ Based on `parity-review.md` (2026-09-06) and source code analysis, this report s
   2026-09-21**: previously **each template decoded its own copy of the source image**, and
   ok-end-field is 276 templates over **16** images (**17:1**) — the same image decoded 17 times.
   Now grouped by source image (`core/TemplateThumbBatch.kt`, unit-tested), matching the parent's
-  `warmCropCache`. **What is still missing is a persistent cache** (the parent has
-  content-hash-named thumbnail files on disk plus Worker warm-up), so every IDE restart and every
-  data change (`thumbs.clear()`) re-decodes everything.
+  `warmCropCache`, **and backed by a persistent disk cache** (`core/TemplateThumbCache.kt`):
+  key = **source content sha1 + bbox + target height**, stored under
+  `<IDE system>/ok-script-toolkit/template-thumbs/<project hash>/` (same convention as
+  `TempScreenshotStore`; **never written into the project directory**). On a hit the source image
+  is not decoded at all — only a few-KB PNG is read. The content hash is memoized by
+  (size, mtime) so it is not recomputed per render, and content (not path) is the key because
+  "same path, replaced image, stale thumbnail" is a bug the parent already hit.
 
 **关键文件**：`OkProjectDataService.kt`（479 行）、`TaskLauncherToolWindowFactory.kt`（2044 行）、`TemplatesToolWindowFactory.kt`（476 行）
 **Key Files**: `OkProjectDataService.kt` (479 lines), `TaskLauncherToolWindowFactory.kt` (2044 lines), `TemplatesToolWindowFactory.kt` (476 lines)
@@ -360,9 +367,9 @@ end-to-end testing (requires a real IDE and a real game) — neither side does i
 | 二 / 2 | 标注快捷键配置 / Annotation shortcut configuration | ✅（走 IntelliJ 原生 Keymap，属载体差异）|
 
 **第三阶段（体验优化）—— 仍未做** / **Phase 3 (Experience Optimization) — still open**：
-1. ~~缩略图并发加载优化~~ → **诊断已修正**：真正的瓶颈不是"没并发"，而是
-   **每个模板各解一次原图**（ok-end-field 达 17:1），已于 2026-09-21 按**源图分组**修掉
-   （见 §1）。**剩下的是持久缓存**（父仓有 content-hash 磁盘缓存），需要时再做。
+1. ~~缩略图加载优化~~ → **已完成**（2026-09-21）。诊断也被修正过：瓶颈不是"没并发"，
+   而是**每个模板各解一次原图**（ok-end-field 达 17:1）。已按**源图分组** +
+   **持久缓存**（内容 hash 做键）修掉，见 §1。
 2. 角色面板状态栏本地化 / Character panel status bar localization
 3. 大画廊双入口 / Large gallery dual entry points
 4. 任务卡片式 UI / Task card-style UI

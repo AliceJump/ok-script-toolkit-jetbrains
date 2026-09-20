@@ -5,6 +5,7 @@ import com.alicejump.okscripttoolkit.core.FeatureTemplate
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
 import com.alicejump.okscripttoolkit.core.TemplateThumbBatch
+import com.alicejump.okscripttoolkit.core.TemplateThumbCache
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
@@ -82,6 +83,8 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
     }
 
     private val data = project.service<OkProjectDataService>()
+    /** 缩略图磁盘缓存：命中时连原图都不用解码（见 `requestThumbs` 的懒解码） */
+    private val thumbCache = TemplateThumbCache.getInstance(project)
     private var templates = emptyList<FeatureTemplate>()
     private val gridPanel = JBPanel<JBPanel<*>>(GridLayout(0, 5, ThumbGridPolicy.HGAP_VALUE, ThumbGridPolicy.HGAP_VALUE))
     private val gridWrap = JPanel(BorderLayout()).apply { isOpaque = false }
@@ -292,8 +295,20 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
         for (group in TemplateThumbBatch.groupByImage(batch) { it.imagePath }) {
             for (template in group.items) requestedThumbs.add(template.name)
             thumbExecutor.submit {
-                val original = decodeImage(group.imagePath)
-                val results = group.items.map { it to original?.let { img -> cropToThumb(img, it) } }
+                // 内容 hash 既做缓存键，也决定"能不能用缓存"：取不到就退回当场解码、不写缓存
+                val contentHash = thumbCache.contentHash(group.imagePath)
+                // **懒解码**：这一组全都命中缓存时，连原图都不用解 —— 这正是磁盘缓存的意义
+                var original: BufferedImage? = null
+                val results = group.items.map { template ->
+                    val cached = contentHash?.let { thumbCache.load(it, template.bbox, THUMB_HEIGHT) }
+                    if (cached != null) return@map template to ImageIcon(cached)
+                    if (original == null) original = decodeImage(group.imagePath)
+                    val thumb = original?.let { cropToThumb(it, template) }
+                    if (thumb != null && contentHash != null) {
+                        thumbCache.store(contentHash, template.bbox, THUMB_HEIGHT, thumb)
+                    }
+                    template to thumb?.let { ImageIcon(it) }
+                }
                 SwingUtilities.invokeLater {
                     if (disposed) return@invokeLater
                     val stale = generation != renderGeneration.get()
@@ -330,8 +345,12 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
         null
     }
 
-    /** 从**已解码**的原图上裁 bbox 并等比缩放到预览框（绝不拉伸）。 */
-    private fun cropToThumb(original: BufferedImage, template: FeatureTemplate): Icon? {
+    /**
+     * 从**已解码**的原图上裁 bbox 并等比缩放到预览框（绝不拉伸）。
+     *
+     * 返回 `BufferedImage`（不是 `Icon`）—— 调用方要把它写进磁盘缓存。
+     */
+    private fun cropToThumb(original: BufferedImage, template: FeatureTemplate): BufferedImage? {
         return try {
             val x = template.bbox[0].coerceIn(0, original.width - 1)
             val y = template.bbox[1].coerceIn(0, original.height - 1)
@@ -347,7 +366,7 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
             val g = thumb.createGraphics()
             g.drawImage(crop, 0, 0, targetW, targetH, null)
             g.dispose()
-            ImageIcon(thumb)
+            thumb
         } catch (e: Exception) {
             LOG.warn("Failed to render thumbnail for ${template.name}", e)
             null
