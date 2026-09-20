@@ -1,5 +1,8 @@
 package com.alicejump.okscripttoolkit.core
 
+import java.nio.file.Files
+import java.nio.file.Paths
+
 /**
  * ok-script **项目根目录**的解析规则：设置优先，回退到工作区根。
  *
@@ -46,4 +49,23 @@ internal object ProjectDirResolution {
         if (basePath.isNotBlank() && hasConfigFile(basePath)) return basePath
         return ""
     }
+
+    /**
+     * 真实文件系统版的便捷入口 —— **生产代码统一走这里**。
+     *
+     * 原先 `ScreenshotCapture.detectProjectDir` 与
+     * `TaskLauncherToolWindowFactory.detectProjectPath` 各自写了一份一模一样的
+     * `isDirectory` / `hasConfigFile` 谓词；多一个消费点就多一份，迟早漂移。
+     *
+     * 谓词仍留在 [resolve] 的签名里，是因为单测不该碰真实文件系统。
+     */
+    fun resolve(configured: String, basePath: String, homeDir: String): String = resolve(
+        configured = configured,
+        basePath = basePath,
+        homeDir = homeDir,
+        isDirectory = { Files.isDirectory(Paths.get(it)) },
+        hasConfigFile = { base ->
+            Files.exists(Paths.get(base, "src", "config.py")) || Files.exists(Paths.get(base, "config.py"))
+        },
+    )
 }

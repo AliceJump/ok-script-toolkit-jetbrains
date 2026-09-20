@@ -2,6 +2,7 @@ package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
+import com.alicejump.okscripttoolkit.core.ProjectConventionConfig
 import com.alicejump.okscripttoolkit.core.ScreenshotCapture
 import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
 import com.alicejump.okscripttoolkit.core.TemplateImage
@@ -42,6 +43,8 @@ class TemplateAssetToolWindowFactory : ToolWindowFactory {
         val panel = TemplateAssetPanel(project)
         val content = ContentFactory.getInstance().createContent(panel.mainPanel, "", false)
         content.setDisposer(panel)
+        // 供快捷键 Action 复用面板自己的截图动作（见 PANEL_KEY 的说明）
+        content.putUserData(TemplateAssetPanel.PANEL_KEY, panel)
         toolWindow.contentManager.addContent(content)
     }
 }
@@ -75,6 +78,22 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     private val thumbInflight = java.util.concurrent.ConcurrentHashMap<String, CompletableFuture<ImageIcon?>>()
 
     companion object {
+        /**
+         * 工具窗口 id。必须与 `plugin.xml` 的 `<toolWindow id="...">` 逐字一致 ——
+         * XML 里引用不了 Kotlin 常量，所以这里抽出来是为了让**代码内的多处引用**不漂移。
+         */
+        const val TOOL_WINDOW_ID = "ok-script Assets"
+
+        /**
+         * 面板实例在工具窗口 content 上的 Key。
+         *
+         * 快捷键 Action（[ScreenshotToTemplateAssetsAction]）要复用面板自己的截图动作，
+         * 而 `content.component` 给到的是外层 JPanel、**拿不到面板对象** —— 所以建 content
+         * 时把面板存进来。用 Key 而不是静态字段：同一个 IDE 可以开多个项目，静态引用会串。
+         */
+        val PANEL_KEY: com.intellij.openapi.util.Key<TemplateAssetPanel> =
+            com.intellij.openapi.util.Key.create("okScriptToolkit.templateAssetPanel")
+
         private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance(TemplateAssetPanel::class.java)
         private const val THUMB_HEIGHT = ThumbGridPolicy.THUMB_HEIGHT
         private val DROP_HINT_COLOR = JBColor(0x0078D4, 0x4A9EFF)
@@ -373,6 +392,19 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     }
 
     /**
+     * 面板**外部**的截图入口（快捷键 Action 用）。
+     *
+     * 直接转发到面板自己的 [handleScreenshot] —— **不新增截图实现**，
+     * 否则两条路径的截图行为（落盘位置、COCO 登记）迟早漂移。
+     * 与点工具栏那个截图按钮走的是同一段代码。
+     *
+     * 调用方需在 EDT 上（`AnAction.actionPerformed` 天然满足）。
+     */
+    fun screenshotNow() {
+        handleScreenshot()
+    }
+
+    /**
      * 截图采集（对齐 VSCode 版 handleScreenshot）：自动探测窗口配置，
      * 失败回退手输标题正则；截图落盘 ok_templates 并自动注册进 COCO。
      *
@@ -551,7 +583,18 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
 
         var enumPath: String? = null
         if (generateEnum) {
-            val defaultPath = java.nio.file.Paths.get(targetFolder, "LabelEnum.py").toString()
+            // 默认路径的取值链：**项目约定文件的 labelEnum.path > `<目标目录>/LabelEnum.py`**。
+            // （子仓没有"上次保存的路径"这一层 —— 那是 VS Code 侧 globalState 才有的个人偏好。）
+            //
+            // 注意必须走 `filePathOr` 而不是直接拿 `labelEnum.path`：后者是**模块路径**
+            // （`src/data/FeatureList`，不带 .py，与 config.py 的 label_enum_relative_path 同形），
+            // 而这里要的是**文件路径** —— 直接塞进去会生成一个没有扩展名的文件，Python import 不到。
+            val declared = ProjectConventionConfig.getInstance(project).load().labelEnum.filePathOr(lastSaved = null)
+            val defaultPath = if (declared != null) {
+                java.nio.file.Paths.get(projectDir, declared).toString()
+            } else {
+                java.nio.file.Paths.get(targetFolder, "LabelEnum.py").toString()
+            }
             val input = com.intellij.openapi.ui.Messages.showInputDialog(
                 project,
                 OkScriptToolkitBundle.message("templateAsset.exportEnumPathPrompt"),
@@ -643,8 +686,37 @@ class ShowTemplateAssetsAction : AnAction() {
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
-            .getToolWindow("ok-script Assets")
+            .getToolWindow(TemplateAssetPanel.TOOL_WINDOW_ID)
             ?.show()
+    }
+
+    override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
+}
+
+/**
+ * 快捷键入口：打开标注模板管理面板并**立即截图**（默认 `Ctrl+Alt+S` / macOS `Cmd+Alt+S`）。
+ *
+ * 与 [ShowTemplateAssetsAction] 的区别只在"顺手截图"这一步 —— 复用的是面板自己的
+ * [TemplateAssetPanel.screenshotNow]，**不新增截图实现**。
+ *
+ * 键位在 `plugin.xml` 里给默认值，用户可在「设置 → 按键映射」里改：
+ * 键位是**个人偏好**，不进项目约定文件（见 `docs/project-config.md` §6.4）。
+ */
+class ScreenshotToTemplateAssetsAction : AnAction() {
+    init {
+        // 文案走 bundle（i18n 铁律：不硬编码在业务代码里）；plugin.xml 只声明 id / class / 键位
+        templatePresentation.text = OkScriptToolkitBundle.message("action.screenshotToTemplate.text")
+        templatePresentation.description = OkScriptToolkitBundle.message("action.screenshotToTemplate.description")
+    }
+
+    override fun actionPerformed(e: AnActionEvent) {
+        val project = e.project ?: return
+        val toolWindow = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
+            .getToolWindow(TemplateAssetPanel.TOOL_WINDOW_ID) ?: return
+        toolWindow.show()
+        // 面板还没被创建过时 content 为空 —— show() 之后由 ToolWindowFactory 建好，所以这时能拿到
+        val content = toolWindow.contentManager.contents.firstOrNull() ?: return
+        content.getUserData(TemplateAssetPanel.PANEL_KEY)?.screenshotNow()
     }
 
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT

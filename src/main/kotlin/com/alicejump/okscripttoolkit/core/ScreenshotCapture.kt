@@ -31,15 +31,12 @@ class ScreenshotCapture(private val project: Project) {
         /** ok-script 项目根：设置优先，回退到含 src/config.py / config.py 的工作区。 */
         fun detectProjectDir(project: Project): String {
             val settings = OkScriptToolkitSettings.getInstance(project)
+            // 谓词不必在这里写：便捷重载用真实文件系统判定，三个消费点共用同一份
+            // （这里 / TaskLauncherToolWindowFactory / ProjectConventionConfig）。
             val dir = ProjectDirResolution.resolve(
                 configured = settings.okScriptProjectPath(),
                 basePath = project.basePath.orEmpty(),
                 homeDir = System.getProperty("user.home").orEmpty(),
-                isDirectory = { Files.isDirectory(Paths.get(it)) },
-                hasConfigFile = { base ->
-                    Files.exists(Paths.get(base, "src", "config.py")) ||
-                        Files.exists(Paths.get(base, "config.py"))
-                },
             )
             if (dir.isBlank()) {
                 LOG.warn(

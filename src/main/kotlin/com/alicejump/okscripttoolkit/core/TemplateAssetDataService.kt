@@ -510,7 +510,10 @@ class TemplateAssetDataService(private val project: Project) {
     fun generateLabelEnum(filePath: String, labels: List<String>) {
         val file = File(filePath)
         file.parentFile?.mkdirs()
-        val rawClassName = file.nameWithoutExtension
+        // 类名优先取项目约定文件的 `labelEnum.name`，缺席才退回文件名 —— 即旧行为。
+        // 解耦的意义：文件可以叫 feature_labels.py，而类叫 FeatureList。
+        // （旧写法只有 basename 一条路，想叫 FeatureList 就必须把文件命名成 FeatureList.py。）
+        val rawClassName = ProjectConventionConfig.getInstance(project).load().labelEnum.classNameOr(filePath)
         // 类名同样进源码：非法标识符直接退回一个安全的默认名，而不是生成坏文件
         val className = if (PYTHON_IDENTIFIER.matches(rawClassName)) rawClassName else "LabelEnum"
         val content = buildString {

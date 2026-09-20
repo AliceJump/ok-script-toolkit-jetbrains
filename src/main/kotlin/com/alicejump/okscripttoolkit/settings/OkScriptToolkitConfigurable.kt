@@ -132,6 +132,9 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
         settings.state.poDomains = splitList(poDomains.text).toMutableList()
         settings.state.displayLocale = displayLocale.text.trim()
         settings.state.featureAliases = splitList(featureAliases.text).toMutableList()
+        // 标记"用户动过"：让 init 的一次性迁移不再清空它 ——
+        // 否则用户想把别名**故意设成**恰好等于内置默认值时，设置会被静默清掉。
+        settings.state.featureAliasesTouched = true
         settings.state.effectsFile = effectsFile.text.trim()
         settings.state.enablePoData = enablePoData.isSelected
         settings.state.enableInlayHints = enableInlayHints.isSelected

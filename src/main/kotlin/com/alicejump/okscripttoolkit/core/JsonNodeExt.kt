@@ -39,3 +39,29 @@ fun JsonNode?.textOrNull(): String? {
 
 /** 取字符串字段，缺失或显式 `null` 时用 [fallback]。见 [textOrNull] 的说明。 */
 fun JsonNode?.textOr(fallback: String): String = textOrNull() ?: fallback
+
+/**
+ * 取**严格意义**上的字符串字段：非 JSON 字符串（数字、布尔、数组、对象）与显式 `null`
+ * 一律视为缺失，空串/全空白也算缺失。
+ *
+ * 与 [textOrNull] 的区别只在"严格程度"：
+ *
+ * | 值 | `textOrNull()` | `stringOrNull()` |
+ * |---|---|---|
+ * | `"x"` | `"x"` | `"x"` |
+ * | `null` | `null` | `null` |
+ * | `42` | **`"42"`** | `null` |
+ * | `["x"]` | `""` | `null` |
+ *
+ * [textOrNull] 面向"已知这个字段是字符串，只是可能被写成显式 null"的读取（如技能 `element`）；
+ * 本函数面向**手写的配置文件**：用户把 `"path": 42` 写错了，应当作没写，
+ * 而不是让它变成一个叫 `42` 的路径。
+ *
+ * 对端 VSCode 的 `nonEmpty()`（`src/projectConfigPure.ts`）用 `typeof value === 'string'`
+ * 判断，语义与这里一致 —— 两端读同一份 `ok-script-toolkit.json` 时必须给出同样的结论。
+ */
+fun JsonNode?.stringOrNull(): String? =
+    if (this?.isTextual == true) asText().takeIf { it.isNotBlank() } else null
+
+/** 取严格字符串字段，非字符串或缺失时用 [fallback]。见 [stringOrNull]。 */
+fun JsonNode?.stringOr(fallback: String): String = stringOrNull() ?: fallback

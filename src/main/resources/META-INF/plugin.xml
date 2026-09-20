@@ -107,6 +107,15 @@
             description="Open the ok-script template asset manager">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
+        <!-- 文案在 Action 代码里走 bundle（i18n 铁律），这里只声明 id / class / 默认键位。
+             用户可在「设置 → 按键映射」里改键位 —— 键位是个人偏好，不进项目约定文件。 -->
+        <action
+            id="com.alicejump.okscripttoolkit.ScreenshotToTemplateAssets"
+            class="com.alicejump.okscripttoolkit.ui.ScreenshotToTemplateAssetsAction">
+            <keyboard-shortcut keymap="$default" first-keystroke="control alt S"/>
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt S"/>
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
         <action
             id="com.alicejump.okscripttoolkit.ShowCharacterManager"
             class="com.alicejump.okscripttoolkit.ui.ShowCharacterManagerAction"

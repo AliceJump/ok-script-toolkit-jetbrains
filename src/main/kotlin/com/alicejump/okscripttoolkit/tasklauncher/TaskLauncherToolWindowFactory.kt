@@ -606,15 +606,14 @@ class TaskLauncherPanel(private val project: Project) {
      *
      * 规则收敛在 [ProjectDirResolution] —— 此前插件里有三份各自漂移的实现，
      * 其中服务层那份只取 `project.basePath`，导致界面判定用设置、跑脚本却用工作区根。
+     *
+     * 谓词也不用在这里写了：`ProjectDirResolution.resolve` 的便捷重载用真实文件系统判定，
+     * 各消费点（这里 / `ScreenshotCapture` / `ProjectConventionConfig`）共用同一份。
      */
     private fun detectProjectPath(): String = ProjectDirResolution.resolve(
         configured = OkScriptToolkitSettings.getInstance(project).okScriptProjectPath(),
         basePath = project.basePath.orEmpty(),
         homeDir = System.getProperty("user.home").orEmpty(),
-        isDirectory = { Files.isDirectory(Paths.get(it)) },
-        hasConfigFile = { dir ->
-            Files.exists(Paths.get(dir, "src", "config.py")) || Files.exists(Paths.get(dir, "config.py"))
-        },
     )
 
     private fun detectPythonPath(): String {
