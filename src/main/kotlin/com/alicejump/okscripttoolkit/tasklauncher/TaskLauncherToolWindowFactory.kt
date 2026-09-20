@@ -607,109 +607,43 @@ class TaskLauncherPanel(private val project: Project) {
             val poDirectory = OkScriptToolkitSettings.getInstance(project).poDirectory()
             val pythonPath = detectPythonPath()
             // parse_config_tasks.py 是纯 AST 解析（快）：每次刷新都重跑，
-            // 保证 schema 缓存命中时新增任务也能出现（对齐 VSCode 行为）
+            // 保证新增任务能被发现（对齐 VSCode 行为）。
             // ⚠️ 必须把 projectDir 传下去：服务层默认用工作区根，而项目根
             // 可能来自 okScriptProjectPath 设置，两者不同时会去错的目录找 config.py。
             val parseResult = taskService.parseConfigTasks(pythonPath, locale, projectDir)
-            val cachedResult = taskService.loadSchemaCache(projectDir, locale)
-            if (cachedResult.ok && cachedResult.schemas != null) {
-                return@supplyAsync cachedResult.copy(
-                    schemas = mergeTaskLists(cachedResult.schemas!!, parseResult),
-                    configModule = parseResult.configModule.takeIf { parseResult.ok } ?: cachedResult.configModule,
+
+            // ① 先用「缓存 + 解析出的新任务桩」渲染一次，避免对着空白等全量 import。
+            val cached = taskService.loadSchemaCache(projectDir, locale)
+            val immediate = if (cached.ok && cached.schemas != null) {
+                cached.copy(
+                    schemas = mergeTaskLists(cached.schemas!!, parseResult),
+                    configModule = parseResult.configModule.takeIf { parseResult.ok } ?: cached.configModule,
                 )
+            } else {
+                parseOnlyResult(parseResult, projectDir, locale)
             }
+            SwingUtilities.invokeLater { applyProbeResult(immediate, finished = false) }
+
+            // ② 然后**无条件**全量采集（对齐 VSCode 的 probeSchemasInBackground）。
+            //
+            // ⚠️ 这里曾经写成「缓存有效就直接 return」，后果有两个且都很隐蔽：
+            //   1. 新增的任务不在缓存里，只能拿到「只有类名、没有字段」的桩
+            //      （parse 结果里没有 name，displayName 兜底成类名）→ 界面只显示类名；
+            //   2. 改了某任务 default_config 后缓存永不失效，参数表单一直是旧的。
+            // 父仓是无条件采集的，所以两端表现不一致。
             val probeResult = taskService.probeTaskSchemas(pythonPath, locale, poDirectory, projectDir)
             if (probeResult.ok && probeResult.schemas != null) {
                 val withConfigModule = probeResult.copy(
                     configModule = probeResult.configModule ?: parseResult.configModule.takeIf { parseResult.ok },
                 )
                 taskService.saveSchemaCache(projectDir, locale, withConfigModule)
-                return@supplyAsync withConfigModule
+                withConfigModule
+            } else {
+                // 采集失败：保持 ① 的结果 —— 至少任务列表可用（只是没有参数表单）
+                immediate
             }
-            if (parseResult.ok && parseResult.tasks.isNotEmpty()) {
-                // 探测失败但任务列表可用：至少能列出任务（无 schema 参数）
-                return@supplyAsync TaskLauncherService.SchemaProbeResult(
-                    ok = true,
-                    schemas = parseResult.tasks.associate { task ->
-                        val key = "${task.module}::${task.className}"
-                        key to TaskLauncherService.TaskSchema(
-                            displayName = task.displayName,
-                            kind = task.kind,
-                        )
-                    },
-                    total = parseResult.tasks.size,
-                    projectDir = projectDir,
-                    locale = locale,
-                    configModule = parseResult.configModule,
-                )
-            }
-            probeResult
         }.thenAccept { result ->
-            SwingUtilities.invokeLater {
-                progressBar.isIndeterminate = false
-                progressBar.isVisible = false
-
-                if (result.ok && result.schemas != null) {
-                    schemas = result.schemas
-                    if (result.configModule != null) {
-                        configModule = result.configModule
-                    }
-
-                    tasks = result.schemas.map { (key, schema) ->
-                        val parts = key.split("::")
-                        TaskLauncherService.TaskInfo(
-                            module = parts.getOrElse(0) { "" },
-                            className = parts.getOrElse(1) { key },
-                            displayName = schema.displayName ?: parts.getOrElse(1) { key },
-                            kind = schema.kind,
-                        )
-                    }
-
-                    // 勾选集合来自插件自己的持久化文件；执行器运行中则以它的快照为准
-                    enabledTriggers.clear()
-                    enabledTriggers.addAll(taskService.loadEnabledTriggers())
-
-                    // 刷新后尽量保住原来的选中项（按 module::Class 找回）
-                    val previousSelection = detailTask?.let { taskKeyOf(it) }
-                    updatingTableModel = true
-                    try {
-                        taskTableModel.rowCount = 0
-                        rowKinds.clear()
-                        rowTones.clear()
-                        for (task in tasks) {
-                            val kind = taskKindOf(task)
-                            rowKinds.add(kind)
-                            rowTones.add(TaskRowState.TONE_NEUTRAL)
-                            taskTableModel.addRow(
-                                // 显式 Any? 元素类型：混合 Boolean / String 时 arrayOf 会推导出
-                                // Comparable<...> & Serializable 交叉类型并触发告警。
-                                // 第一格走 TaskRowState.checkboxValue：一次性任务得到 null，
-                                // 配合 TriggerCheckboxRenderer 才做到「连复选框都不画」。
-                                arrayOf<Any?>(
-                                    TaskRowState.checkboxValue(kind, enabledTriggers.contains(taskKeyOf(task))),
-                                    task.displayName,
-                                    "",
-                                ),
-                            )
-                        }
-                    } finally {
-                        updatingTableModel = false
-                    }
-                    syncTriggerCheckboxes(taskRunner.currentState())
-                    renderTaskStatuses(taskRunner.currentState())
-                    restoreSelection(previousSelection)
-
-                    statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.loaded", tasks.size)
-                } else {
-                    statusLabel.text = "Failed: ${result.error}"
-                    JOptionPane.showMessageDialog(
-                        mainPanel,
-                        "Failed to load tasks: ${result.error}",
-                        "Error",
-                        JOptionPane.ERROR_MESSAGE,
-                    )
-                }
-            }
+            SwingUtilities.invokeLater { applyProbeResult(result, finished = true) }
         }.exceptionally { throwable ->
             SwingUtilities.invokeLater {
                 progressBar.isIndeterminate = false
@@ -718,6 +652,112 @@ class TaskLauncherPanel(private val project: Project) {
                 LOG.error("Failed to load tasks", throwable)
             }
             null
+        }
+    }
+
+    /**
+     * 采集失败时的降级结果：只列出任务、不带参数。
+     *
+     * `displayName` 会是**类名** —— `parse_config_tasks.py` 只输出
+     * `module`/`class`/`kind`，没有 `name`，真正的显示名来自 schema。
+     * 所以一旦走到这里，界面就会"只显示类名"，这是**预期内的降级**而非正常状态。
+     */
+    private fun parseOnlyResult(
+        parseResult: TaskLauncherService.TaskListResult,
+        projectDir: String,
+        locale: String,
+    ): TaskLauncherService.SchemaProbeResult =
+        if (parseResult.ok && parseResult.tasks.isNotEmpty()) {
+            TaskLauncherService.SchemaProbeResult(
+                ok = true,
+                schemas = parseResult.tasks.associate { task ->
+                    val key = "${task.module}::${task.className}"
+                    key to TaskLauncherService.TaskSchema(
+                        displayName = task.displayName,
+                        kind = task.kind,
+                    )
+                },
+                total = parseResult.tasks.size,
+                projectDir = projectDir,
+                locale = locale,
+                configModule = parseResult.configModule,
+            )
+        } else {
+            TaskLauncherService.SchemaProbeResult(ok = false, error = parseResult.error)
+        }
+
+    /**
+     * 把采集结果落到界面上。
+     *
+     * [finished] 为 false 时只渲染列表、不动进度条 —— 用于"先用缓存快速首屏"，
+     * 真正的收尾（隐藏进度条）留给最后一次调用。
+     */
+    private fun applyProbeResult(result: TaskLauncherService.SchemaProbeResult, finished: Boolean) {
+        if (finished) {
+            progressBar.isIndeterminate = false
+            progressBar.isVisible = false
+        }
+
+        if (result.ok && result.schemas != null) {
+            schemas = result.schemas
+            if (result.configModule != null) {
+                configModule = result.configModule
+            }
+
+            tasks = result.schemas.map { (key, schema) ->
+                val parts = key.split("::")
+                TaskLauncherService.TaskInfo(
+                    module = parts.getOrElse(0) { "" },
+                    className = parts.getOrElse(1) { key },
+                    displayName = schema.displayName ?: parts.getOrElse(1) { key },
+                    kind = schema.kind,
+                )
+            }
+
+            // 勾选集合来自插件自己的持久化文件；执行器运行中则以它的快照为准
+            enabledTriggers.clear()
+            enabledTriggers.addAll(taskService.loadEnabledTriggers())
+
+            // 刷新后尽量保住原来的选中项（按 module::Class 找回）
+            val previousSelection = detailTask?.let { taskKeyOf(it) }
+            updatingTableModel = true
+            try {
+                taskTableModel.rowCount = 0
+                rowKinds.clear()
+                rowTones.clear()
+                for (task in tasks) {
+                    val kind = taskKindOf(task)
+                    rowKinds.add(kind)
+                    rowTones.add(TaskRowState.TONE_NEUTRAL)
+                    taskTableModel.addRow(
+                        // 显式 Any? 元素类型：混合 Boolean / String 时 arrayOf 会推导出
+                        // Comparable<...> & Serializable 交叉类型并触发告警。
+                        // 第一格走 TaskRowState.checkboxValue：一次性任务得到 null，
+                        // 配合 TriggerCheckboxRenderer 才做到「连复选框都不画」。
+                        arrayOf<Any?>(
+                            TaskRowState.checkboxValue(kind, enabledTriggers.contains(taskKeyOf(task))),
+                            task.displayName,
+                            "",
+                        ),
+                    )
+                }
+            } finally {
+                updatingTableModel = false
+            }
+            syncTriggerCheckboxes(taskRunner.currentState())
+            renderTaskStatuses(taskRunner.currentState())
+            restoreSelection(previousSelection)
+
+            statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.loaded", tasks.size)
+        } else {
+            if (!finished) return
+            statusLabel.text = "Failed: ${result.error}"
+            JOptionPane.showMessageDialog(
+                mainPanel,
+                "Failed to load tasks: ${result.error}",
+                "Error",
+                JOptionPane.ERROR_MESSAGE,
+            )
         }
     }
 
@@ -766,21 +806,12 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     /** schema 缓存与最新任务列表合并：新增任务补空 schema，消失任务剔除 */
+    /** 见 [TaskSchemaMerge]：缓存 + 解析结果对齐，用于"先用缓存快速首屏"。 */
     private fun mergeTaskLists(
         cached: Map<String, TaskLauncherService.TaskSchema>,
         parseResult: TaskLauncherService.TaskListResult,
-    ): Map<String, TaskLauncherService.TaskSchema> {
-        if (!parseResult.ok) return cached
-        val merged = cached.toMutableMap()
-        for (task in parseResult.tasks) {
-            val key = "${task.module}::${task.className}"
-            if (!merged.containsKey(key)) {
-                merged[key] = TaskLauncherService.TaskSchema(displayName = task.displayName)
-            }
-        }
-        val validKeys = parseResult.tasks.map { "${it.module}::${it.className}" }.toSet()
-        return merged.filterKeys { it in validKeys }
-    }
+    ): Map<String, TaskLauncherService.TaskSchema> =
+        TaskSchemaMerge.merge(cached, parseResult.tasks, parseResult.ok)
 
     /** 字段描述（displayDesc 优先）渲染在控件下方的小字说明；无描述时原样返回（对齐 VSCode） */
     private fun withFieldDescription(
