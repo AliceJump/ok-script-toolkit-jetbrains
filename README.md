@@ -4,7 +4,7 @@
 
 # ok-script Toolkit for JetBrains
 
-**The JetBrains Platform / PyCharm port of the [ok-script Toolkit](../README.md) VS Code extension.**
+**The JetBrains Platform / PyCharm port of the [ok-script Toolkit](https://github.com/AliceJump/ok-script-toolkit) VS Code extension.**
 
 **ok-script Toolkit VS Code 扩展的 JetBrains Platform / PyCharm 移植版。**
 
@@ -263,6 +263,6 @@ Development conventions live in `agents/skills/`:
 
 **相关项目 / Related**
 
-[主仓库 / Main repository](https://github.com/AliceJump/ok-script-toolkit) · [开发指南 / Development guide](../DEVELOPMENT.md) · [发布流程 / Release process](../RELEASING.md)
+[主仓库 / Main repository](https://github.com/AliceJump/ok-script-toolkit) · [开发指南 / Development guide](https://github.com/AliceJump/ok-script-toolkit/blob/main/DEVELOPMENT.md) · [发布流程 / Release process](https://github.com/AliceJump/ok-script-toolkit/blob/main/RELEASING.md)
 
 </div>
