@@ -1,7 +1,33 @@
 # VS Code 扩展与 JetBrains 插件：功能取舍与实现策略差异总结报告 / VS Code Extension vs JetBrains Plugin: Feature Trade-offs and Implementation Strategy Differences Summary Report
 
+> ⚠️ **本文档是 2026-09-06 的快照，部分结论已被推翻 —— 读之前先看这段。**
+>
+> 它的基线是**已被判定失真**的那版 `parity-review.md`（2026-09-06），所以把一批当时尚未做、
+> **后来都实现了**的功能写成了「❌ 缺失」。2026-09-21 逐条回查代码后确认：
+> 第 2 节表里的 **#5 / #6 / #7 / #8 / #10 全部已实现**，#9 是**载体差异**（子仓走 IntelliJ
+> 原生 Keymap，不需要插件自己的快捷键设置）；第 6.2 / 6.3 / 6.4 三节解释"为什么缺失"的
+> 功能**都已经有了**，那三节现在只有**历史价值**（记录当时权衡过什么）。
+> 各节开头已就地标注。**架构与取舍分析（第 1、3、4、5 节）仍然有效。**
+>
+> 权威来源是代码与测试；`parity-review.md` 是当前的功能对照表。
+>
+> ⚠️ **This document is a 2026-09-06 snapshot and some of its conclusions are overturned.**
+> It was based on the `parity-review.md` revision that was later found badly stale, so it
+> lists features that were not yet built at the time but **have since been implemented** as
+> "❌ Missing". Re-verified against the code on 2026-09-21: rows **#5 / #6 / #7 / #8 / #10 are
+> all implemented**, and #9 is a **carrier difference** (the sub-repo uses IntelliJ's native
+> Keymap instead of a plugin-specific shortcut setting); sections 6.2 / 6.3 / 6.4 explain why
+> things are missing that **now exist**, so they are **history only**. Each section is
+> annotated in place. **The architecture and trade-off analysis (sections 1, 3, 4, 5) still
+> holds.** The code and the tests are authoritative; `parity-review.md` is the current table.
+
 基于 `parity-review.md`（2026-09-06）及源代码分析，总结主仓库（VS Code 扩展）与子仓库（JetBrains 插件）之间的架构设计、功能完整性、性能优化、UI/UX 体验、开发维护成本差异，并提出未来改进建议。
 Based on `parity-review.md` (2026-09-06) and source code analysis, this report summarizes the differences in architecture design, feature completeness, performance optimization, UI/UX experience, and development/maintenance costs between the main repository (VS Code extension) and sub-repository (JetBrains plugin), and proposes future improvement suggestions.
+
+> 📏 **行数是 2026-09-21 重新实测的**（原文那批停在 2026-09-06，其中
+> `TaskLauncherToolWindowFactory.kt` 已从 925 行涨到 **2044 行**）。
+> **Line counts below were re-measured on 2026-09-21** (the original batch was from
+> 2026-09-06; `TaskLauncherToolWindowFactory.kt` has since grown from 925 to **2044** lines).
 
 ---
 
@@ -20,8 +46,8 @@ Based on `parity-review.md` (2026-09-06) and source code analysis, this report s
 - **文件监听**：通过 `createFileSystemWatcher` 实时监听数据文件变更，300ms 防抖后选择性刷新对应数据源。
   **File Watching**: Monitors data file changes in real-time via `createFileSystemWatcher`, with 300ms debounce before selectively refreshing the corresponding data source.
 
-**关键文件**：`extension.ts`（353 行）、`pngCrop.ts`（896 行）、`assetPack.ts`（206 行）、`assetPackWorker.ts`（315 行）
-**Key Files**: `extension.ts` (353 lines), `pngCrop.ts` (896 lines), `assetPack.ts` (206 lines), `assetPackWorker.ts` (315 lines)
+**关键文件**：`extension.ts`（442 行）、`pngCrop.ts`（1080 行）、`assetPack.ts`（206 行）、`assetPackWorker.ts`（315 行）
+**Key Files**: `extension.ts` (442 lines), `pngCrop.ts` (1080 lines), `assetPack.ts` (206 lines), `assetPackWorker.ts` (315 lines)
 
 ### JetBrains 插件：集中式、统一快照设计 / JetBrains Plugin: Centralized, Unified Snapshot Design
 
@@ -34,8 +60,8 @@ Based on `parity-review.md` (2026-09-06) and source code analysis, this report s
 - **单线程缩略图加载**：`TemplatesToolWindowFactory` 使用 `Executors.newSingleThreadExecutor` 顺序加载缩略图，无并发解码。
   **Single-Thread Thumbnail Loading**: `TemplatesToolWindowFactory` uses `Executors.newSingleThreadExecutor` to load thumbnails sequentially, without concurrent decoding.
 
-**关键文件**：`OkProjectDataService.kt`（405 行）、`TaskLauncherToolWindowFactory.kt`（925 行）、`TemplatesToolWindowFactory.kt`（404 行）
-**Key Files**: `OkProjectDataService.kt` (405 lines), `TaskLauncherToolWindowFactory.kt` (925 lines), `TemplatesToolWindowFactory.kt` (404 lines)
+**关键文件**：`OkProjectDataService.kt`（479 行）、`TaskLauncherToolWindowFactory.kt`（2044 行）、`TemplatesToolWindowFactory.kt`（476 行）
+**Key Files**: `OkProjectDataService.kt` (479 lines), `TaskLauncherToolWindowFactory.kt` (2044 lines), `TemplatesToolWindowFactory.kt` (476 lines)
 
 | 维度 / Dimension | VS Code | JetBrains |
 |------|---------|-----------|
@@ -66,18 +92,27 @@ Based on `parity-review.md` (2026-09-06) and source code analysis, this report s
 
 ### JetBrains 缺失/精简功能（按严重度排序）/ JetBrains Missing/Simplified Features (Ranked by Severity)
 
+> ⚠️ **本表是 2026-09-06 的状态。2026-09-21 逐条回查代码后，原来标「❌ 缺失」的 5 项
+> 全部已实现**（状态列已就地更新，说明列保留原文以便对照）。现在真正的功能缺口见
+> `parity-review.md` 的「⚠️ 待办」表 —— 那里剩的都是低优先级 UI 形态差异。
+>
+> ⚠️ **This table reflects 2026-09-06.** Re-verified against the code on 2026-09-21: all five
+> rows previously marked "❌ Missing" **are implemented** (the status column is updated in
+> place; the description column is kept as-is for comparison). For the real remaining gaps see
+> the "⚠️ TODO" table in `parity-review.md` — what is left there is low-priority UI shape only.
+
 | # | 功能 / Feature | 严重度 / Severity | 说明 / Description |
 |---|------|--------|------|
 | 1 | saveToAssets 打包导出 / saveToAssets packing export | ✅ 已交付 / Delivered | bin-packing 多页合成 + COCO 重写 / bin-packing multi-page composition + COCO rewrite |
 | 2 | 游戏窗口截图采集 / Game window screenshot capture | ✅ 已交付 / Delivered | probe 自动探测 + 截图并注册 / probe auto-detection + screenshot and registration |
-| 3 | 角色 CRUD（添加/编辑/删除技能）/ Character CRUD (add/edit/delete skills) | ◐ 部分交付 / Partially Delivered | 原子写入+备份，强化组编辑待后续 / Atomic write + backup, enhanced group editing pending |
+| 3 | 角色 CRUD（添加/编辑/删除技能）/ Character CRUD (add/edit/delete skills) | ✅ 已交付 / Delivered | ~~强化组编辑待后续~~ 强化组编辑也已实现（`CharacterDialogs.kt` / `CharacterDataMutations.kt`）/ ~~enhanced-group editing pending~~ enhanced-group editing is implemented too |
 | 4 | 角色头像 / Character avatar | ✅ 已交付 / Delivered | 表格头像列 / Table avatar column |
-| 5 | 标注编辑器进阶交互 / Annotation editor advanced interaction | ❌ 缺失 / Missing | undo/redo、copy/paste、8 向 resize、拖动移框、缩放平移、跨图导航、双击数值编辑、改动即存 / undo/redo, copy/paste, 8-way resize, drag-move, zoom-pan, cross-image navigation, double-click value editing, auto-save on change |
-| 6 | sub_configs 子配置树 / sub_configs sub-configuration tree | ❌ 缺失 / Missing | 折叠树 + boolean 条件显隐 + groupSelector / Collapsible tree + boolean conditional visibility + groupSelector |
-| 7 | 调试浮层 / Debug overlay | ❌ 缺失 / Missing | overlay 控制按钮、运行时参数注入 / Overlay control buttons, runtime parameter injection |
-| 8 | 文件监听自动刷新 / File watcher auto-refresh | ❌ 缺失 / Missing | 数据变化需手动刷新 / Data changes require manual refresh |
-| 9 | 标注快捷键配置 / Annotation shortcut configuration | ❌ 缺失 / Missing | 依赖标注编辑器进阶交互 / Depends on annotation editor advanced interaction |
-| 10 | 条件可见性系统 / Conditional visibility system | ❌ 缺失 / Missing | 参数间动态显隐逻辑 / Dynamic visibility logic between parameters |
+| 5 | 标注编辑器进阶交互 / Annotation editor advanced interaction | ✅ **已实现**（2026-09-21 复核）/ **Implemented** | undo/redo、copy/paste、8 向 resize、拖动移框、缩放平移、跨图导航、双击数值编辑 —— 均已在 `AnnotationDialog.kt`；**仅「改动即存」是设计取舍**（现为 OK/Cancel 语义）/ all present in `AnnotationDialog.kt`; only "auto-save on change" is a deliberate trade-off (OK/Cancel semantics) |
+| 6 | sub_configs 子配置树 / sub_configs sub-configuration tree | ✅ **已实现** / **Implemented** | 折叠树 + 条件显隐（规则收敛到 `tasklauncher/SchemaTreeOverlap.kt`，有单测）/ collapsible tree + conditional visibility (rules extracted to `SchemaTreeOverlap.kt`, unit-tested) |
+| 7 | 调试浮层 / Debug overlay | ✅ **已实现** / **Implemented** | 工具箱浮层开关 + 运行时参数注入（`ToolboxService` / `TaskRunnerService` / `PythonScriptRunner`）/ toolbox overlay toggle + runtime parameter injection |
+| 8 | 文件监听自动刷新 / File watcher auto-refresh | ✅ **已实现** / **Implemented** | `core/OkDataChangeService.kt`：VFS `BulkFileListener` + 300ms 防抖 + 广播，与父仓 `createFileSystemWatcher` 派发对称 / VFS `BulkFileListener` + 300ms debounce + broadcast, symmetric with the parent |
+| 9 | 标注快捷键配置 / Annotation shortcut configuration | ◐ **载体差异**，非缺失 / **Carrier difference** | 子仓在 `plugin.xml` 里声明快捷键（`control alt T` / `control alt S`），用户在 IntelliJ 原生 **Settings → Keymap** 里改；父仓的 `annotationKeybindings` 设置是因为 webview 要自己处理按键 / the sub-repo declares shortcuts in `plugin.xml` and users remap them in IntelliJ's native Keymap; the parent's setting exists because webviews handle keys themselves |
+| 10 | 条件可见性系统 / Conditional visibility system | ✅ **已实现** / **Implemented** | 折叠分组吸收内联显隐（见 `SchemaTreeOverlap`）/ collapsible groups absorb inline visibility rules |
 
 ---
 
@@ -116,8 +151,8 @@ Based on `parity-review.md` (2026-09-06) and source code analysis, this report s
 |------|-------------------|-------------------|
 | 渲染技术 / Rendering Technology | HTML/CSS/JS | JPanel + Graphics2D |
 | 自定义程度 / Customization Level | 完全自由（Canvas/WebGL）/ Completely free (Canvas/WebGL) | 受限于 Swing 组件 / Limited to Swing components |
-| 标注编辑器 / Annotation Editor | HTML5 Canvas + 完整交互 / HTML5 Canvas + full interaction | 无（仅基础查看）/ None (basic view only) |
-| 任务配置面板 / Task Configuration Panel | 结构化 JSON 编辑器 / Structured JSON editor | JTextArea + JSON 验证边框 / JTextArea + JSON validation border |
+| 标注编辑器 / Annotation Editor | HTML5 Canvas + 完整交互 / HTML5 Canvas + full interaction | **Swing `Graphics2D` + 完整交互**（`AnnotationDialog.kt`：画框/删除/undo·redo/copy·paste/8 向 resize/拖动移框/缩放平移/跨图导航/双击改数值）/ **Swing `Graphics2D` + full interaction** — ~~None (basic view only)~~ **已过时** / ~~None (basic view only)~~ **outdated** |
+| 任务配置面板 / Task Configuration Panel | 结构化 JSON 编辑器 / Structured JSON editor | 结构化控件（`JCheckBox` / `JComboBox` / `JSpinner` / `ModifyListDialog`）+ 条件序列的 JSON 编辑 / Typed controls (`JCheckBox` / `JComboBox` / `JSpinner` / `ModifyListDialog`) plus a JSON editor for conditional sequences — ~~JTextArea + JSON validation border~~ **已过时** |
 | 响应式布局 / Responsive Layout | CSS Grid/Flexbox | GridLayout + 手动计算列数 / GridLayout + manual column calculation |
 | 主题适配 / Theme Adaptation | 跟随 VS Code 主题 / Follows VS Code theme | JBColor 自动适配 Light/Dark / JBColor auto-adapts to Light/Dark |
 | 原生集成度 / Native Integration Level | 低（沙箱环境）/ Low (sandbox environment) | 高（平台 Action/Notification）/ High (platform Action/Notification) |
@@ -142,11 +177,21 @@ Based on `parity-review.md` (2026-09-06) and source code analysis, this report s
 
 | 维度 / Dimension | VS Code | JetBrains |
 |------|---------|-----------|
-| 宿主源码（TS/Kt）/ Host source (TS/Kt) | 7,747 行（19 文件）/ 7,747 lines (19 files) | 5,967 行（22 文件）/ 5,967 lines (22 files) |
-| Webview UI 代码 / Webview UI code | 3,949 行（HTML/CSS/JS）/ 3,949 lines (HTML/CSS/JS) | — |
-| Python 辅助脚本 / Python helper scripts | 7 文件 / 7 files | — |
-| 测试代码 / Test code | 3 文件 / 3 files | 3 文件（209 行）/ 3 files (209 lines) |
-| **总计** / **Total** | **~11,700+ 行** / **~11,700+ lines** | **~6,176 行** / **~6,176 lines** |
+| 宿主源码（TS/Kt）/ Host source (TS/Kt) | 11,065 行（30 文件）/ 11,065 lines (30 files) | 16,337 行（55 文件）/ 16,337 lines (55 files) |
+| Webview UI 代码 / Webview UI code | 5,877 行（28 文件，HTML/CSS/JS）/ 5,877 lines (28 files, HTML/CSS/JS) | —（Swing 原生 UI，无独立资源）/ — (native Swing UI, no separate assets) |
+| Python 辅助脚本 / Python helper scripts | 2,316 行（7 文件）/ 2,316 lines (7 files) | —（整包复用父仓 `python/`）/ — (reuses the parent's `python/` bundle) |
+| 测试代码 / Test code | 4,430 行（18 文件）/ 4,430 lines (18 files) | 5,318 行（34 文件）/ 5,318 lines (34 files) |
+| **总计** / **Total** | **~23,700 行** / **~23,700 lines** | **~21,700 行** / **~21,700 lines** |
+
+> ⚠️ **结论已反转**：2026-09-06 那版记的是 VS Code ~11,700 行 / JetBrains ~6,176 行，
+> 据此隐含"子仓是更轻量的实现"。现在两端**总量相当**，而子仓的**宿主源码反而更多**
+> （16.3k vs 11.1k）—— 因为 Swing 没有 HTML/CSS 可复用，UI 也得用 Kotlin 写。
+> 原文那个"子仓更简单"的印象已经不成立了。
+>
+> ⚠️ **Conclusion reversed**: the 2026-09-06 revision recorded ~11,700 / ~6,176, implying the
+> sub-repo was the lighter implementation. Today the totals are comparable and the sub-repo's
+> **host source is larger** (16.3k vs 11.1k) — Swing has no HTML/CSS to lean on, so the UI is
+> Kotlin too. The old "sub-repo is simpler" impression no longer holds.
 
 ### 可维护性对比 / Maintainability Comparison
 
@@ -163,17 +208,39 @@ Based on `parity-review.md` (2026-09-06) and source code analysis, this report s
 
 | 维度 / Dimension | VS Code | JetBrains |
 |------|---------|-----------|
-| 单元测试文件 / Unit test files | 3 | 3 |
-| 测试行数 / Test lines | ~300 行（scripts/test_task_launcher_subconfigs.js）/ ~300 lines (scripts/test_task_launcher_subconfigs.js) | 209 行 / 209 lines |
+| 单元测试文件 / Unit test files | 18（13 个 Node 脚本 + 5 个 Python）/ 18 (13 Node scripts + 5 Python) | 34 / 34 |
+| 测试行数 / Test lines | 4,430 行 / 4,430 lines | 5,318 行 / 5,318 lines |
+| 测试执行入口 / Test entry point | `npm test`（10 个套件串起来）/ `npm test` (10 suites chained) | `./gradlew test`（250 条用例）/ `./gradlew test` (250 cases) |
 | 集成测试 / Integration tests | 无 / None | 无 / None |
 | E2E 测试 / E2E tests | 无 / None | 无 / None |
 
-**结论**：两端测试覆盖率均偏低，但 VS Code 扩展有脚本级测试工具（`test_task_launcher_subconfigs.js`），JetBrains 插件仅有 Kotlin 单元测试。
-**Conclusion**: Both sides have low test coverage, but the VS Code extension has script-level testing tools (`test_task_launcher_subconfigs.js`), while the JetBrains plugin only has Kotlin unit tests.
+**结论**：~~两端测试覆盖率均偏低~~ **已过时** —— 现在两端都有成体系的测试：VS Code 侧
+`npm test` 串了 10 个套件（含语言包对等、取值链、打包产物泄漏、执行器沙箱），
+子仓 250 条用例（含纯对象单测 + 源码扫描类守卫）。**共同的做法是"不变量 + 容易静默改坏
+→ 抽纯对象配单测"，并配破坏性对照**（就地改坏编译产物，证明断言真的在约束东西）。
+仍然没有的是端到端测试（要真起 IDE + 真跑游戏，两端都没做）。
+**Conclusion**: ~~both sides have low test coverage~~ **outdated** — both now have systematic
+suites: the parent's `npm test` chains 10 suites (bundle parity, the convention-file chain,
+packaging leakage, the executor sandbox) and the sub-repo has 250 cases (pure-object units
+plus source-scanning guards). The shared practice is "invariant + easy to break silently →
+extract a pure object and unit-test it", with **destructive controls** (mutate the compiled
+artifact and prove the assertion actually constrains something). What is still absent is
+end-to-end testing (requires a real IDE and a real game) — neither side does it.
 
 ---
 
 ## 6. 关键取舍决策分析 / Key Trade-off Decision Analysis
+
+> ⚠️ **6.2 / 6.3 / 6.4 三节解释的「为什么缺失」，对应功能现在都已实现**（2026-09-21 复核）。
+> 那三节保留下来是作为**当时权衡过程的历史记录** —— 里面写的平台差异与实现复杂度判断
+> 仍然成立，只是结论（"因此不做"）已被推翻。**别按它们判断当前状态。**
+> 6.1 里除「改动即存」之外的差距同样已补齐。
+>
+> ⚠️ **Sections 6.2 / 6.3 / 6.4 explain why things are missing that now exist** (re-verified
+> 2026-09-21). They are kept as a **historical record of the trade-off reasoning** — the platform
+> differences and complexity judgements still hold, only the conclusion ("so we skipped it")
+> does not. **Do not read them as current status.** The same applies to 6.1 apart from
+> "auto-save on change".
 
 ### 6.1 标注编辑器功能差距的原因 / Reasons for Annotation Editor Feature Gap
 
@@ -244,35 +311,38 @@ Based on `parity-review.md` (2026-09-06) and source code analysis, this report s
 
 ### 7.1 JetBrains 插件需要优先补齐的功能 / Features JetBrains Plugin Needs to Prioritize
 
-| 优先级 / Priority | 功能 / Feature | 预估工作量 / Estimated Effort | 价值 / Value |
-|--------|------|------------|------|
-| P0 | 文件监听自动刷新 / File watcher auto-refresh | 2-3 天 / 2-3 days | 高（消除手动刷新痛点）/ High (eliminates manual refresh pain point) |
-| P0 | 标注编辑器进阶交互 / Annotation editor advanced interaction | 5-8 天 / 5-8 days | 高（标注工作流核心）/ High (core of annotation workflow) |
-| P1 | sub_configs 子配置树 / sub_configs sub-configuration tree | 3-5 天 / 3-5 days | 中（复杂任务配置需求）/ Medium (complex task configuration needs) |
-| P1 | 条件可见性系统 / Conditional visibility system | 2-3 天 / 2-3 days | 中（参数联动体验）/ Medium (parameter linkage experience) |
-| P1 | 调试浮层 / Debug overlay | 3-5 天 / 3-5 days | 中（开发期调试）/ Medium (development-time debugging) |
-| P2 | 标注快捷键配置 / Annotation shortcut configuration | 1-2 天 / 1-2 days | 低（依赖标注编辑器）/ Low (depends on annotation editor) |
-| P2 | 角色强化组编辑完善 / Character enhanced group editing refinement | 2-3 天 / 2-3 days | 低（CRUD 已交付）/ Low (CRUD already delivered) |
+> ⚠️ **原表列的 7 项全部已完成**（2026-09-21 复核：文件监听、标注编辑器进阶交互、
+> sub_configs 子配置树、条件可见性、调试浮层、标注快捷键、强化组编辑）。
+> 下面换成**现在真正剩下的**缺口 —— 与 `parity-review.md` 的「⚠️ 待办」表一致，都是低优先级。
+>
+> ⚠️ **All 7 rows in the original table are done** (re-verified 2026-09-21). Replaced with the
+> **actual remaining** gaps, matching the "⚠️ TODO" table in `parity-review.md` — all low priority.
+
+| 优先级 / Priority | 功能 / Feature | 价值 / Value |
+|--------|------|------|
+| P2 | 注释面板独立命令（父仓有 `openAnnotationEditor`；子仓只能从素材管理器进入）/ Standalone annotation-editor command (the parent has `openAnnotationEditor`; the sub-repo can only reach it from the asset manager) | 低（多一步进入）/ Low (one extra step) |
+| P3 | 编辑器内嵌大画廊双入口 / Dual entry to the large gallery from the editor | 低 / Low |
+| P3 | 任务卡片式 UI / Task card-style UI | 低（载体差异）/ Low (carrier difference) |
+| P3 | `lastPythonEditor` 跟踪（插入表达式时定位最近编辑器）/ `lastPythonEditor` tracking | 低 / Low |
+| — | 标注编辑器「改动即存」/ Annotation editor "auto-save on change" | **设计取舍，非缺陷**：子仓是 OK/Cancel 语义（`doOKAction` 时统一写回，Cancel 全弃）/ **Deliberate trade-off, not a defect**: the sub-repo uses OK/Cancel semantics |
 
 ### 7.2 两端功能对齐的优先级排序 / Feature Alignment Priority Between Both Sides
 
-**第一阶段（核心体验对齐）**：
-**Phase 1 (Core Experience Alignment)**:
-1. ✅ saveToAssets 导出（已完成）/ saveToAssets export (completed)
-2. ✅ 截图采集（已完成）/ Screenshot capture (completed)
-3. ✅ 角色 CRUD + 头像（已完成）/ Character CRUD + avatar (completed)
-4. 🔄 标注编辑器进阶交互（进行中）/ Annotation editor advanced interaction (in progress)
-5. 🔄 文件监听自动刷新（待启动）/ File watcher auto-refresh (pending)
+**已全部完成**（2026-09-21 复核）/ **All completed** (re-verified 2026-09-21)：
 
-**第二阶段（高级功能对齐）**：
-**Phase 2 (Advanced Feature Alignment)**:
-1. sub_configs 子配置树 / sub_configs sub-configuration tree
-2. 条件可见性系统 / Conditional visibility system
-3. 调试浮层 / Debug overlay
-4. 标注快捷键配置 / Annotation shortcut configuration
+| 阶段 / Phase | 项目 / Item | 状态 / Status |
+|---|---|---|
+| 一 / 1 | saveToAssets 导出 / saveToAssets export | ✅ |
+| 一 / 1 | 截图采集 / Screenshot capture | ✅ |
+| 一 / 1 | 角色 CRUD + 头像 + 强化组编辑 / Character CRUD + avatar + enhanced-group editing | ✅ |
+| 一 / 1 | 标注编辑器进阶交互 / Annotation editor advanced interaction | ✅（除「改动即存」，属设计取舍）|
+| 一 / 1 | 文件监听自动刷新 / File watcher auto-refresh | ✅ `OkDataChangeService` |
+| 二 / 2 | sub_configs 子配置树 / sub_configs sub-configuration tree | ✅ |
+| 二 / 2 | 条件可见性系统 / Conditional visibility system | ✅ |
+| 二 / 2 | 调试浮层 / Debug overlay | ✅ |
+| 二 / 2 | 标注快捷键配置 / Annotation shortcut configuration | ✅（走 IntelliJ 原生 Keymap，属载体差异）|
 
-**第三阶段（体验优化）**：
-**Phase 3 (Experience Optimization)**:
+**第三阶段（体验优化）—— 仍未做** / **Phase 3 (Experience Optimization) — still open**：
 1. 缩略图并发加载优化 / Thumbnail concurrent loading optimization
 2. 角色面板状态栏本地化 / Character panel status bar localization
 3. 大画廊双入口 / Large gallery dual entry points
@@ -290,10 +360,30 @@ The design differences between the VS Code extension and JetBrains plugin are es
 - **JetBrains**：IntelliJ Platform 提供了成熟的 Swing 组件和平台服务（VirtualFileListener、NotificationGroup、ToolWindow），适合构建原生集成体验，但图像处理和富交互 UI 需要更多手动实现。
   **JetBrains**: IntelliJ Platform provides mature Swing components and platform services (VirtualFileListener, NotificationGroup, ToolWindow), suitable for building native integration experiences, but image processing and rich interactive UIs require more manual implementation.
 
-两者在核心语言功能（补全/hover/inlay）上已完全对齐，主要差距集中在**图像密集型操作**（标注编辑器、缩略图并发）和**动态 UI 交互**（条件可见性、调试浮层）。JetBrains 插件的优先补齐方向应聚焦于**文件监听**和**标注编辑器进阶交互**，这两个功能对日常工作流影响最大。
-Both sides are fully aligned on core language features (completion/hover/inlay), with the main gaps concentrated in **image-intensive operations** (annotation editor, thumbnail concurrency) and **dynamic UI interactions** (conditional visibility, debug overlay). The JetBrains plugin's prioritized gap-filling should focus on **file watching** and **annotation editor advanced interaction**, as these two features have the greatest impact on daily workflows.
+两者在核心语言功能（补全/hover/inlay）上已完全对齐，~~主要差距集中在**图像密集型操作**（标注编辑器、缩略图并发）和**动态 UI 交互**（条件可见性、调试浮层）。JetBrains 插件的优先补齐方向应聚焦于**文件监听**和**标注编辑器进阶交互**，这两个功能对日常工作流影响最大。~~
+**—— 这段结论已过时（2026-09-21 复核）**：上面点名的四块（标注编辑器进阶交互、文件监听、
+条件可见性、调试浮层）**都已实现**，见 §7.2。现在剩下的只有低优先级的 UI 形态差异
+（大画廊双入口、任务卡片式 UI）与一项**设计取舍**（标注编辑器用 OK/Cancel 而非改动即存）。
+真正还没做的只有**缩略图并发加载**这类性能优化，以及两端都没有的端到端测试。
+
+Both sides are fully aligned on core language features (completion/hover/inlay).
+~~The main gaps are concentrated in **image-intensive operations** (annotation editor, thumbnail
+concurrency) and **dynamic UI interaction** (conditional visibility, debug overlay). The sub-repo
+should prioritize **file watching** and **annotation editor advanced interaction**, which affect
+daily workflows the most.~~
+**— This conclusion is outdated (re-verified 2026-09-21)**: all four items named above
+(annotation editor advanced interaction, file watching, conditional visibility, debug overlay)
+**are implemented**, see §7.2. What remains is low-priority UI shape (large-gallery dual entry,
+task card-style UI) and one **deliberate trade-off** (OK/Cancel instead of auto-save). The only
+genuine open items are performance work such as **concurrent thumbnail loading**, and end-to-end
+tests, which neither side has.
+~~Both sides are fully aligned on core language features (completion/hover/inlay), with the main gaps concentrated in **image-intensive operations** (annotation editor, thumbnail concurrency) and **dynamic UI interactions** (conditional visibility, debug overlay). The JetBrains plugin's prioritized gap-filling should focus on **file watching** and **annotation editor advanced interaction**, as these two features have the greatest impact on daily workflows.~~
+**Outdated — see the corrected paragraph above and §7.2.**
 
 ---
 
-*报告生成日期：2026-09-06 / Report generation date: 2026-09-06*
+*报告生成日期：2026-09-06；**2026-09-21 逐条回查代码后修正**（行数、代码量、测试规模、
+「缺失」清单、§6 历史说明、§7 建议与总结）/ Report generated 2026-09-06; **corrected 2026-09-21
+after re-verifying every row against the code** (line counts, code volume, test scale, the
+"missing" list, the §6 historical note, §7 recommendations and the summary).*
 *数据来源：parity-review.md、源代码分析 / Data sources: parity-review.md, source code analysis*
