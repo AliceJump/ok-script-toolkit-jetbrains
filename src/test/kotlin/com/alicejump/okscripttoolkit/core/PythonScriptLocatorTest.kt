@@ -7,6 +7,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.junit.jupiter.api.Assumptions.assumeTrue
 
 /**
  * 打包脚本解压的回归测试。
@@ -22,6 +23,10 @@ import kotlin.test.assertTrue
  * 执行器照样写目标项目的 `configs/`。
  *
  * 所以这里的核心断言是：**篡改过的脚本必须在下一次调用时被恢复**。
+ *
+ * 前提：这些断言只在**打包脚本真的进了 classpath** 时有意义。子仓独立 CI
+ * 检不到父仓的 `python/`，那里会整体跳过（见 [requireBundledScripts]）；
+ * 父仓 CI 带 submodules 检出，断言完整执行。
  */
 class PythonScriptLocatorTest {
 
@@ -31,8 +36,40 @@ class PythonScriptLocatorTest {
             .getResourceAsStream("python/$name")
             ?.use { it.readBytes().toString(Charsets.UTF_8) }
 
+    /**
+     * 打包脚本是否真的进了 classpath。
+     *
+     * **并非所有构建都有**，所以必须显式判断，不能默认它一定在：
+     * `jetbrains/` 是**独立公开仓库**，它自己的 CI（`.github/workflows/ci.yml`）
+     * 只检出本仓库，父仓的 `../python/` 不可见，`copyPythonScripts` 只能空跑。
+     * `build.gradle.kts` 对这种情况是**有意放行**的 —— 那里明确写了
+     * 「不要把 buildPlugin 放进 distributableTasks，放进去会让子仓独立 CI 必然失败」。
+     *
+     * 本测试当初漏了同一层考虑：在缺脚本的环境里 `extractBundledScripts` 按契约返回
+     * `null`，四条断言于是**必然失败**，把子仓 CI 变成长期红灯（实测 6 次连续
+     * run 全红，且早于本功能提交）—— 一个永远红的 CI 等于没有 CI。
+     *
+     * 判据与生产代码**用同一个表达式**（`BUNDLED_SCRIPTS.first()`），
+     * 免得两边的"算不算有脚本"悄悄分叉。
+     *
+     * 父仓 CI 用 `submodules: recursive` 检出，`../python` 存在、脚本齐全，
+     * 断言在那里**照常全跑** —— 跳过只发生在"本来就没有断言对象"的环境。
+     */
+    private val bundledScriptsPresent: Boolean
+        get() = PythonScriptLocator::class.java.classLoader
+            .getResource("python/${PythonScriptLocator.BUNDLED_SCRIPTS.first()}") != null
+
+    private fun requireBundledScripts() {
+        assumeTrue(
+            bundledScriptsPresent,
+            "classpath 上没有 python/*.py —— 只检出了 jetbrains 子仓库（父仓 python/ 不可见），" +
+                "本断言无可断言对象，跳过。父仓 CI 会带 submodules 检出并完整跑这些断言。",
+        )
+    }
+
     @Test
     fun `extracts every bundled script into a stable directory`() {
+        requireBundledScripts()
         val base = createTempDirectory("ok-scripts-test").toFile()
 
         val dir = PythonScriptLocator.extractBundledScripts(base)
@@ -60,6 +97,7 @@ class PythonScriptLocatorTest {
      */
     @Test
     fun `a tampered script is overwritten on the next call`() {
+        requireBundledScripts()
         val base = createTempDirectory("ok-scripts-tamper").toFile()
         val target = "run_executor.py"
         val original = bundledText(target)
@@ -88,6 +126,7 @@ class PythonScriptLocatorTest {
     /** 历史遗留目录（旧版的时间戳命名）要被清掉，否则它会一直占着旧脚本。 */
     @Test
     fun `legacy timestamped directories are cleaned up`() {
+        requireBundledScripts()
         val base = createTempDirectory("ok-scripts-legacy").toFile()
         val legacy = File(base, "ok-script-toolkit-scripts-0").apply { mkdirs() }
         File(legacy, "run_executor.py").writeText("# 旧版留下的脚本\n", Charsets.UTF_8)
@@ -107,6 +146,7 @@ class PythonScriptLocatorTest {
     /** 多次调用必须幂等：内容始终与 classpath 一致，不因重复解压而损坏。 */
     @Test
     fun `repeated extraction is idempotent`() {
+        requireBundledScripts()
         val base = createTempDirectory("ok-scripts-idempotent").toFile()
 
         val first = PythonScriptLocator.extractBundledScripts(base)
