@@ -3,6 +3,7 @@ package com.alicejump.okscripttoolkit.ui
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
 import com.alicejump.okscripttoolkit.core.ProjectConventionConfig
+import com.alicejump.okscripttoolkit.core.SaveToAssetsFlow
 import com.alicejump.okscripttoolkit.core.ScreenshotCapture
 import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
 import com.alicejump.okscripttoolkit.core.TemplateImage
@@ -564,14 +565,50 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             return
         }
 
-        val options = arrayOf("assets", "ok_tasks/assets")
-        val chosenIndex = ChooseDialog.show(
-            project,
-            OkScriptToolkitBundle.message("templateAsset.exportTargetPrompt", annotatedCount),
-            OkScriptToolkitBundle.message("templateAsset.export"),
-            options.toList(),
-        ) ?: return
-        val selectedTarget = options[chosenIndex]
+        // 枚举路径的取值链：**项目约定文件的 labelEnum.path > `<目标目录>/LabelEnum.py`**。
+        // （子仓没有"上次保存的路径"这一层 —— 那是 VS Code 侧 globalState 才有的个人偏好。）
+        //
+        // 注意必须走 `filePathOr` 而不是直接拿 `labelEnum.path`：后者是**模块路径**
+        // （`src/data/FeatureList`，不带 .py，与 config.py 的 label_enum_relative_path 同形），
+        // 而这里要的是**文件路径** —— 直接塞进去会生成一个没有扩展名的文件，Python import 不到。
+        val declaredAbsolute = ProjectConventionConfig.getInstance(project)
+            .load()
+            .labelEnum
+            .filePathOr(lastSaved = null)
+            ?.let { java.nio.file.Paths.get(projectDir, it).toString() }
+
+        val targets = listOf("assets", "ok_tasks/assets")
+        val changePathLabel = OkScriptToolkitBundle.message("templateAsset.exportEnumChangePath")
+
+        /** 用户在「修改路径」里填的值。**只对本次导出生效** —— 子仓没有个人偏好层可写。 */
+        var overrideEnumPath: String? = null
+
+        // 目标选择与「修改路径」共用一轮循环：改完路径要回到目标选择，
+        // 所以候选列表每次都重新构造（声明了枚举路径时才多出那一项，见 `SaveToAssetsFlow`）。
+        var selectedTarget = ""
+        while (true) {
+            val chosenIndex = ChooseDialog.show(
+                project,
+                OkScriptToolkitBundle.message("templateAsset.exportTargetPrompt", annotatedCount),
+                OkScriptToolkitBundle.message("templateAsset.export"),
+                SaveToAssetsFlow.options(targets, declaredAbsolute, changePathLabel),
+            ) ?: return
+            if (!SaveToAssetsFlow.isChangePathChoice(chosenIndex, targets.size)) {
+                selectedTarget = targets[chosenIndex]
+                break
+            }
+            val input = com.intellij.openapi.ui.Messages.showInputDialog(
+                project,
+                OkScriptToolkitBundle.message("templateAsset.exportEnumPathPrompt"),
+                OkScriptToolkitBundle.message("templateAsset.exportEnumTitle"),
+                com.intellij.openapi.ui.Messages.getInformationIcon(),
+                overrideEnumPath ?: declaredAbsolute ?: "",
+                null,
+            ) ?: continue // 取消改路径 → 回到目标选择
+            // 留空视为"没改"：这条链上没有"个人偏好"层可清，留空没有别的含义，
+            // 让它变成"不生成枚举"会和下面的「生成枚举？」确认框互相矛盾。
+            input.trim().takeIf { it.isNotEmpty() }?.let { overrideEnumPath = it }
+        }
         val targetFolder = java.nio.file.Paths.get(projectDir, selectedTarget.replace("/", java.io.File.separator)).toString()
 
         val generateEnum = com.intellij.openapi.ui.Messages.showYesNoDialog(
@@ -583,27 +620,21 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
 
         var enumPath: String? = null
         if (generateEnum) {
-            // 默认路径的取值链：**项目约定文件的 labelEnum.path > `<目标目录>/LabelEnum.py`**。
-            // （子仓没有"上次保存的路径"这一层 —— 那是 VS Code 侧 globalState 才有的个人偏好。）
-            //
-            // 注意必须走 `filePathOr` 而不是直接拿 `labelEnum.path`：后者是**模块路径**
-            // （`src/data/FeatureList`，不带 .py，与 config.py 的 label_enum_relative_path 同形），
-            // 而这里要的是**文件路径** —— 直接塞进去会生成一个没有扩展名的文件，Python import 不到。
-            val declared = ProjectConventionConfig.getInstance(project).load().labelEnum.filePathOr(lastSaved = null)
-            val defaultPath = if (declared != null) {
-                java.nio.file.Paths.get(projectDir, declared).toString()
-            } else {
-                java.nio.file.Paths.get(targetFolder, "LabelEnum.py").toString()
+            enumPath = overrideEnumPath ?: declaredAbsolute
+            // **已经声明过就不再问路径**（那是团队约定好的值，每次导出都确认一遍是纯噪音）。
+            // 要改的话走目标列表里的「修改路径」项 —— 那个入口只在跳过弹框时出现，
+            // 所以"跳过"与"还能改"这两件事永远同时成立。
+            if (enumPath == null) {
+                val input = com.intellij.openapi.ui.Messages.showInputDialog(
+                    project,
+                    OkScriptToolkitBundle.message("templateAsset.exportEnumPathPrompt"),
+                    OkScriptToolkitBundle.message("templateAsset.exportEnumTitle"),
+                    com.intellij.openapi.ui.Messages.getInformationIcon(),
+                    java.nio.file.Paths.get(targetFolder, "LabelEnum.py").toString(),
+                    null,
+                ) ?: return
+                enumPath = input.trim()
             }
-            val input = com.intellij.openapi.ui.Messages.showInputDialog(
-                project,
-                OkScriptToolkitBundle.message("templateAsset.exportEnumPathPrompt"),
-                OkScriptToolkitBundle.message("templateAsset.exportEnumTitle"),
-                com.intellij.openapi.ui.Messages.getInformationIcon(),
-                defaultPath,
-                null,
-            ) ?: return
-            enumPath = input.trim()
         }
 
         statusLabel.text = OkScriptToolkitBundle.message("templateAsset.exportRunning")
