@@ -80,7 +80,16 @@ class OkDataChangeService(private val project: Project) : Disposable {
         if (dirMatches(settings.characterSkillsDirectory(), ".json")) return true
         if (rel == exact(settings.characterMasterFile())) return true
         if (rel == exact(settings.characterLocaleFile())) return true
-        if (rel == "assets/coco_annotations.json" || rel == "ok_tasks/assets/coco_annotations.json") return true
+        // 运行时模板库路径可配（项目约定 → config.py → 两个惯例位置），所以按**所有候选**判定，
+        // 而不是那两个写死的路径 —— 否则库搬到别处后，改它不再触发刷新（静默）。
+        if (rel in dataService.cocoFeatureRelPaths()) return true
+        // `config.py` 决定库放在哪：它一变就**重探**（路径可能整体换地方）。
+        // 重探完成时会自己作废快照并广播，所以这里不必再走一轮防抖刷新。
+        // （在谓词里做副作用不算优雅，但路径判定逻辑集中在这里，散出去更容易漂移。）
+        if (rel == "config.py" || rel == "src/config.py") {
+            dataService.ensureCocoFeatureProbed(force = true)
+            return false
+        }
         if (dirMatches("assets/images", ".png") || dirMatches("ok_tasks/assets/images", ".png")) return true
         if (dirMatches(settings.okTemplatesDirectory(), ".png")) return true
 

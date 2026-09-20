@@ -193,6 +193,18 @@ data class TemplatesConvention(
     fun directoryOr(ideValue: String?, fallback: String): String =
         directoryResolved(ideValue, fallback).value
 
+    /**
+     * **运行时模板库**路径的声明（`templates.cocoAnnotations`），已归一化；没声明返回 `null`。
+     *
+     * ⚠️ 它指向的是 ok 框架加载的那份 COCO（`config.py` 的
+     * `template_matching.coco_feature_json`），**不是**素材面板自己的
+     * `<模板目录>/coco_annotations.json`。见 [CocoFeaturePath] 的对照表。
+     *
+     * 这一项**没有对应的 IDE 设置**（所以没有"个人偏好"层）—— 链是
+     * `项目约定 > config.py > 依次探测两个候选`，见 [CocoFeaturePath.plan]。
+     */
+    fun cocoAnnotationsOrNull(): String? = normalizeRelPath(cocoAnnotations)
+
     companion object {
         /** 解析 `templates` 节点。非对象、字段类型不符一律当没写。 */
         fun parse(node: JsonNode?): TemplatesConvention {

@@ -5,12 +5,15 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
+import com.intellij.util.ui.UIUtil
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.Locale
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.io.path.isDirectory
 import kotlin.io.path.isRegularFile
@@ -153,6 +156,79 @@ class OkProjectDataService(private val project: Project) {
 
     fun rootPath(): Path? = project.basePath?.let(Paths::get)
 
+    /* ---------------- 运行时模板库路径（config.py 的 coco_feature_json） ---------------- */
+
+    /** 探到的 `coco_feature_json` + 它是为哪个项目根探的（换项目要重探）。 */
+    @Volatile
+    private var probedCoco: Pair<String, String?>? = null
+
+    /** 后台探测是否在跑 —— 避免每次访问都拉起一个 Python 进程。 */
+    private val cocoProbeRunning = AtomicBoolean(false)
+
+    /**
+     * 运行时模板库的候选计划（同步）。
+     *
+     * 取值链：**项目约定文件 `templates.cocoAnnotations` > `config.py` 的
+     * `template_matching.coco_feature_json` > 依次探测两个候选（改动前的行为）**。
+     * 见 [CocoFeaturePath]。
+     */
+    fun cocoFeaturePlan(): CocoFeaturePath.Plan {
+        val root = rootPath()?.toString().orEmpty()
+        // 第一次问的时候顺手在后台补齐（见 [ensureCocoFeatureProbed]）——
+        // 这是唯一能既保持同步、又拿到异步探针结果的形状。
+        ensureCocoFeatureProbed()
+        val declared = ProjectConventionConfig.getInstance(project).load().templates.cocoAnnotationsOrNull()
+        val fromPy = probedCoco?.takeIf { it.first == root }?.second
+        return CocoFeaturePath.plan(root, declared, fromPy)
+    }
+
+    /** 运行时模板库实际要扫描的文件（已按存在性过滤）。 */
+    fun cocoFeatureFiles(): List<Path> =
+        CocoFeaturePath.effectiveFiles(cocoFeaturePlan()) { it.toFile().isFile }
+
+    /**
+     * 运行时模板库的**所有**候选相对路径（含首选与探测候选），用于监听与变更归属判定。
+     * 不按存在性过滤 —— 要覆盖"文件还没创建"的情况。
+     */
+    fun cocoFeatureRelPaths(): List<String> =
+        CocoFeaturePath.relPaths(cocoFeaturePlan(), rootPath()?.toString().orEmpty())
+
+    /**
+     * 按需在后台探测 `config.py` 的 `template_matching.coco_feature_json`。
+     *
+     * **为什么是"懒探测 + 后台补齐"**：值来自一次 Python 子进程调用（百毫秒级），
+     * 而消费点（快照构建、变更归属判定）都是**同步**的 —— 不可能在那里 await。
+     * 所以第一次问的时候按"没声明"返回（退回两个惯例位置 = 改动前的行为），
+     * 同时后台拉起一次探测；探到之后作废快照并广播，下一次访问就用真实路径。
+     *
+     * 最坏情况只是"第一次拿到的是兜底路径"，不会坏掉 —— 这正是它能做成纯增量的原因。
+     * 同项目根探过就不再探（[force] 用于 `config.py` 变化与设置变化）。
+     */
+    fun ensureCocoFeatureProbed(force: Boolean = false) {
+        val root = rootPath()?.toString().orEmpty()
+        if (root.isBlank()) return
+        if (!force && probedCoco?.first == root) return
+        if (!cocoProbeRunning.compareAndSet(false, true)) return
+
+        val pythonPath = ScreenshotCapture.detectPythonPath(root, project)
+        // `probeWindowConfig` 是**实例方法**（`detectPythonPath` / `detectProjectDir` 才是
+        // companion 成员），所以这里要建一个实例 —— 相比它内部拉起的 Python 进程，
+        // 这点开销可以忽略。
+        val capture = ScreenshotCapture(project)
+        CompletableFuture.supplyAsync {
+            runCatching { capture.probeWindowConfig(root, pythonPath) }.getOrNull()
+        }.whenComplete { config, _ ->
+            probedCoco = root to config?.cocoFeatureJson
+            cocoProbeRunning.set(false)
+            if (project.isDisposed) return@whenComplete
+            // 路径可能变了 → 作废快照并广播，让面板下一次访问拿到新库
+            invalidate()
+            UIUtil.invokeLaterIfNeeded {
+                project.messageBus.syncPublisher(OkDataChangeService.TOPIC).dataChanged()
+            }
+        }
+    }
+
     @Synchronized
     fun refresh(force: Boolean = false) {
         val root = rootPath() ?: return
@@ -198,11 +274,8 @@ class OkProjectDataService(private val project: Project) {
         val files = mutableListOf<Path>()
         collectFiles(root.resolve(settings.langDirectory()), files) { it.toString().endsWith(".json", true) }
         collectFiles(root.resolve(settings.poDirectory()), files) { it.toString().endsWith(".po", true) }
-        for (coco in listOf(
-            root.resolve("assets/coco_annotations.json"),
-            root.resolve("ok_tasks/assets/coco_annotations.json"),
-            resolve(root, settings.effectsFile()),
-        )) {
+        // 运行时模板库路径可配（项目约定 → config.py → 两个惯例位置），不能写死。
+        for (coco in cocoFeatureFiles() + resolve(root, settings.effectsFile())) {
             if (coco.isRegularFile()) files.add(coco)
         }
         return files
@@ -284,7 +357,8 @@ class OkProjectDataService(private val project: Project) {
 
     private fun loadFeatures(root: Path): Map<String, FeatureTemplate> {
         val result = linkedMapOf<String, FeatureTemplate>()
-        for (coco in listOf(root.resolve("assets/coco_annotations.json"), root.resolve("ok_tasks/assets/coco_annotations.json"))) {
+        // 运行时模板库路径可配，不能写死（见 [cocoFeaturePlan]）。
+        for (coco in cocoFeatureFiles()) {
             if (!coco.isRegularFile()) continue
             runCatching {
                 val data = JSON.readTree(coco.toFile())

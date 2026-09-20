@@ -141,6 +141,10 @@ class ScreenshotCapture(private val project: Project) {
                 },
                 title = node.path("title")?.takeIf { it.isTextual && it.asText().isNotBlank() }?.asText(),
                 hwndClass = node.path("hwnd_class")?.takeIf { it.isTextual && it.asText().isNotBlank() }?.asText(),
+                // 探针解不出来时给的是 JSON `null`（AST 里掺了变量），`asText()` 会把它变成字面量
+                // 字符串 "null" —— 所以必须用 `isTextual` 判，不能只看非空。
+                cocoFeatureJson = node.path("coco_feature_json")
+                    ?.takeIf { it.isTextual && it.asText().isNotBlank() }?.asText(),
             ).also { LOG.info("Detected window config: ${it.describe()}") }
         } catch (e: Exception) {
             LOG.warn("probe_window_config failed", e)
@@ -632,6 +636,12 @@ data class WindowConfig(
     val exe: List<String>? = null,
     val title: String? = null,
     val hwndClass: String? = null,
+    /**
+     * `config.py` 的 `template_matching.coco_feature_json` —— **运行时模板库**路径
+     * （ok 框架自己也是读这一项）。相对项目根或绝对路径，原样返回、不做归一化。
+     * 见 [CocoFeaturePath]：它和素材面板的 `<模板目录>/coco_annotations.json` 是两个不同的文件。
+     */
+    val cocoFeatureJson: String? = null,
 ) {
     fun describe(): String = listOfNotNull(
         exe?.takeIf { it.isNotEmpty() }?.let { "exe: ${it.joinToString(", ")}" },

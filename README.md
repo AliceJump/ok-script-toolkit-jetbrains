@@ -170,7 +170,8 @@ To build the plugin from source instead, see [Build](#构建).
 
 ### 其他 / Miscellaneous
 
-- 项目约定文件：被调试项目根目录下的 `ok-script-toolkit.json`（**只读**，插件绝不写入）可以声明模板目录、枚举路径/类名/引用别名、i18n（语言/PO 目录与开关）、角色数据位置、效果定义文件等团队约定，免去每个成员各配一遍。取值优先级为**个人设置 > 项目约定文件 > 内置默认** —— 项目文件是团队开箱默认，你手动改过就以你的为准。
+- 项目约定文件：被调试项目根目录下的 `ok-script-toolkit.json`（**只读**，插件绝不写入）可以声明模板目录、运行时模板库路径、枚举路径/类名/引用别名、i18n（语言/PO 目录与开关）、角色数据位置、效果定义文件等团队约定，免去每个成员各配一遍。取值优先级为**个人设置 > 项目约定文件 > 内置默认** —— 项目文件是团队开箱默认，你手动改过就以你的为准。
+  - 其中**运行时模板库**（ok 框架加载的那份 COCO）的路径还有一层「项目 `config.py` 已声明的事实」：`templates.cocoAnnotations` → `config.py` 的 `template_matching.coco_feature_json` → 依次探测 `assets/coco_annotations.json`、`ok_tasks/assets/coco_annotations.json`。最后那层就是引入约定文件之前的行为。素材面板自己的 `<模板目录>/coco_annotations.json` 是**另一个文件**，跟随 `templates.directory`。
 - **项目约定 vs 我的设置**（Tools 菜单）：列出参与取值链的设置项，显示每一项的**生效值来自哪一层**（我的设置 / 项目约定 / 内置默认）。被个人设置覆盖过的项带「恢复」按钮，一键回到项目约定。存在的原因是上面那条优先级有个副作用 —— 一旦你手动改过，项目声明的那一项就对你永久失效、界面上毫无提示。
 - 项目设置：路径、locale、别名和功能开关。
 - UI 本地化：`en`、`zh_CN`、`zh_TW`、`ja`、`ko`、`es`。
