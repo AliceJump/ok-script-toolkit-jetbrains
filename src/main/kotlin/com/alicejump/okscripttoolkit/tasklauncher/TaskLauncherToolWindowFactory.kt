@@ -79,6 +79,12 @@ class TaskLauncherPanel(private val project: Project) {
         /** 左侧列表里参数标签列的最小宽度：所有行的标签右对齐在同一条竖线上 */
         private const val LABEL_COLUMN_WIDTH = 88
 
+        /**
+         * 操作列（左栏第 0 列）：触发任务是复选框、一次性任务是运行按钮。
+         * 表格里多处按序号取列，集中成常量免得改列序时漏掉某处。
+         */
+        private const val ACTION_COLUMN = 0
+
         // 状态语义色（亮 / 暗主题各一套）；色调编号见 TaskRowState.TONE_*
         private val COLOR_GOOD = JBColor(Color(0x36, 0x9B, 0x47), Color(0x5F, 0xAD, 0x65))
         private val COLOR_WARN = JBColor(Color(0xB8, 0x77, 0x00), Color(0xE8, 0xA3, 0x3D))
@@ -110,13 +116,15 @@ class TaskLauncherPanel(private val project: Project) {
     private val enabledTriggers = linkedSetOf<String>()
 
     /**
-     * 左栏是「主」列表：启用 / 任务 / 状态三列。
-     * 类型不再单占一列（左栏收窄后放不下），改由任务名前的图标 + 悬浮提示表达，
-     * 右侧详情区还有一枚类型 chip。
+     * 左栏是「主」列表：操作 / 任务 / 状态三列。
+     *
+     * **类型不再靠图标表达** —— 操作列直接给出各自真正可点的控件：
+     * 触发任务是一个复选框（勾选即入列轮询），一次性任务是一枚运行按钮（点一下入队跑一次）。
+     * 任务列只显示名字，不放任何图标（放过的图标看着能点、实际不能点）。
      */
     private val taskTableModel = object : DefaultTableModel(
         arrayOf(
-            OkScriptToolkitBundle.message("taskLauncher.enableColumn"),
+            OkScriptToolkitBundle.message("taskLauncher.actionColumn"),
             OkScriptToolkitBundle.message("taskLauncher.taskColumn"),
             OkScriptToolkitBundle.message("taskLauncher.statusColumn"),
         ),
@@ -125,19 +133,21 @@ class TaskLauncherPanel(private val project: Project) {
         // 必须返回包装类 Boolean（而不是基本类型 boolean），否则 Swing 不会套用复选框
         // 渲染器 / 编辑器；拆成提前 return 也避开了 if/else 推导出交叉类型的告警。
         override fun getColumnClass(columnIndex: Int): Class<*> {
-            if (columnIndex == 0) return java.lang.Boolean::class.javaObjectType
+            if (columnIndex == ACTION_COLUMN) return java.lang.Boolean::class.javaObjectType
             return String::class.java
         }
 
-        /** 只有触发任务可以勾选启用；一次性任务用工具栏的「运行」入队 */
+        /**
+         * 只有触发任务可以「编辑」—— 那一格是复选框。
+         * 一次性任务那一格是运行按钮，编辑语义在 [installActionColumnClick] 里，不走编辑器。
+         */
         override fun isCellEditable(row: Int, column: Int): Boolean =
-            column == 0 && rowKinds.getOrElse(row) { TaskRowState.ONETIME } == TaskRowState.TRIGGER
+            column == ACTION_COLUMN && rowKinds.getOrElse(row) { TaskRowState.ONETIME } == TaskRowState.TRIGGER
     }
     private val taskTable = JBTable(taskTableModel)
     private val refreshAction = ToolbarAction(AllIcons.Actions.Refresh, OkScriptToolkitBundle.message("taskLauncher.refresh")) { loadTasks() }
     /** 显式启动执行器：勾选触发任务不再隐式拉起，启动行为集中在这里 */
     private val startExecutorAction = ToolbarAction(AllIcons.Actions.Execute, OkScriptToolkitBundle.message("taskLauncher.startExecutor")) { startExecutorManual() }
-    private val runAction = ToolbarAction(AllIcons.Actions.Execute, OkScriptToolkitBundle.message("taskLauncher.run")) { enqueueSelectedTask() }
     private val stopCurrentAction = ToolbarAction(AllIcons.Actions.Suspend, OkScriptToolkitBundle.message("taskLauncher.stopCurrent")) { stopCurrentTask() }
     private val closeExecutorAction = ToolbarAction(AllIcons.Actions.Cancel, OkScriptToolkitBundle.message("taskLauncher.closeExecutor")) { closeExecutor() }
     private val pauseAction = ToolbarAction(AllIcons.Actions.Pause, OkScriptToolkitBundle.message("taskLauncher.pause")) { sendControlCommand("pause") }
@@ -214,7 +224,6 @@ class TaskLauncherPanel(private val project: Project) {
         val active = state.status == "running" || state.status == "connecting"
         // 显式启动：执行器起来之前才可用，起来后让位给暂停/停止（对齐 VSCode 端按钮显隐）
         startExecutorAction.isEnabled2 = !active
-        runAction.isEnabled2 = state.status != "connecting"
         stopCurrentAction.isEnabled2 = state.current.isNotEmpty()
         closeExecutorAction.isEnabled2 = active
         pauseAction.isEnabled2 = state.status == "running" && !state.paused
@@ -252,7 +261,7 @@ class TaskLauncherPanel(private val project: Project) {
         resumeAction.isEnabled2 = false
 
         val actionGroup = com.intellij.openapi.actionSystem.DefaultActionGroup(
-            refreshAction, startExecutorAction, runAction, stopCurrentAction, closeExecutorAction, pauseAction, resumeAction,
+            refreshAction, startExecutorAction, stopCurrentAction, closeExecutorAction, pauseAction, resumeAction,
         )
         actionToolbar = com.intellij.openapi.actionSystem.ActionManager.getInstance()
             .createActionToolbar("ok-script-tasks", actionGroup, true)
@@ -285,6 +294,7 @@ class TaskLauncherPanel(private val project: Project) {
             setTriggerEnabled(tasks[row], taskTableModel.getValueAt(row, 0) == true)
         }
         installTableRenderers()
+        installActionColumnClick()
 
         val tableScrollPane = JBScrollPane(taskTable)
         tableScrollPane.border = BorderFactory.createEmptyBorder()
@@ -328,14 +338,15 @@ class TaskLauncherPanel(private val project: Project) {
     // ── 左列表：渲染器 ────────────────────────────────────────────────
 
     /**
-     * 勾选列渲染器见 [TriggerCheckboxRenderer]：一次性任务在模型里存 null（不是 false），
-     * 于是那一格连复选框都不画。
+     * 操作列渲染器见 [TaskActionRenderer]：触发行画复选框（模型里是 Boolean，可交互），
+     * 一次性行画运行按钮（模型里是 null，点击由 [installActionColumnClick] 处理）。
      */
     private fun installTableRenderers() {
         taskTable.columnModel.getColumn(0).apply {
-            cellRenderer = TriggerCheckboxRenderer()
-            preferredWidth = 30
-            maxWidth = 30
+            cellRenderer = TaskActionRenderer { row -> rowKinds.getOrElse(row) { TaskRowState.ONETIME } }
+            // 要放得下一个复选框 / 一枚运行按钮，比原来的 30 稍宽。
+            preferredWidth = 38
+            maxWidth = 38
             resizable = false
         }
         taskTable.columnModel.getColumn(1).apply {
@@ -349,7 +360,38 @@ class TaskLauncherPanel(private val project: Project) {
         }
     }
 
-    /** 任务列渲染器：名字前按类型挂图标（触发 = 轮询循环，一次性 = 运行三角），类型不再单占一列 */
+    /**
+     * 操作列里「一次性任务」那一格的点击 → 直接入队运行。
+     *
+     * 为什么不用 `TableCellEditor` 放真按钮：单元格编辑器要点两下
+     * （第一下进入编辑态、第二下才按到按钮），而这里要的是"点一下就跑"。
+     * 渲染器负责画成按钮，点击语义放在表格这一层。
+     *
+     * 只处理**一次性**行：触发行的那一格是复选框，由表格自带的 Boolean 编辑器接管，
+     * 这里必须让开，否则一次点击会既改勾选又触发运行。
+     */
+    private fun installActionColumnClick() {
+        taskTable.addMouseListener(object : java.awt.event.MouseAdapter() {
+            override fun mouseClicked(event: java.awt.event.MouseEvent) {
+                if (!javax.swing.SwingUtilities.isLeftMouseButton(event)) return
+                val row = taskTable.rowAtPoint(event.point)
+                val column = taskTable.columnAtPoint(event.point)
+                if (row < 0 || column != ACTION_COLUMN) return
+                if (rowKinds.getOrElse(row) { TaskRowState.ONETIME } != TaskRowState.ONETIME) return
+                taskTable.setRowSelectionInterval(row, row)
+                runTaskAt(row)
+            }
+        })
+    }
+
+    /**
+     * 任务列渲染器：**只显示任务名**。
+     *
+     * 曾经在名字前按类型挂图标（触发 = 轮询循环，一次性 = 运行三角）来替代单独的类型列，
+     * 但那个图标看着像按钮、点了却没反应（真正能点的控件在操作列）。
+     * 现在类型完全由操作列表达 —— 触发是复选框、一次性是运行按钮 ——
+     * 名字列不再放任何图标；悬浮提示保留，作为文字上的补充。
+     */
     private inner class TaskNameRenderer : DefaultTableCellRenderer() {
         override fun getTableCellRendererComponent(
             table: JTable,
@@ -360,8 +402,8 @@ class TaskLauncherPanel(private val project: Project) {
             column: Int,
         ): Component {
             val component = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column)
+            icon = null
             val isTrigger = rowKinds.getOrElse(row) { TaskRowState.ONETIME } == TaskRowState.TRIGGER
-            icon = if (isTrigger) AllIcons.Actions.RerunAutomatically else AllIcons.Actions.Execute
             toolTipText = OkScriptToolkitBundle.message(
                 if (isTrigger) "taskLauncher.triggerTask" else "taskLauncher.oneTimeTask",
             )
@@ -732,8 +774,9 @@ class TaskLauncherPanel(private val project: Project) {
                     taskTableModel.addRow(
                         // 显式 Any? 元素类型：混合 Boolean / String 时 arrayOf 会推导出
                         // Comparable<...> & Serializable 交叉类型并触发告警。
-                        // 第一格走 TaskRowState.checkboxValue：一次性任务得到 null，
-                        // 配合 TriggerCheckboxRenderer 才做到「连复选框都不画」。
+                        // 第一格走 TaskRowState.checkboxValue：触发任务得到 Boolean，
+                        // 一次性任务得到 null —— 由 TaskActionRenderer 按行类型决定
+                        // 画复选框还是运行按钮。
                         arrayOf<Any?>(
                             TaskRowState.checkboxValue(kind, enabledTriggers.contains(taskKeyOf(task))),
                             task.displayName,
@@ -1716,19 +1759,17 @@ class TaskLauncherPanel(private val project: Project) {
         )
     }
 
-    /** 工具栏「运行」：对当前选中的一次性任务入队（触发任务走勾选列或右侧按钮） */
-    private fun enqueueSelectedTask() {
-        val selectedRow = taskTable.selectedRow
-        if (selectedRow < 0 || selectedRow >= tasks.size) {
-            JOptionPane.showMessageDialog(
-                mainPanel,
-                OkScriptToolkitBundle.message("taskLauncher.noTaskSelected"),
-                "Warning",
-                JOptionPane.WARNING_MESSAGE,
-            )
-            return
-        }
-        val task = tasks[selectedRow]
+    /**
+     * 运行第 [row] 行的任务。
+     *
+     * 入口只有操作列那枚运行按钮（[installActionColumnClick]）—— 工具栏上原来那个
+     * 「运行」按钮已删除：它和「启动执行器」用的是**同一个图标**，两个挨着的按钮长得一模一样，
+     * 而且操作列有了运行按钮之后就多余了。
+     *
+     * 触发行不该走到这里（那一格是复选框）；真到了就给出明确提示，而不是静默忽略。
+     */
+    private fun runTaskAt(row: Int) {
+        val task = tasks.getOrNull(row) ?: return
         if (taskKindOf(task) == TaskRowState.TRIGGER) {
             JOptionPane.showMessageDialog(
                 mainPanel,
