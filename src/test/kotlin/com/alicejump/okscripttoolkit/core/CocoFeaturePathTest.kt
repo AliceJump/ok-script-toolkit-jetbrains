@@ -86,23 +86,33 @@ class CocoFeaturePathTest {
 
     @Test
     fun `an absolute path from config py keeps its shape`() {
-        // config.py 的值通常是 `os.path.join(项目根, ...)` 拼出来的，两种形态都要原样认。
-        // 比 `Path` 而不是 `toString()`：`Path.toString()` 用的是平台分隔符
-        // （Windows 上 `D:/x` 会渲染成 `D:\x`），那只是显示差异，指向的是同一个文件。
-        val windows = plan(fromConfigPy = "D:/elsewhere/coco.json")
+        // config.py 的值通常是 `os.path.join(项目根, ...)` 拼出来的，所以"绝对路径原样保留"
+        // 是必须钉住的行为。用 `user.home` 构造平台原生的绝对路径 ——
+        // **不要写 `D:/…` 或 `/srv/…` 这类字面量**：它们在另一个平台上根本不是绝对路径
+        // （`Paths.get("D:/x").isAbsolute` 在 Linux 上是 false），
+        // 而子仓 CI 跑在 Linux、本地在 Windows，写死了只有一边会过。
+        val nativeAbs = Paths.get(System.getProperty("user.home"), "ok-coco-outside", "coco.json")
+        assertTrue(nativeAbs.isAbsolute, "前置条件：user.home 拼出来的必须是绝对路径")
         assertEquals(
-            Paths.get("D:/elsewhere/coco.json"),
-            windows.preferred,
-            "**Windows 绝对路径原样保留**（不做任何改写，改了就与项目声明的不是同一个文件）",
+            nativeAbs,
+            plan(fromConfigPy = nativeAbs.toString()).preferred,
+            "**绝对路径原样保留**（不做任何改写，改了就与项目声明的不是同一个文件）",
         )
 
-        // ⚠️ 平台差异：`Paths.get("/srv/x").isAbsolute` 在 Windows 上是 **false**
-        // （Windows 认为没有盘符/UNC 的 `/x` 只是 "rooted"，不算 absolute），在 POSIX 上是 true。
-        // POSIX 绝对路径本来也只在那边的平台上才有意义，所以这条只在非 Windows 上跑 ——
-        // 否则测的是 JDK 的平台差异，不是我们的逻辑。
-        if (File.separatorChar != '\\') {
-            val posix = plan(fromConfigPy = "/srv/coco.json")
-            assertEquals(Paths.get("/srv/coco.json"), posix.preferred, "**POSIX 绝对路径的开头斜杠必须保住**")
+        // 同平台内的另一种分隔符写法也要认（Windows 上 `D:/…` 正斜杠、POSIX 上就是 `/…`）。
+        // 比 `Path` 而不是 `toString()`：`Path.toString()` 用的是平台分隔符。
+        if (File.separatorChar == '\\') {
+            assertEquals(
+                Paths.get("D:/elsewhere/coco.json"),
+                plan(fromConfigPy = "D:/elsewhere/coco.json").preferred,
+                "Windows：`D:/…` 正斜杠写法同样算绝对路径，原样保留",
+            )
+        } else {
+            assertEquals(
+                Paths.get("/srv/coco.json"),
+                plan(fromConfigPy = "/srv/coco.json").preferred,
+                "POSIX：绝对路径的开头斜杠必须保住",
+            )
         }
     }
 
@@ -164,11 +174,15 @@ class CocoFeaturePathTest {
             CocoFeaturePath.relPaths(plan(), ROOT),
             "没声明时就是两个惯例位置",
         )
+
+        // 项目外的首选要剔除（`relativize` 出来的 `../` 不能当监听目标）。
+        // 用 `user.home` 构造平台原生的绝对路径，**不写平台专属字面量** —— 见上面那条测试的说明。
+        val outside = Paths.get(System.getProperty("user.home"), "ok-coco-outside", "coco.json")
+        assertTrue(outside.isAbsolute, "前置条件：user.home 拼出来的必须是绝对路径")
         assertEquals(
             listOf("assets/coco_annotations.json", "ok_tasks/assets/coco_annotations.json"),
-            CocoFeaturePath.relPaths(plan(fromConfigPy = "D:/outside/coco.json"), ROOT),
-            "**项目外的首选被剔除**（`relativize` 出来的 `../` 不能当监听目标），" +
-                "但两个惯例候选仍在 —— 首选不在项目内时它们才是真正会被读到的文件",
+            CocoFeaturePath.relPaths(plan(fromConfigPy = outside.toString()), ROOT),
+            "**项目外的首选被剔除**，但两个惯例候选仍在 —— 首选不在项目内时它们才是真正会被读到的文件",
         )
     }
 
