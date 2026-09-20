@@ -15,6 +15,9 @@ import kotlin.test.assertTrue
  *
  * 这里测的是**纯函数**（不依赖 `Project` / 服务），符合本仓库 `src/test` 的既有约定：
  * 要 `Project` 的服务类测不了，所以逻辑先下沉成纯对象。
+ *
+ * 面板是用户唯一能看见来源的地方，所以断言都按**用户看到的字符串**写，
+ * 而不只是断言纯对象（纯对象那层在 `ProjectConventionTest` 里已经钉过）。
  */
 class ConventionSourcesTest {
 
@@ -24,14 +27,10 @@ class ConventionSourcesTest {
 
     private fun rows(
         json: String? = null,
-        personalTemplates: String? = null,
-        personalAliases: List<String> = emptyList(),
+        personal: ConventionPersonal = ConventionPersonal(),
     ): List<ConventionSourceRow> = conventionSourceRows(
         convention = json?.let { ProjectConvention.parse(JSON.readTree(it)) } ?: ProjectConvention.EMPTY,
-        personalTemplatesDirectory = personalTemplates,
-        personalFeatureAliases = personalAliases,
-        templatesFallback = TPL_FALLBACK,
-        aliasesFallback = ALIASES_FALLBACK,
+        personal = personal,
     )
 
     private fun row(rows: List<ConventionSourceRow>, key: String): ConventionSourceRow =
@@ -42,7 +41,24 @@ class ConventionSourcesTest {
     @Test
     fun `the registry lists every setting that takes part in the chain`() {
         val keys = rows().map { it.key }
-        assertEquals(listOf("featureAliases", "okTemplatesDirectory"), keys, "登记表内容与顺序")
+        assertEquals(
+            listOf(
+                "featureAliases",
+                "okTemplatesDirectory",
+                "enablePoData",
+                "langDirectory",
+                "poDirectory",
+                "poDomains",
+                "characterProjectPath",
+                "characterMasterFile",
+                "characterSkillsDirectory",
+                "characterLocaleFile",
+                "characterAvatarTemplateRegex",
+                "effectsFile",
+            ),
+            keys,
+            "登记表内容与顺序",
+        )
         assertEquals(keys.size, keys.toSet().size, "登记表里不能有重复键")
     }
 
@@ -66,7 +82,7 @@ class ConventionSourcesTest {
     @Test
     fun `a personal value wins and is reported as the personal layer`() {
         val json = """{"templates": {"directory": "proj_tpl"}}"""
-        val tpl = row(rows(json, personalTemplates = "mine_tpl"), "okTemplatesDirectory")
+        val tpl = row(rows(json, ConventionPersonal(templatesDirectory = "mine_tpl")), "okTemplatesDirectory")
         assertEquals("mine_tpl", tpl.effective, "个人偏好压过项目声明")
         assertEquals(ConventionLayer.PERSONAL, tpl.layer, "来源标注为我的设置")
         assertEquals(
@@ -90,6 +106,10 @@ class ConventionSourcesTest {
         assertEquals("fL, FeatureList", aliases.effective, "别名兜底同样可读")
         assertEquals(ConventionLayer.BUILTIN, aliases.layer)
         assertNull(aliases.declared)
+
+        assertEquals("src/data/effects.py", row(rows(), "effectsFile").effective, "后接入的 effects 组同样有兜底")
+        assertEquals("assets/lang", row(rows(), "langDirectory").effective)
+        assertEquals("ocr", row(rows(), "poDomains").effective, "列表兜底也要能渲染成可读文案")
     }
 
     @Test
@@ -101,6 +121,80 @@ class ConventionSourcesTest {
         assertEquals(tpl.effective, tpl.declared, "没有个人覆盖时两者应当一致")
     }
 
+    // ── 后接入的三组（i18n / characters / effects）────────────────────
+
+    @Test
+    fun `the newly chained groups are traceable in the panel`() {
+        val json = """
+            {
+              "i18n": {"enabled": false, "langDirectory": "./lang", "poDirectory": "i18n", "poDomains": ["ocr", "ui"]},
+              "characters": {
+                "projectPath": "/home/me/other_proj",
+                "avatarTemplateRegex": "^icon\\d+/",
+                "masterFile": "data/chars.json"
+              },
+              "effects": {"file": "src/data/effect_defs.py"}
+            }
+        """.trimIndent()
+        val all = rows(json)
+
+        assertEquals("false", row(all, "enablePoData").effective, "布尔项展示的是项目声明里的 false")
+        assertEquals(ConventionLayer.PROJECT, row(all, "enablePoData").layer)
+        assertEquals("ocr, ui", row(all, "poDomains").effective, "列表项用逗号连接展示")
+        assertEquals("src/data/effect_defs.py", row(all, "effectsFile").effective, "effects 组也接了链")
+        assertEquals(ConventionLayer.BUILTIN, row(all, "characterSkillsDirectory").layer, "没声明的那几项仍标注为内置兜底")
+
+        val lang = row(all, "langDirectory")
+        assertEquals("lang", lang.effective, "声明写 `./lang` 时生效值是归一化后的 `lang`")
+        assertEquals(
+            "lang",
+            lang.declared,
+            "**归一化对生效值与声明值一致生效** —— 否则会出现「面板显示一个样、实际匹配另一个样」",
+        )
+
+        assertEquals(
+            "/home/me/other_proj",
+            row(all, "characterProjectPath").effective,
+            "**绝对路径在面板上原样展示** —— 被归一化会显示成 home/me/other_proj，用户会以为声明写错了",
+        )
+        assertEquals(
+            "^icon\\d+/",
+            row(all, "characterAvatarTemplateRegex").effective,
+            "**正则在面板上原样展示** —— 归一化会显示成 ^icon/d+，用户照抄回去就把自己的正则改坏了",
+        )
+    }
+
+    @Test
+    fun `an empty project path is rendered as readable text instead of a blank cell`() {
+        // `characters.projectPath` 的兜底是**空串**（含义：与当前项目相同）。
+        // 直接展示空串在面板上是一段空白，看着像坏了。
+        val row = row(rows(), "characterProjectPath")
+        assertTrue(row.effective.isNotEmpty(), "空兜底也要渲染成可读文案")
+        assertEquals(ConventionLayer.BUILTIN, row.layer)
+        assertTrue(row.builtin.isNotEmpty(), "builtin 列同样不能是空白")
+    }
+
+    @Test
+    fun `a personal value in a newly chained group is reported as personal`() {
+        val json =
+            """{"i18n": {"poDirectory": "i18n", "langDirectory": "lang"}, "characters": {"masterFile": "data/chars.json"}}"""
+        val personal = ConventionPersonal(poDirectory = "my_po", characterMasterFile = "data/mine.json")
+        val all = rows(json, personal)
+
+        val po = row(all, "poDirectory")
+        assertEquals("my_po", po.effective, "新分组同样受个人偏好优先")
+        assertEquals(ConventionLayer.PERSONAL, po.layer)
+        assertEquals("i18n", po.declared, "被覆盖时仍然展示项目声明 —— 否则用户看不到团队改了什么")
+        assertTrue(po.overridden)
+
+        assertEquals("data/mine.json", row(all, "characterMasterFile").effective, "同组的另一项也能被个人覆盖")
+        assertEquals(
+            ConventionLayer.PROJECT,
+            row(all, "langDirectory").layer,
+            "同组里没被个人覆盖的那一项仍按项目声明取值（只有记账过的键才走个人偏好）",
+        )
+    }
+
     // ── overridden 由 layer 推出 ─────────────────────────────────────
 
     /**
@@ -110,13 +204,14 @@ class ConventionSourcesTest {
     @Test
     fun `overridden always agrees with the layer`() {
         val cases = listOf(
-            Triple(null, emptyList<String>(), "都没设"),
-            Triple("mine", emptyList<String>(), "只设了模板目录"),
-            Triple(null, listOf("mine"), "只设了别名"),
-            Triple("mine", listOf("mine"), "两个都设了"),
+            ConventionPersonal() to "都没设",
+            ConventionPersonal(templatesDirectory = "mine") to "只设了模板目录",
+            ConventionPersonal(featureAliases = listOf("mine")) to "只设了别名",
+            ConventionPersonal(poDirectory = "mine", effectsFile = "mine.py") to "只设了后接入的两项",
+            ConventionPersonal(i18nEnabled = false, characterProjectPath = "/x") to "只设了布尔与绝对路径两项",
         )
-        for ((tpl, aliases, name) in cases) {
-            val all = rows("""{"templates": {"directory": "proj_tpl"}}""", tpl, aliases)
+        for ((personal, name) in cases) {
+            val all = rows("""{"templates": {"directory": "proj_tpl"}}""", personal)
             assertTrue(
                 all.all { it.overridden == (it.layer == ConventionLayer.PERSONAL) },
                 "$name：每一行的 overridden 都等于「layer 是我的设置」",
@@ -153,5 +248,22 @@ class ConventionSourcesTest {
         assertEquals("ok_templates\\", raw, "对照：声明值原样带尾反斜杠")
         val effective = convention.templates.directoryOr(null, TPL_FALLBACK)
         assertTrue(raw != effective, "对照：不归一化时展示值与生效值不同 —— 会让人以为配置没生效")
+    }
+
+    /**
+     * 对照：`declared` 若不再由"同一条链再跑一遍"产出，新接入分组的声明值会整片消失
+     * —— 与上面 `the newly chained groups are traceable in the panel` 的期望相反。
+     *
+     * 这里用纯对象直接演示那个错误形态：绕过链、直接读字段拿到的是**未归一化**的值，
+     * 于是面板显示 `./lang`、实际按 `lang` 匹配。
+     */
+    @Test
+    fun `regression guard - reading the raw field instead of re-running the chain disagrees with the effective value`() {
+        val convention = ProjectConvention.parse(JSON.readTree("""{"i18n": {"langDirectory": "./lang"}}"""))
+        val raw = convention.i18n.langDirectory
+        assertEquals("./lang", raw, "对照：直接读字段拿到的是未归一化的声明值")
+        val effective = convention.i18n.langDirectoryOr(null, ConventionDefaults.LANG_DIRECTORY)
+        assertEquals("lang", effective, "真实现：生效值已归一化")
+        assertTrue(raw != effective, "对照：直接读字段展示会和生效值不一致 —— 用户照面板改项目文件反而改坏")
     }
 }

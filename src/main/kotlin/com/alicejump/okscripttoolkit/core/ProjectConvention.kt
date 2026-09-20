@@ -23,6 +23,9 @@ import java.io.File
 data class ProjectConvention(
     val labelEnum: LabelEnumConvention = LabelEnumConvention(),
     val templates: TemplatesConvention = TemplatesConvention(),
+    val i18n: I18nConvention = I18nConvention(),
+    val characters: CharactersConvention = CharactersConvention(),
+    val effects: EffectsConvention = EffectsConvention(),
 ) {
 
     companion object {
@@ -37,6 +40,9 @@ data class ProjectConvention(
             return ProjectConvention(
                 labelEnum = LabelEnumConvention.parse(root.get("labelEnum")),
                 templates = TemplatesConvention.parse(root.get("templates")),
+                i18n = I18nConvention.parse(root.get("i18n")),
+                characters = CharactersConvention.parse(root.get("characters")),
+                effects = EffectsConvention.parse(root.get("effects")),
             )
         }
 
@@ -58,18 +64,68 @@ data class ProjectConvention(
 }
 
 /**
- * 相对路径归一化：统一成 `/` 分隔、去掉首尾斜杠；空（或只有斜杠）→ `null`。
+ * 相对路径归一化：统一成 `/` 分隔、去掉首尾斜杠与开头的 `./`；空（或只有斜杠）→ `null`。
  *
- * 为什么需要它：这个值会被 `File(root, dir)` 拼绝对路径，也会被拿去做目录段匹配。
- * 声明文件里写 `ok_templates\` 或 `/ok_templates` 时，匹配会**静默**失配 ——
- * 界面一切正常，只是"改了设置不生效"。入口处统一归一化一次。
+ * 为什么需要它：这个值会被 `File(root, dir)` 拼绝对路径，也会被拿去做目录段匹配、
+ * 甚至拼进 glob。声明文件里写 `ok_templates\` 或 `./ok_templates` 时，后两种都会
+ * **静默**失配 —— 界面一切正常，只是"改了设置不生效"。入口处统一归一化一次。
+ *
+ * 只剥开头的 `./`，**不碰 `../`** —— 后者是有意义的上跳，剥了就指到别处去了。
  *
  * 与 VS Code 侧 `projectConfigPure.normalizeRelPath()` 语义一一对应，改一边记得改另一边。
  */
 internal fun normalizeRelPath(value: String?): String? {
     val trimmed = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-    val cleaned = trimmed.replace('\\', '/').trimStart('/').trimEnd('/')
+    val cleaned = trimmed
+        .replace('\\', '/')
+        // `^(?:\.?/)+` 同时覆盖 `/x`、`./x`、`/./x`、`.//x`，且不会碰 `../x`
+        .replace(LEADING_SLASH_OR_DOT_SLASH, "")
+        .trimEnd('/')
     return cleaned.takeIf { it.isNotEmpty() }
+}
+
+private val LEADING_SLASH_OR_DOT_SLASH = Regex("^(?:\\.?/)+")
+
+/**
+ * 纯文本类字段（正则、绝对路径…）：只做"非空"判断，**不做斜杠归一化**。
+ *
+ * ⚠️ 与 [normalizeRelPath] 分开是刻意的，混用会**静默**弄坏值：
+ * - `characters.projectPath` 是绝对路径，归一化会把 POSIX 路径的开头斜杠吃掉
+ *   （`/home/me/proj` → `home/me/proj`）；
+ * - `characters.avatarTemplateRegex` 是正则，归一化会把 `\d` 的反斜杠换成 `/`、
+ *   把尾部 `/` 吃掉，正则当场失效。
+ *
+ * 与 VS Code 侧 `projectConfigPure` 的 `textResolved` 一一对应。
+ */
+internal fun textOrNull(value: String?): String? = value?.trim()?.takeIf { it.isNotEmpty() }
+
+/**
+ * 各条取值链的**内置兜底**。
+ *
+ * ⚠️ 这些是链的最后一层，**不是** `SettingsState` 里对应字段的默认值 ——
+ * 后者一旦非空（本 state 里几乎都非空），"个人偏好"层就永远命中、项目声明永远不生效。
+ * 所以读个人偏好必须靠 [com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings.SettingsState.overriddenKeys]
+ * 记账，不能直接读 state 字段。
+ *
+ * 与 VS Code 侧 `src/projectConfig.ts` 的 `DEFAULT_*` 常量一一对应（值必须相同）。
+ */
+object ConventionDefaults {
+    const val TEMPLATES_DIRECTORY = "ok_templates"
+    val FEATURE_ALIASES = listOf("fL", "FeatureList")
+
+    const val I18N_ENABLED = true
+    const val LANG_DIRECTORY = "assets/lang"
+    const val PO_DIRECTORY = "i18n"
+    val PO_DOMAINS = listOf("ocr")
+
+    /** `characters.projectPath` 的兜底是**空串**：空 = 与当前项目相同。 */
+    const val CHARACTER_PROJECT_PATH = ""
+    const val CHARACTER_MASTER_FILE = "assets/data/characters.json"
+    const val CHARACTER_SKILLS_DIRECTORY = "assets/data/character_skills"
+    const val CHARACTER_LOCALE_FILE = "assets/lang/characters.json"
+    const val AVATAR_TEMPLATE_REGEX = "^battle[_-]?icon[_-]?"
+
+    const val EFFECTS_FILE = "src/data/effects.py"
 }
 
 /** 取值链命中的那一层。与 VS Code 侧 `SettingLayer` 一一对应。 */
@@ -147,6 +203,192 @@ data class TemplatesConvention(
                 directory = node.get("directory").stringOrNull(),
                 cocoAnnotations = node.get("cocoAnnotations").stringOrNull(),
             )
+        }
+    }
+}
+
+/** `i18n` 一组：gettext / 语言 JSON 的位置与开关。 */
+data class I18nConvention(
+    /** 是否读 po 数据 */
+    val enabled: Boolean? = null,
+    /** 语言 JSON 目录（角色名等），相对项目根 */
+    val langDirectory: String? = null,
+    /** gettext .po 目录，相对项目根 */
+    val poDirectory: String? = null,
+    /** 参与索引的 po domain */
+    val poDomains: List<String> = emptyList(),
+) {
+
+    /**
+     * 是否启用 gettext po 数据源。
+     *
+     * 项目约定文件里叫 `i18n.enabled`，IDE 设置里叫 `enablePoData` —— **名字不同**，
+     * 因为前者是"这个项目的 i18n 长什么样"（团队约定），后者是"我这台机器要不要读它"。
+     *
+     * ⚠️ 不做真值判断：手写文件里 `"enabled": "false"` 是**字符串**，照真值算会得到
+     * truthy，把开关反向锁死在开。类型不符一律当"没写"（与 VS Code 侧
+     * `boolResolved` 的 `typeof === 'boolean'` 一致）。
+     */
+    fun enabledResolved(ideValue: Boolean?, fallback: Boolean): ResolvedSetting<Boolean> =
+        resolveSetting(ideValue, enabled, fallback)
+
+    /** 只要值时的薄封装。 */
+    fun enabledOr(ideValue: Boolean?, fallback: Boolean): Boolean = enabledResolved(ideValue, fallback).value
+
+    /** 语言 JSON 目录（角色名等），相对项目根，已归一化。 */
+    fun langDirectoryResolved(ideValue: String?, fallback: String): ResolvedSetting<String> =
+        resolveSetting(normalizeRelPath(ideValue), normalizeRelPath(langDirectory), fallback)
+
+    /** 只要值时的薄封装。 */
+    fun langDirectoryOr(ideValue: String?, fallback: String): String =
+        langDirectoryResolved(ideValue, fallback).value
+
+    /** gettext .po 目录，相对项目根，已归一化。 */
+    fun poDirectoryResolved(ideValue: String?, fallback: String): ResolvedSetting<String> =
+        resolveSetting(normalizeRelPath(ideValue), normalizeRelPath(poDirectory), fallback)
+
+    /** 只要值时的薄封装。 */
+    fun poDirectoryOr(ideValue: String?, fallback: String): String =
+        poDirectoryResolved(ideValue, fallback).value
+
+    /**
+     * 参与索引的 po domain。
+     *
+     * ⚠️ 空列表 = "没声明"，不是"清空" —— 否则用户没法用空值表达"回到项目约定"
+     * （与 [LabelEnumConvention.aliasesResolved] 同一条规则）。
+     *
+     * @param ideValue 调用方读到的个人偏好；空表示没设置
+     */
+    fun poDomainsResolved(ideValue: List<String>, fallback: List<String>): ResolvedSetting<List<String>> {
+        val ide = ideValue.filter { it.isNotBlank() }
+        val declared = poDomains.filter { it.isNotBlank() }
+        return resolveSetting(
+            ide.takeIf { it.isNotEmpty() },
+            declared.takeIf { it.isNotEmpty() },
+            fallback,
+        )
+    }
+
+    /** 只要值时的薄封装。 */
+    fun poDomainsOr(ideValue: List<String>, fallback: List<String>): List<String> =
+        poDomainsResolved(ideValue, fallback).value
+
+    companion object {
+        /** 解析 `i18n` 节点。非对象、字段类型不符一律当没写。 */
+        fun parse(node: JsonNode?): I18nConvention {
+            if (node == null || !node.isObject) return I18nConvention()
+            return I18nConvention(
+                // 只认真正的 JSON 布尔：`"enabled": "false"` 属于写错类型，应当作没写。
+                // 用 `asBoolean()` 会把字符串 "false" 解析成 false、字符串 "yes" 解析成 true，
+                // 于是"写错了"会静默变成一个用户没打算要的取值。
+                enabled = node.get("enabled")?.takeIf { it.isBoolean }?.asBoolean(),
+                langDirectory = node.get("langDirectory").stringOrNull(),
+                poDirectory = node.get("poDirectory").stringOrNull(),
+                poDomains = node.get("poDomains")
+                    ?.takeIf { it.isArray }
+                    ?.mapNotNull { it.stringOrNull() }
+                    .orEmpty(),
+            )
+        }
+    }
+}
+
+/** `characters` 一组：角色数据的位置。 */
+data class CharactersConvention(
+    /** 角色数据所在项目根。**空 = 与当前项目相同**（角色数据放在另一个仓库时才需要填） */
+    val projectPath: String? = null,
+    /** 角色主数据文件，相对 [projectPath] */
+    val masterFile: String? = null,
+    /** 技能 JSON 目录，相对 [projectPath] */
+    val skillsDirectory: String? = null,
+    /** 角色名多语言文件，相对 [projectPath] */
+    val localeFile: String? = null,
+    /** 头像模板的命名正则（把模板名关联到角色） */
+    val avatarTemplateRegex: String? = null,
+) {
+
+    /**
+     * 角色数据所在项目根。
+     *
+     * **空字符串是合法的声明值**，含义是"与当前项目相同"（角色数据放在另一个仓库时才需要填）
+     * —— 所以这里用 [textOrNull] 而**不是** [normalizeRelPath]：后者会把空串当"没写"，
+     * 还会吃掉 POSIX 绝对路径的开头斜杠。消费端照旧处理 `~` 展开与 `File()`。
+     */
+    fun projectPathResolved(ideValue: String?, fallback: String): ResolvedSetting<String> =
+        resolveSetting(textOrNull(ideValue), textOrNull(projectPath), fallback)
+
+    /** 只要值时的薄封装。 */
+    fun projectPathOr(ideValue: String?, fallback: String): String =
+        projectPathResolved(ideValue, fallback).value
+
+    /** 角色主数据文件，相对 `characters.projectPath`。 */
+    fun masterFileResolved(ideValue: String?, fallback: String): ResolvedSetting<String> =
+        resolveSetting(normalizeRelPath(ideValue), normalizeRelPath(masterFile), fallback)
+
+    /** 只要值时的薄封装。 */
+    fun masterFileOr(ideValue: String?, fallback: String): String = masterFileResolved(ideValue, fallback).value
+
+    /** 技能 JSON 目录，相对 `characters.projectPath`。 */
+    fun skillsDirectoryResolved(ideValue: String?, fallback: String): ResolvedSetting<String> =
+        resolveSetting(normalizeRelPath(ideValue), normalizeRelPath(skillsDirectory), fallback)
+
+    /** 只要值时的薄封装。 */
+    fun skillsDirectoryOr(ideValue: String?, fallback: String): String =
+        skillsDirectoryResolved(ideValue, fallback).value
+
+    /** 角色名多语言文件，相对 `characters.projectPath`。 */
+    fun localeFileResolved(ideValue: String?, fallback: String): ResolvedSetting<String> =
+        resolveSetting(normalizeRelPath(ideValue), normalizeRelPath(localeFile), fallback)
+
+    /** 只要值时的薄封装。 */
+    fun localeFileOr(ideValue: String?, fallback: String): String = localeFileResolved(ideValue, fallback).value
+
+    /**
+     * 头像模板的命名正则。
+     *
+     * ⚠️ 走 [textOrNull] 而**不是** [normalizeRelPath] —— 这是正则不是路径，
+     * 归一化会把 `\d` 里的反斜杠换掉、把首尾斜杠吃掉，正则就废了。
+     */
+    fun avatarTemplateRegexResolved(ideValue: String?, fallback: String): ResolvedSetting<String> =
+        resolveSetting(textOrNull(ideValue), textOrNull(avatarTemplateRegex), fallback)
+
+    /** 只要值时的薄封装。 */
+    fun avatarTemplateRegexOr(ideValue: String?, fallback: String): String =
+        avatarTemplateRegexResolved(ideValue, fallback).value
+
+    companion object {
+        /** 解析 `characters` 节点。非对象、字段类型不符一律当没写。 */
+        fun parse(node: JsonNode?): CharactersConvention {
+            if (node == null || !node.isObject) return CharactersConvention()
+            return CharactersConvention(
+                projectPath = node.get("projectPath").stringOrNull(),
+                masterFile = node.get("masterFile").stringOrNull(),
+                skillsDirectory = node.get("skillsDirectory").stringOrNull(),
+                localeFile = node.get("localeFile").stringOrNull(),
+                avatarTemplateRegex = node.get("avatarTemplateRegex").stringOrNull(),
+            )
+        }
+    }
+}
+
+/** `effects` 一组：效果定义源文件。 */
+data class EffectsConvention(
+    /** 效果定义源文件（`EffectType` / `EFFECT_DESCRIPTIONS` 所在），相对项目根 */
+    val file: String? = null,
+) {
+
+    /** 效果定义源文件，相对项目根，已归一化。 */
+    fun fileResolved(ideValue: String?, fallback: String): ResolvedSetting<String> =
+        resolveSetting(normalizeRelPath(ideValue), normalizeRelPath(file), fallback)
+
+    /** 只要值时的薄封装。 */
+    fun fileOr(ideValue: String?, fallback: String): String = fileResolved(ideValue, fallback).value
+
+    companion object {
+        /** 解析 `effects` 节点。非对象、字段类型不符一律当没写。 */
+        fun parse(node: JsonNode?): EffectsConvention {
+            if (node == null || !node.isObject) return EffectsConvention()
+            return EffectsConvention(file = node.get("file").stringOrNull())
         }
     }
 }

@@ -130,9 +130,62 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
         // 记账必须放在赋值**之前** —— 赋值后 state 已经是新值，比不出"变没变"。
         // 只有值真的变了才算"用户覆盖了这一项"，没变就继续让项目约定文件生效；
         // 否则打开一次设置面板点个「应用」就会把所有项目约定永久压住（静默）。
-        if (okTemplatesDirectory.text.trim() != settings.state.okTemplatesDirectory.orEmpty()) {
-            settings.markOverridden(OkScriptToolkitSettings.KEY_OK_TEMPLATES_DIRECTORY)
-        }
+        settings.recordIfChanged(
+            OkScriptToolkitSettings.KEY_OK_TEMPLATES_DIRECTORY,
+            settings.state.okTemplatesDirectory.orEmpty(),
+            okTemplatesDirectory.text.trim(),
+        )
+        settings.recordIfChanged(
+            OkScriptToolkitSettings.KEY_LANG_DIRECTORY,
+            settings.state.langDirectory.orEmpty(),
+            langDirectory.text.trim(),
+        )
+        settings.recordIfChanged(
+            OkScriptToolkitSettings.KEY_PO_DIRECTORY,
+            settings.state.poDirectory.orEmpty(),
+            poDirectory.text.trim(),
+        )
+        settings.recordIfChanged(
+            OkScriptToolkitSettings.KEY_PO_DOMAINS,
+            settings.state.poDomains.toList(),
+            splitList(poDomains.text),
+        )
+        settings.recordIfChanged(
+            OkScriptToolkitSettings.KEY_EFFECTS_FILE,
+            settings.state.effectsFile.orEmpty(),
+            effectsFile.text.trim(),
+        )
+        settings.recordIfChanged(
+            OkScriptToolkitSettings.KEY_ENABLE_PO_DATA,
+            settings.state.enablePoData,
+            enablePoData.isSelected,
+        )
+        settings.recordIfChanged(
+            OkScriptToolkitSettings.KEY_CHARACTER_PROJECT_PATH,
+            settings.state.characterProjectPath.orEmpty(),
+            characterProjectPath.text.trim(),
+        )
+        settings.recordIfChanged(
+            OkScriptToolkitSettings.KEY_CHARACTER_MASTER_FILE,
+            settings.state.characterMasterFile.orEmpty(),
+            characterMasterFile.text.trim(),
+        )
+        settings.recordIfChanged(
+            OkScriptToolkitSettings.KEY_CHARACTER_SKILLS_DIRECTORY,
+            settings.state.characterSkillsDirectory.orEmpty(),
+            characterSkillsDirectory.text.trim(),
+        )
+        settings.recordIfChanged(
+            OkScriptToolkitSettings.KEY_CHARACTER_LOCALE_FILE,
+            settings.state.characterLocaleFile.orEmpty(),
+            characterLocaleFile.text.trim(),
+        )
+        settings.recordIfChanged(
+            OkScriptToolkitSettings.KEY_CHARACTER_AVATAR_TEMPLATE_REGEX,
+            settings.state.characterAvatarTemplateRegex.orEmpty(),
+            characterAvatarTemplateRegex.text.trim(),
+        )
+
         settings.state.langDirectory = langDirectory.text.trim()
         settings.state.poDirectory = poDirectory.text.trim()
         settings.state.poDomains = splitList(poDomains.text).toMutableList()
@@ -182,4 +235,15 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
         .split(',', ';', '\n')
         .map(String::trim)
         .filter(String::isNotEmpty)
+
+    /**
+     * 值变了才记账（见 [OkScriptToolkitSettings.SettingsState.overriddenKeys]）。
+     *
+     * ⚠️ 必须在 `state` 赋值**之前**调用 —— 赋值后比不出"变没变"。
+     * 没变的项不记账，于是它继续让项目约定文件生效；这就是"打开设置面板点一下应用
+     * 不会把所有项目约定永久压住"的保障。
+     */
+    private fun <T> OkScriptToolkitSettings.recordIfChanged(key: String, old: T, new: T) {
+        if (old != new) markOverridden(key)
+    }
 }

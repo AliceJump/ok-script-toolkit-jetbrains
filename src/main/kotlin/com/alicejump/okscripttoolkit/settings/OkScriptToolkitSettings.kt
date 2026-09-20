@@ -1,6 +1,10 @@
 package com.alicejump.okscripttoolkit.settings
 
+import com.alicejump.okscripttoolkit.core.ConventionDefaults
+import com.alicejump.okscripttoolkit.core.ConventionOverrideSeed
+import com.alicejump.okscripttoolkit.core.ConventionPersonal
 import com.alicejump.okscripttoolkit.core.ConventionSourceRow
+import com.alicejump.okscripttoolkit.core.ProjectConvention
 import com.alicejump.okscripttoolkit.core.ProjectConventionConfig
 import com.alicejump.okscripttoolkit.core.conventionSourceRows
 import com.intellij.openapi.components.BaseState
@@ -48,6 +52,16 @@ class OkScriptToolkitSettings(
          */
         var overriddenKeys by list<String>()
 
+        /**
+         * 是否已经跑过 [init] 里那次"老用户补记账"的迁移。
+         *
+         * 单独一个标志位、而不是复用 `overriddenKeys.isEmpty()`：那个条件在
+         * "用户确实没覆盖任何东西"时也为真，用它当迁移开关会让迁移反复重跑；
+         * 反过来，v1.7.x 的老用户已经被播过 `okTemplatesDirectory` 一个键，
+         * 集合非空 —— 用集合是否为空当开关，他们就拿不到后来新增键的补记账。
+         */
+        var conventionSeeded by property(false)
+
         var effectsFile by string("src/data/effects.py")
         var enablePoData by property(true)
         var enableInlayHints by property(true)
@@ -81,13 +95,42 @@ class OkScriptToolkitSettings(
         }
         // 老用户没有 overriddenKeys 这个集合，给他们播一次种：
         // 凡是"值不等于内置默认"的，一定是用户自己改过的（默认值不会被写成非默认值）。
-        // 只在集合为空时跑 —— 之后由设置面板维护，而"空集合"本身就是
-        // "用户什么都没覆盖"的合法状态，重复播种是幂等的。
-        if (state.overriddenKeys.isEmpty() &&
-            state.okTemplatesDirectory.orEmpty().isNotBlank() &&
-            state.okTemplatesDirectory != DEFAULT_TEMPLATES_DIRECTORY
-        ) {
-            state.overriddenKeys = mutableListOf(KEY_OK_TEMPLATES_DIRECTORY)
+        // 判据与"空/空白 = 没设过"的规则都收在 `ConventionOverrideSeed` 里 ——
+        // 那段逻辑只在升级路径上跑一次，抽出去才测得到。
+        if (!state.conventionSeeded) {
+            state.conventionSeeded = true
+            val seeded = ConventionOverrideSeed.keysToSeed(
+                overriddenKeys = state.overriddenKeys.toList(),
+                current = mapOf(
+                    KEY_OK_TEMPLATES_DIRECTORY to state.okTemplatesDirectory,
+                    KEY_LANG_DIRECTORY to state.langDirectory,
+                    KEY_PO_DIRECTORY to state.poDirectory,
+                    KEY_PO_DOMAINS to state.poDomains.toList(),
+                    KEY_ENABLE_PO_DATA to state.enablePoData,
+                    KEY_EFFECTS_FILE to state.effectsFile,
+                    KEY_CHARACTER_PROJECT_PATH to state.characterProjectPath,
+                    KEY_CHARACTER_MASTER_FILE to state.characterMasterFile,
+                    KEY_CHARACTER_SKILLS_DIRECTORY to state.characterSkillsDirectory,
+                    KEY_CHARACTER_LOCALE_FILE to state.characterLocaleFile,
+                    KEY_CHARACTER_AVATAR_TEMPLATE_REGEX to state.characterAvatarTemplateRegex,
+                ),
+                defaults = mapOf(
+                    KEY_OK_TEMPLATES_DIRECTORY to DEFAULT_TEMPLATES_DIRECTORY,
+                    KEY_LANG_DIRECTORY to DEFAULT_LANG_DIRECTORY,
+                    KEY_PO_DIRECTORY to DEFAULT_PO_DIRECTORY,
+                    KEY_PO_DOMAINS to DEFAULT_PO_DOMAINS,
+                    KEY_ENABLE_PO_DATA to DEFAULT_I18N_ENABLED,
+                    KEY_EFFECTS_FILE to DEFAULT_EFFECTS_FILE,
+                    KEY_CHARACTER_PROJECT_PATH to DEFAULT_CHARACTER_PROJECT_PATH,
+                    KEY_CHARACTER_MASTER_FILE to DEFAULT_CHARACTER_MASTER_FILE,
+                    KEY_CHARACTER_SKILLS_DIRECTORY to DEFAULT_CHARACTER_SKILLS_DIRECTORY,
+                    KEY_CHARACTER_LOCALE_FILE to DEFAULT_CHARACTER_LOCALE_FILE,
+                    KEY_CHARACTER_AVATAR_TEMPLATE_REGEX to DEFAULT_AVATAR_TEMPLATE_REGEX,
+                ),
+            )
+            if (seeded.isNotEmpty()) {
+                state.overriddenKeys = (state.overriddenKeys + seeded).distinct().toMutableList()
+            }
         }
     }
 
@@ -103,22 +146,47 @@ class OkScriptToolkitSettings(
          *
          * ⚠️ 它是取值链的最后一层，**不是** `SettingsState.featureAliases` 的默认值 ——
          * 一旦当成 state 默认值写进去，"个人偏好"这一层就永远非空，项目约定文件失效。
+         *
+         * 值本身定义在 [ConventionDefaults]（`core` 包），与 VS Code 侧
+         * `projectConfig.DEFAULT_FEATURE_ALIASES` 同值；这里保留旧名字只是为了少改调用点。
          */
-        val DEFAULT_FEATURE_ALIASES = listOf("fL", "FeatureList")
+        val DEFAULT_FEATURE_ALIASES = ConventionDefaults.FEATURE_ALIASES
 
         /**
          * 模板目录的**内置兜底**（`ok_templates`）。
          *
          * ⚠️ 与 [DEFAULT_FEATURE_ALIASES] 同理：它是取值链的最后一层，
-         * **不是**"个人偏好层"的值。VS Code 侧 `projectConfig.DEFAULT_TEMPLATES_DIRECTORY` 同值。
+         * **不是**"个人偏好层"的值。定义见 [ConventionDefaults]。
          */
-        const val DEFAULT_TEMPLATES_DIRECTORY = "ok_templates"
+        const val DEFAULT_TEMPLATES_DIRECTORY = ConventionDefaults.TEMPLATES_DIRECTORY
+
+        val DEFAULT_LANG_DIRECTORY = ConventionDefaults.LANG_DIRECTORY
+        val DEFAULT_PO_DIRECTORY = ConventionDefaults.PO_DIRECTORY
+        val DEFAULT_PO_DOMAINS = ConventionDefaults.PO_DOMAINS
+        val DEFAULT_I18N_ENABLED = ConventionDefaults.I18N_ENABLED
+        val DEFAULT_EFFECTS_FILE = ConventionDefaults.EFFECTS_FILE
+        val DEFAULT_CHARACTER_PROJECT_PATH = ConventionDefaults.CHARACTER_PROJECT_PATH
+        val DEFAULT_CHARACTER_MASTER_FILE = ConventionDefaults.CHARACTER_MASTER_FILE
+        val DEFAULT_CHARACTER_SKILLS_DIRECTORY = ConventionDefaults.CHARACTER_SKILLS_DIRECTORY
+        val DEFAULT_CHARACTER_LOCALE_FILE = ConventionDefaults.CHARACTER_LOCALE_FILE
+        val DEFAULT_AVATAR_TEMPLATE_REGEX = ConventionDefaults.AVATAR_TEMPLATE_REGEX
 
         /**
          * `templates.directory` 对应的设置键名，用于 [SettingsState.overriddenKeys] 记账。
          * 与设置面板字段名一一对应。
          */
         const val KEY_OK_TEMPLATES_DIRECTORY = "okTemplatesDirectory"
+
+        const val KEY_LANG_DIRECTORY = "langDirectory"
+        const val KEY_PO_DIRECTORY = "poDirectory"
+        const val KEY_PO_DOMAINS = "poDomains"
+        const val KEY_ENABLE_PO_DATA = "enablePoData"
+        const val KEY_EFFECTS_FILE = "effectsFile"
+        const val KEY_CHARACTER_PROJECT_PATH = "characterProjectPath"
+        const val KEY_CHARACTER_MASTER_FILE = "characterMasterFile"
+        const val KEY_CHARACTER_SKILLS_DIRECTORY = "characterSkillsDirectory"
+        const val KEY_CHARACTER_LOCALE_FILE = "characterLocaleFile"
+        const val KEY_CHARACTER_AVATAR_TEMPLATE_REGEX = "characterAvatarTemplateRegex"
 
         /** 非法值（含旧配置残留）一律回退到 auto，避免把脏值传给 python 脚本 */
         fun normalizeCaptureMethod(value: String?): String =
@@ -127,9 +195,58 @@ class OkScriptToolkitSettings(
         fun getInstance(project: Project): OkScriptToolkitSettings = project.service()
     }
 
-    fun langDirectory(): String = state.langDirectory.orEmpty().ifBlank { "assets/lang" }
-    fun poDirectory(): String = state.poDirectory.orEmpty().ifBlank { "i18n" }
-    fun poDomains(): List<String> = state.poDomains.filter { it.isNotBlank() }.ifEmpty { listOf("ocr") }
+    /**
+     * 读"用户**真正设过**的值"；没记账就返回 `null`（= 没设过，让项目约定生效）。
+     *
+     * ⚠️ **凡是要接取值链的设置项都必须走这里**。`SettingsState` 里这些字段都带
+     * 非空默认值，直接读 state 会让"个人偏好"层永远命中、项目约定文件里声明的值
+     * 永远不生效 —— 而且症状完全静默（界面一切正常，只是项目里配的东西没反应）。
+     *
+     * 记账由 [OkScriptToolkitConfigurable.apply] 维护（只记录值真的变了的键），
+     * 老用户由 [init] 一次性补种。见 [SettingsState.overriddenKeys]。
+     */
+    private fun <T> personal(key: String, read: () -> T?): T? = if (key in state.overriddenKeys) read() else null
+
+    /** 读项目约定文件（容错在 `ProjectConvention.parseFile` 里，这里不用管）。 */
+    private fun convention(): ProjectConvention = ProjectConventionConfig.getInstance(project).load()
+
+    /**
+     * 语言 JSON 目录（角色名等），相对项目根。
+     *
+     * 取值链：**个人偏好（IDE 设置）> 项目约定文件 `i18n.langDirectory` > `assets/lang`**。
+     */
+    fun langDirectory(): String =
+        convention().i18n.langDirectoryOr(personal(KEY_LANG_DIRECTORY) { state.langDirectory.orEmpty() }, DEFAULT_LANG_DIRECTORY)
+
+    /**
+     * gettext .po 目录，相对项目根。
+     *
+     * 取值链：**个人偏好（IDE 设置）> 项目约定文件 `i18n.poDirectory` > `i18n`**。
+     */
+    fun poDirectory(): String =
+        convention().i18n.poDirectoryOr(personal(KEY_PO_DIRECTORY) { state.poDirectory.orEmpty() }, DEFAULT_PO_DIRECTORY)
+
+    /**
+     * 参与索引的 po domain 白名单。
+     *
+     * 取值链：**个人偏好（IDE 设置）> 项目约定文件 `i18n.poDomains` > `["ocr"]`**。
+     *
+     * ⚠️ `state.poDomains` 在 [init] 里被填成 `["ocr"]`，所以它**永远非空** ——
+     * 不能直接当"用户设过"。这里靠 [SettingsState.overriddenKeys] 记账区分。
+     */
+    fun poDomains(): List<String> =
+        convention().i18n.poDomainsOr(personal(KEY_PO_DOMAINS) { state.poDomains.toList() }.orEmpty(), DEFAULT_PO_DOMAINS)
+
+    /**
+     * 是否启用 gettext po 数据源。
+     *
+     * 取值链：**个人偏好（IDE 设置 `enablePoData`）> 项目约定文件 `i18n.enabled` > `true`**。
+     * 两处名字**刻意不同**：设置里是"我这台机器要不要读它"，项目文件里是
+     * "这个项目的 i18n 长什么样"。
+     */
+    fun enablePoData(): Boolean =
+        convention().i18n.enabledOr(personal(KEY_ENABLE_PO_DATA) { state.enablePoData }, DEFAULT_I18N_ENABLED)
+
     fun displayLocale(): String = state.displayLocale.orEmpty().ifBlank { "auto" }
 
     /**
@@ -152,14 +269,61 @@ class OkScriptToolkitSettings(
 
     /** 设置面板用：显示"我设了什么"，而不是"最终生效什么"（取值链会掺进项目约定） */
     fun rawFeatureAliases(): List<String> = state.featureAliases.toList()
-    fun effectsFile(): String = state.effectsFile.orEmpty().ifBlank { "src/data/effects.py" }
+
+    /**
+     * 效果定义源文件（`EffectType` / `EFFECT_DESCRIPTIONS` 所在），相对项目根。
+     *
+     * 取值链：**个人偏好（IDE 设置）> 项目约定文件 `effects.file` > `src/data/effects.py`**。
+     */
+    fun effectsFile(): String =
+        convention().effects.fileOr(personal(KEY_EFFECTS_FILE) { state.effectsFile.orEmpty() }, DEFAULT_EFFECTS_FILE)
+
     fun okScriptProjectPath(): String = state.okScriptProjectPath.orEmpty()
     fun okScriptPython(): String = state.okScriptPython.orEmpty()
-    fun characterProjectPath(): String = state.characterProjectPath.orEmpty()
-    fun characterMasterFile(): String = state.characterMasterFile.orEmpty().ifBlank { "assets/data/characters.json" }
-    fun characterSkillsDirectory(): String = state.characterSkillsDirectory.orEmpty().ifBlank { "assets/data/character_skills" }
-    fun characterLocaleFile(): String = state.characterLocaleFile.orEmpty().ifBlank { "assets/lang/characters.json" }
-    fun characterAvatarTemplateRegex(): String = state.characterAvatarTemplateRegex.orEmpty().ifBlank { "^battle[_-]?icon[_-]?" }
+
+    /**
+     * 角色数据所在项目根。
+     *
+     * 取值链：**个人偏好（IDE 设置）> 项目约定文件 `characters.projectPath` > 空**。
+     * 空 = 与当前项目相同，调用方据此退回当前项目。
+     *
+     * ⚠️ 这是**绝对路径**，不能做斜杠归一化（`normalizeRelPath` 会吃掉 POSIX 路径的开头斜杠）。
+     */
+    fun characterProjectPath(): String = convention().characters.projectPathOr(
+        personal(KEY_CHARACTER_PROJECT_PATH) { state.characterProjectPath.orEmpty() },
+        DEFAULT_CHARACTER_PROJECT_PATH,
+    )
+
+    /** 角色主数据文件，相对 `characterProjectPath`。 */
+    fun characterMasterFile(): String = convention().characters.masterFileOr(
+        personal(KEY_CHARACTER_MASTER_FILE) { state.characterMasterFile.orEmpty() },
+        DEFAULT_CHARACTER_MASTER_FILE,
+    )
+
+    /** 技能 JSON 目录，相对 `characterProjectPath`。 */
+    fun characterSkillsDirectory(): String = convention().characters.skillsDirectoryOr(
+        personal(KEY_CHARACTER_SKILLS_DIRECTORY) { state.characterSkillsDirectory.orEmpty() },
+        DEFAULT_CHARACTER_SKILLS_DIRECTORY,
+    )
+
+    /** 角色名多语言文件，相对 `characterProjectPath`。 */
+    fun characterLocaleFile(): String = convention().characters.localeFileOr(
+        personal(KEY_CHARACTER_LOCALE_FILE) { state.characterLocaleFile.orEmpty() },
+        DEFAULT_CHARACTER_LOCALE_FILE,
+    )
+
+    /**
+     * 头像模板的命名正则。
+     *
+     * 取值链：**个人偏好（IDE 设置）> 项目约定文件 `characters.avatarTemplateRegex` > 内置默认**。
+     *
+     * ⚠️ 这是**正则**，不能做斜杠归一化（会把 `\d` 的反斜杠换成 `/`）。
+     * 调用方仍需自己 `runCatching { Regex(...) }` —— 手写正则写错不该让面板打挂。
+     */
+    fun characterAvatarTemplateRegex(): String = convention().characters.avatarTemplateRegexOr(
+        personal(KEY_CHARACTER_AVATAR_TEMPLATE_REGEX) { state.characterAvatarTemplateRegex.orEmpty() },
+        DEFAULT_AVATAR_TEMPLATE_REGEX,
+    )
 
     /**
      * 模板目录名（相对项目根）。
@@ -174,13 +338,11 @@ class OkScriptToolkitSettings(
      * 历史：VS Code 侧这个设置此前是**死设置**（常量硬编码、无人读），而子仓会读（10 处），
      * 属反向不对等（`docs/project-config.md` §8.1）。现在两端都走取值链。
      */
-    fun okTemplatesDirectory(): String {
-        val ide = if (KEY_OK_TEMPLATES_DIRECTORY in state.overriddenKeys) state.okTemplatesDirectory else null
-        return ProjectConventionConfig.getInstance(project)
-            .load()
-            .templates
-            .directoryOr(ide, DEFAULT_TEMPLATES_DIRECTORY)
-    }
+    fun okTemplatesDirectory(): String =
+        convention().templates.directoryOr(
+            personal(KEY_OK_TEMPLATES_DIRECTORY) { state.okTemplatesDirectory.orEmpty() },
+            DEFAULT_TEMPLATES_DIRECTORY,
+        )
 
     /**
      * 记录用户显式改过某个设置键 —— 该键的"个人偏好"层从此生效。
@@ -217,22 +379,31 @@ class OkScriptToolkitSettings(
     /**
      * 溯源面板的数据源：「每一项的生效值来自哪一层」。
      *
-     * 个人偏好层在这里**归一成"用户真正设过的值"**：标量看 [SettingsState.overriddenKeys]，
-     * 列表看是否为空 —— state 里的默认值非空，直接读会让这一层永远命中、项目声明失效
+     * 个人偏好层在这里**归一成"用户真正设过的值"**：一律走 [personal] ——
+     * state 里的默认值非空，直接读会让这一层永远命中、项目声明失效
      * （见 [SettingsState.overriddenKeys] 的说明）。
      *
-     * 与 VS Code 侧 `conventionSources.ts` 的 `conventionSources()` 一一对应。
+     * 与 VS Code 侧 `conventionSources.ts` 的 `conventionSources()` 一一对应；
+     * 加一组新设置时两边的登记表都要补一行。
      */
     fun conventionSources(): List<ConventionSourceRow> = conventionSourceRows(
-        convention = ProjectConventionConfig.getInstance(project).load(),
-        personalTemplatesDirectory = if (isOverridden(KEY_OK_TEMPLATES_DIRECTORY)) {
-            state.okTemplatesDirectory.orEmpty()
-        } else {
-            null
-        },
-        personalFeatureAliases = state.featureAliases.filter { it.isNotBlank() },
-        templatesFallback = DEFAULT_TEMPLATES_DIRECTORY,
-        aliasesFallback = DEFAULT_FEATURE_ALIASES,
+        convention = convention(),
+        personal = ConventionPersonal(
+            templatesDirectory = personal(KEY_OK_TEMPLATES_DIRECTORY) { state.okTemplatesDirectory.orEmpty() },
+            featureAliases = state.featureAliases.filter { it.isNotBlank() },
+            i18nEnabled = personal(KEY_ENABLE_PO_DATA) { state.enablePoData },
+            langDirectory = personal(KEY_LANG_DIRECTORY) { state.langDirectory.orEmpty() },
+            poDirectory = personal(KEY_PO_DIRECTORY) { state.poDirectory.orEmpty() },
+            poDomains = personal(KEY_PO_DOMAINS) { state.poDomains.toList() }.orEmpty(),
+            characterProjectPath = personal(KEY_CHARACTER_PROJECT_PATH) { state.characterProjectPath.orEmpty() },
+            characterMasterFile = personal(KEY_CHARACTER_MASTER_FILE) { state.characterMasterFile.orEmpty() },
+            characterSkillsDirectory = personal(KEY_CHARACTER_SKILLS_DIRECTORY) { state.characterSkillsDirectory.orEmpty() },
+            characterLocaleFile = personal(KEY_CHARACTER_LOCALE_FILE) { state.characterLocaleFile.orEmpty() },
+            characterAvatarTemplateRegex = personal(KEY_CHARACTER_AVATAR_TEMPLATE_REGEX) {
+                state.characterAvatarTemplateRegex.orEmpty()
+            },
+            effectsFile = personal(KEY_EFFECTS_FILE) { state.effectsFile.orEmpty() },
+        ),
     )
 
     fun captureMethod(): String = normalizeCaptureMethod(state.captureMethod)

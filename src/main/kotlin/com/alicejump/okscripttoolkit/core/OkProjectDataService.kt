@@ -163,7 +163,7 @@ class OkProjectDataService(private val project: Project) {
         if (!force && stamp == snapshot.stamp && settingsStamp == snapshot.settingsStamp) return
 
         val modules = loadLangModules(root.resolve(settings.langDirectory()))
-        val po = if (settings.state.enablePoData) {
+        val po = if (settings.enablePoData()) {
             loadPoDomains(root.resolve(settings.poDirectory()), settings.poDomains().toSet())
         } else {
             emptyMap()

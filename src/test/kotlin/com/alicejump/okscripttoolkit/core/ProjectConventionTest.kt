@@ -439,4 +439,227 @@ class ProjectConventionTest {
             "对照：两者的层确实不同，证明断言层是有意义的",
         )
     }
+
+    // ── i18n / characters / effects 三组 ─────────────────────────────
+    //
+    // 这三组此前是**硬编码常量**（设置访问器直接 `state.xxx.ifBlank { 默认 }`），
+    // 接进取值链后每个字段都多了一条"项目声明"的来源。
+    //
+    // 这里按字段**类型**分组断言，因为类型决定了走哪条归一化：
+    //   · 相对路径 → normalizeRelPath（斜杠归一化，会被拼进路径 / 做目录段匹配）
+    //   · 绝对路径 / 正则 → textOrNull（**绝不能归一化**，见下面那条最关键的断言）
+    //   · 布尔 / 字符串列表 → 类型守卫 + "空 = 没声明"
+
+    @Test
+    fun `i18n - the project file beats the fallback and the personal value beats both`() {
+        val convention = convention("""{"i18n": {"enabled": false, "langDirectory": "assets\\lang"}}""")
+        assertEquals(
+            false,
+            convention.i18n.enabledOr(null, ConventionDefaults.I18N_ENABLED),
+            "**项目声明 false 生效** —— 此前这一项根本没有项目层，只能靠个人设置关",
+        )
+        assertEquals(
+            true,
+            convention.i18n.enabledOr(true, ConventionDefaults.I18N_ENABLED),
+            "**个人偏好压过项目声明** —— 与全局取值链一致（个人偏好最高）",
+        )
+        assertEquals(
+            "assets/lang",
+            convention.i18n.langDirectoryOr(null, ConventionDefaults.LANG_DIRECTORY),
+            "语言目录归一化 —— 它会被拿去做目录段匹配，反斜杠会静默失配",
+        )
+        assertEquals(
+            ConventionLayer.PROJECT,
+            convention.i18n.enabledResolved(null, ConventionDefaults.I18N_ENABLED).layer,
+            "来源层标注为「项目约定」（溯源面板用）",
+        )
+    }
+
+    @Test
+    fun `i18n - a string written where a boolean belongs counts as not declared`() {
+        // 手写文件里 `"enabled": "false"` 是最容易犯的错。若照真值算，
+        // 字符串 "false" 是 truthy → 项目声明关掉 i18n 反而被锁在开，且完全静默。
+        val convention = convention("""{"i18n": {"enabled": "false"}}""")
+        assertEquals(
+            ConventionDefaults.I18N_ENABLED,
+            convention.i18n.enabledOr(null, ConventionDefaults.I18N_ENABLED),
+            "非布尔一律当没写（与 VS Code 侧 boolResolved 的 typeof === 'boolean' 一致）",
+        )
+        assertEquals(
+            ConventionLayer.BUILTIN,
+            convention.i18n.enabledResolved(null, ConventionDefaults.I18N_ENABLED).layer,
+            "层也不能被污染成「项目约定」",
+        )
+    }
+
+    @Test
+    fun `i18n - an empty po domain list means not declared, not cleared`() {
+        assertEquals(
+            ConventionDefaults.PO_DOMAINS,
+            convention("""{"i18n": {"poDomains": []}}""")
+                .i18n.poDomainsOr(emptyList(), ConventionDefaults.PO_DOMAINS),
+            "空数组 = 没声明 —— 否则用户没法用空值表达「回到项目约定」",
+        )
+        assertEquals(
+            listOf("ocr", "ui"),
+            convention("""{"i18n": {"poDomains": ["ocr", "ui"]}}""")
+                .i18n.poDomainsOr(emptyList(), ConventionDefaults.PO_DOMAINS),
+            "列表按项目声明取值",
+        )
+        assertEquals(
+            ConventionDefaults.PO_DOMAINS,
+            convention("""{"i18n": {"poDomains": [" ", 7]}}""")
+                .i18n.poDomainsOr(emptyList(), ConventionDefaults.PO_DOMAINS),
+            "列表里全是无效项时退回兜底",
+        )
+    }
+
+    @Test
+    fun `characters - an absolute project path keeps its leading slash`() {
+        // 走路径归一化会把 `/home/me/other_proj` 变成相对路径 `home/me/other_proj`，
+        // 指向一个不存在的地方 —— 而且不报错，只是"角色数据加载不出来"。
+        val convention = convention("""{"characters": {"projectPath": "/home/me/other_proj"}}""")
+        assertEquals(
+            "/home/me/other_proj",
+            convention.characters.projectPathOr(null, ConventionDefaults.CHARACTER_PROJECT_PATH),
+            "**POSIX 绝对路径的开头斜杠必须保住**",
+        )
+        assertEquals(
+            "D:\\items\\other_proj",
+            convention("""{"characters": {"projectPath": "D:\\items\\other_proj"}}""")
+                .characters.projectPathOr(null, ConventionDefaults.CHARACTER_PROJECT_PATH),
+            "**Windows 绝对路径的反斜杠必须保住** —— 归一化会把分隔符换成正斜杠，展示与 `~` 展开会失真",
+        )
+    }
+
+    @Test
+    fun `characters - an empty project path is a legal declaration meaning the current project`() {
+        val convention = convention("""{"characters": {"projectPath": ""}}""")
+        assertEquals(
+            "",
+            convention.characters.projectPathOr(null, ConventionDefaults.CHARACTER_PROJECT_PATH),
+            "空串 = 与当前项目相同（等价于没声明）",
+        )
+        assertEquals(
+            "/mine",
+            convention.characters.projectPathOr("/mine", ConventionDefaults.CHARACTER_PROJECT_PATH),
+            "个人偏好压过项目声明",
+        )
+    }
+
+    @Test
+    fun `characters - the avatar regex is passed through verbatim`() {
+        // 这是正则不是路径。归一化会把 `\d` 的反斜杠换成 `/`、把尾部 `/` 吃掉
+        // —— 正则当场失效，头像永远匹配不上，且没有任何报错。
+        val convention = convention("""{"characters": {"avatarTemplateRegex": "^icon\\d+/"}}""")
+        assertEquals(
+            "^icon\\d+/",
+            convention.characters.avatarTemplateRegexOr(null, ConventionDefaults.AVATAR_TEMPLATE_REGEX),
+            "**正则必须原样保留**",
+        )
+    }
+
+    @Test
+    fun `characters - relative fields are normalized and a non-object group degrades to empty`() {
+        val convention = convention(
+            """{"characters": {"masterFile": "data/chars.json", "skillsDirectory": "data\\skills\\", "localeFile": "/lang/chars.json/"}}""",
+        )
+        assertEquals("data/chars.json", convention.characters.masterFileOr(null, ConventionDefaults.CHARACTER_MASTER_FILE))
+        assertEquals(
+            "data/skills",
+            convention.characters.skillsDirectoryOr(null, ConventionDefaults.CHARACTER_SKILLS_DIRECTORY),
+            "技能目录是相对路径，要归一化",
+        )
+        assertEquals(
+            "lang/chars.json",
+            convention.characters.localeFileOr(null, ConventionDefaults.CHARACTER_LOCALE_FILE),
+            "角色名多语言文件同样归一化",
+        )
+        assertEquals(
+            CharactersConvention(),
+            convention("""{"characters": "不是对象"}""").characters,
+            "整组类型写错时按没写处理（不能抛异常）",
+        )
+    }
+
+    @Test
+    fun `effects - the declared file wins and is normalized`() {
+        assertEquals(
+            "src/data/effect_defs.py",
+            convention("""{"effects": {"file": "src/data/effect_defs.py"}}""")
+                .effects.fileOr(null, ConventionDefaults.EFFECTS_FILE),
+            "项目声明生效",
+        )
+        assertEquals(
+            "src/data/effects.py",
+            convention("""{"effects": {"file": "./src/data/effects.py"}}""")
+                .effects.fileOr(null, ConventionDefaults.EFFECTS_FILE),
+            "声明里写 `./` 前缀也会被归一化掉 —— 否则文件变更比较会静默失配",
+        )
+        assertEquals(
+            "mine.py",
+            convention("""{"effects": {"file": "proj.py"}}""").effects.fileOr("mine.py", ConventionDefaults.EFFECTS_FILE),
+            "个人偏好压过项目声明",
+        )
+        assertEquals(
+            ConventionLayer.PROJECT,
+            convention("""{"effects": {"file": "a.py"}}""")
+                .effects.fileResolved(null, ConventionDefaults.EFFECTS_FILE).layer,
+            "来源层标注为「项目约定」",
+        )
+    }
+
+    @Test
+    fun `regression guard - routing an absolute path through path normalization eats its leading slash`() {
+        // 对照：把 `projectPath` 当成相对路径处理（= 接线时最容易犯的错）。
+        val convention = convention("""{"characters": {"projectPath": "/home/me/other_proj"}}""")
+        val broken = normalizeRelPath(convention.characters.projectPath)
+        assertEquals("home/me/other_proj", broken, "对照：归一化后开头斜杠没了，变成一个相对路径")
+        assertTrue(
+            broken != convention.characters.projectPathOr(null, ConventionDefaults.CHARACTER_PROJECT_PATH),
+            "对照：与真实现不同 —— 证明上面那条断言确实在约束「不做归一化」这件事",
+        )
+    }
+
+    @Test
+    fun `regression guard - routing a regex through path normalization breaks it silently`() {
+        // 对照：正则被当成相对路径。`\d` 的反斜杠会被换成 `/`、尾部 `/` 被吃掉，
+        // 正则**语法仍然合法**，只是再也匹配不到东西 —— 静默失效。
+        val convention = convention("""{"characters": {"avatarTemplateRegex": "^icon\\d+/"}}""")
+        val broken = normalizeRelPath(convention.characters.avatarTemplateRegex)
+        assertEquals("^icon/d+", broken, "对照：`\\d` 变成 `/d`、尾部 `/` 被吃掉")
+        assertTrue(
+            broken != convention.characters.avatarTemplateRegexOr(null, ConventionDefaults.AVATAR_TEMPLATE_REGEX),
+            "对照：与真实现不同 —— 证明上面那条断言确实在约束「不做归一化」这件事",
+        )
+    }
+
+    @Test
+    fun `regression guard - without the type guard a string boolean would lock the switch on`() {
+        // 手写文件里 `"enabled": "false"` 是最容易犯的错。若不守卫、照真值算，
+        // 字符串 "false" 是 truthy → 项目声明"关掉 i18n"反而被锁在开，且完全静默。
+        //
+        // 对照：把"收下字符串"的错误形态摆出来。Kotlin 的类型系统让 `I18nConvention.enabled`
+        // 只能是 `Boolean?`，所以真正的守卫点在 `parse` —— 用 String 版的 ResolvedSetting 演示。
+        val loose = ResolvedSetting("false", ConventionLayer.PROJECT)
+        assertTrue(
+            (loose.value as Any) != false,
+            "对照：字符串 \"false\" 不等于布尔 false —— 只断言值的测试抓不到这个类型错误",
+        )
+        assertEquals(
+            ConventionLayer.PROJECT,
+            loose.layer,
+            "对照：层还会被污染成「项目约定」—— 面板会显示「来源是项目约定、值是 false」，而实际生效的是 true",
+        )
+
+        // 真实现：`parse` 把非布尔当没写，于是链退回兜底、层是干净的 BUILTIN。
+        val resolved = convention("""{"i18n": {"enabled": "false"}}""")
+            .i18n.enabledResolved(null, ConventionDefaults.I18N_ENABLED)
+        assertEquals(ConventionDefaults.I18N_ENABLED, resolved.value, "真实现：类型守卫把它当没写，退回兜底")
+        assertEquals(
+            ConventionLayer.BUILTIN,
+            resolved.layer,
+            "真实现：层是 BUILTIN —— 面板不会误报「来源是项目约定」",
+        )
+    }
 }
