@@ -299,4 +299,68 @@ class CharacterDataMutationsTest {
         assertEquals("STATUS_A", effects.get(0).get("effect_id").asText())
         assertEquals("STATUS_B", effects.get(1).get("effect_id").asText())
     }
+
+    // ── 显式 null 的 id 不能被当成字面量 "null" ──────────────────────
+
+    /** 一份 `"skill_id": null` 的技能文件（Jackson 里是 NullNode，不是 Kotlin null）。 */
+    private fun writeSkillWithNullId(): java.io.File {
+        val dir = createTempDirectory("ok-character-null-id").toFile()
+        return dir.resolve("nullid.json").apply {
+            writeText(
+                """
+                {
+                  "character_id": "c1",
+                  "name": "测试",
+                  "skills": [
+                    {"skill_id": null, "name": "没有 ID 的技能"}
+                  ]
+                }
+                """.trimIndent(),
+                Charsets.UTF_8,
+            )
+        }
+    }
+
+    /**
+     * **写入路径**读 id 也必须把显式 `null` 当成"没有 id"。
+     *
+     * Jackson 的坑：字段存在但值为 null 时 `get()` 返回 `NullNode`，
+     * 而 `NullNode.asText()` 返回**字面量字符串 `"null"`**。若用 `?.asText()` 读 id，
+     * 那么调用方只要传 `"null"` 就会**误命中**一个根本没有 id 的技能 —— 改到它头上。
+     *
+     * 读取路径（[CharacterDataService]）已统一走 `textOrNull()`，这条保证写入路径同规则。
+     */
+    @Test
+    fun `an explicit null skill_id cannot be matched by the literal string null`() {
+        val file = writeSkillWithNullId()
+        val before = file.readText(Charsets.UTF_8)
+
+        assertFailsWith<CharacterDataMutations.MutationException>(
+            "传 \"null\" 不该命中那个没有 id 的技能 —— 否则会改到别的技能头上",
+        ) {
+            CharacterDataMutations.updateSkill(file.absolutePath, "null", mapOf("name" to "被改坏了"))
+        }
+        assertEquals(before, file.readText(Charsets.UTF_8), "定位失败时文件必须原样不动")
+    }
+
+    /**
+     * 新增技能时，id 唯一性检查也不能把"没有 id 的技能"算成占用了 `"null"`。
+     *
+     * 旧写法下 `ensureSkillIdFree` 会认为 `"null"` 已被占用并抛「Duplicate skill_id」，
+     * 让一个完全合法的 id 加不进去。
+     */
+    @Test
+    fun `a skill without an id does not reserve the literal string null`() {
+        val file = writeSkillWithNullId()
+
+        CharacterDataMutations.addSkill(
+            file.absolutePath,
+            "null",
+            mapOf("name" to "合法的新技能", "skill_type" to "主动"),
+        )
+
+        val skills = JSON.readTree(file).get("skills")
+        assertEquals(2, skills.size(), "新技能应被追加成功")
+        assertEquals("null", skills.get(1).get("skill_id").asText(), "写入的确实是字面量 \"null\"")
+    }
 }

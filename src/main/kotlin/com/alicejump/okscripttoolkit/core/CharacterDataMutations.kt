@@ -49,18 +49,26 @@ object CharacterDataMutations {
         LOG.info("Atomically wrote ${target.absolutePath}")
     }
 
-    /** 校验技能 ID 唯一性（排除自身），冲突抛 MutationException。 */
+    /**
+     * 校验技能 ID 唯一性（排除自身），冲突抛 MutationException。
+     *
+     * 读 id 一律走 [textOrNull]：显式 `"skill_id": null` 必须被当成**没有 id**，
+     * 而不是字面量字符串 `"null"` —— 后者会与真实 id 撞上，也会让写入路径与
+     * 读取路径（[CharacterDataService] 对空 id 会生成 `<characterId>_skill_N`）
+     * 对同一个技能得出不同结论。
+     */
     private fun ensureSkillIdFree(skills: ArrayNode, skillId: String, excludeSelf: String?) {
         for (skill in skills) {
-            val id = skill.get("skill_id")?.asText()
+            val id = skill.get("skill_id").textOrNull()
             if (id == skillId && id != excludeSelf) {
                 throw MutationException("Duplicate skill_id: $skillId")
             }
         }
     }
 
+    /** 按 id 定位技能。id 读取规则同 [ensureSkillIdFree]（显式 null 视为无 id）。 */
     private fun findSkill(skills: ArrayNode, skillId: String): ObjectNode? =
-        skills.firstOrNull { it.get("skill_id")?.asText() == skillId } as? ObjectNode
+        skills.firstOrNull { it.get("skill_id").textOrNull() == skillId } as? ObjectNode
 
     private fun skillFile(path: String): Triple<ObjectNode, ArrayNode, File> {
         val file = File(path)
@@ -191,14 +199,14 @@ object CharacterDataMutations {
         // 这样 value / duration / target / count 这些对话框不编辑的字段不会丢。
         val previous = mutableMapOf<String, ObjectNode>()
         (node.get("effects") as? ArrayNode)?.forEach { item ->
-            val id = item.get("effect_id")?.asText()
+            val id = item.get("effect_id").textOrNull()
             if (item is ObjectNode && !id.isNullOrBlank()) previous[id] = item
         }
         val output = JSON.createArrayNode()
         // form["effects"] 可能是 JSON 数组（多选器产出）或「A,B,C」纯 ID 串。
         for (item in EffectParamCodec.parse(form["effects"])) {
             if (item !is ObjectNode) { output.add(item); continue }
-            val id = item.get("effect_id")?.asText().orEmpty()
+            val id = item.get("effect_id").textOrNull().orEmpty()
             // 以既有对象为底再覆盖，保住多选器没暴露的字段（如 inferred）。
             val base = previous[id]?.deepCopy() ?: JSON.createObjectNode()
             item.fieldNames().forEach { key -> base.set<JsonNode>(key, item.get(key)) }
