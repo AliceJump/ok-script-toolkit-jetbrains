@@ -198,8 +198,8 @@ Based on `parity-review.md` (2026-09-06) and source code analysis, this report s
 
 ### 6.2 调试浮层功能缺失的原因 / Reasons for Missing Debug Overlay Feature
 
-**VS Code 版**：`taskLauncher.ts` 中 `overlayActive` 状态 + Webview 消息传递 + `run_task.py` 环境变量注入
-**VS Code version**: `overlayActive` state in `taskLauncher.ts` + Webview message passing + `run_task.py` environment variable injection
+**VS Code 版**：`taskLauncher.ts` 中 `overlayActive` 状态 + Webview 消息传递 + `run_executor.py` 环境变量注入
+**VS Code version**: `overlayActive` state in `taskLauncher.ts` + Webview message passing + `run_executor.py` environment variable injection
 
 **JetBrains 版**：完全缺失
 **JetBrains version**: Completely missing

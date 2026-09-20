@@ -40,7 +40,12 @@ if (!pythonDir.isDirectory) {
     logger.warn("Warning: ../python directory not found, skipping Python script packaging")
 }
 
-val copyPython = tasks.register<Copy>("copyPythonScripts") {
+// 用 Sync 而不是 Copy：`Copy` **不会删除源里已移除的文件**，于是从 python/ 删掉的脚本
+// 会一直留在 build/resources/main/python/ 里继续被打进 jar。
+// 实测（2026-09-20）：删掉 python/run_task.py 后重跑构建，产物里它仍在。
+// Sync 会把目标目录同步成源的样子（多出来的删掉）。
+// 目标目录专用于这些脚本，不影响 processResources 写进去的 messages/ 等。
+val copyPython = tasks.register<Sync>("copyPythonScripts") {
     from(pythonDir) {
         include("**/*.py")
         // __pycache__ 里只有 .pyc，本来就不会被 include 命中；但 Gradle 遍历 `**`

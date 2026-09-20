@@ -337,7 +337,7 @@ class ToolboxService(private val project: Project) : Disposable {
         taskCommandWriter = writer
     }
 
-    /** 任务 stdout 的浮层标记行：以 run_task.py 确认为准回写共享状态 */
+    /** 任务 stdout 的浮层标记行：以 run_executor.py 确认为准回写共享状态 */
     fun onTaskOverlayMarker(projectDir: String, active: Boolean) {
         if (projectDir.isBlank()) return
         saveState(projectDir) { it.copy(overlay = active) }
