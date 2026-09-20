@@ -18,6 +18,14 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v4
+      # ⚠️ 这里**没有也不该有** `verifyPlugin`（Plugin Verifier：真的下载 IDE 去查
+      # 废弃 / 实验性 / internal API）：
+      #   1. 本仓库独立 CI **缺 `../python`**（只检出自己），跑它会被 build.gradle.kts 里
+      #      `distributableTasks` 的守卫**直接中止**；
+      #   2. 它慢且要联网，真正的校验放在父仓 `release.yml`（那边 `submodules: recursive`，
+      #      `../python` 存在，条件齐备）。
+      # ⚠️ `verifyPluginStructure` 只查 JAR / plugin.xml 的**结构**，**不查 API 兼容性** ——
+      # 别把它当成"API 已经验过了"。
       - name: Test and build plugin
         run: ./gradlew test buildPlugin verifyPluginStructure verifyPluginConfiguration
       - name: Upload plugin archive
