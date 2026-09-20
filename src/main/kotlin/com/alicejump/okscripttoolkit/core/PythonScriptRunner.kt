@@ -127,6 +127,12 @@ object PythonScriptLocator {
 
     private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance(PythonScriptLocator::class.java)
 
+    /** 解压目录名。**不带时间戳** —— 见 [extractBundledScripts] 里关于旧实现的说明。 */
+    const val SCRIPT_DIR_NAME = "ok-script-toolkit-scripts"
+
+    /** 历史遗留目录的前缀（旧版把 lastModified 拼成了 `ok-script-toolkit-scripts-0` 之类）。 */
+    private const val SCRIPT_DIR_PREFIX = "ok-script-toolkit-scripts"
+
     val BUNDLED_SCRIPTS = listOf(
         "parse_config_tasks.py",
         "probe_task_schemas.py",
@@ -151,36 +157,54 @@ object PythonScriptLocator {
             )
     }
 
-    /** 从插件 JAR 的 classpath 解压打包脚本到临时目录（带版本戳避免旧脚本残留）。 */
-    fun extractBundledScripts(): java.nio.file.Path? {
+    /**
+     * 从插件 JAR 的 classpath 解压打包脚本到临时目录。
+     *
+     * ⚠️ **每次调用都必须覆盖写出**，不能用「文件都在就跳过」的缓存判断。
+     *
+     * 曾经用 `classLoader.getResource(...).openConnection().lastModified` 当版本戳，
+     * 并把它拼进目录名（`ok-script-toolkit-scripts-<stamp>`）。但 **JAR 内资源的
+     * `lastModified` 实测恒为 0**，于是目录名恒为 `ok-script-toolkit-scripts-0`；
+     * 再配合「8 个文件都在就直接 return」，后果是：
+     * **一旦解压过，插件升级后再也不会重新解压 —— 用户会一直跑旧脚本。**
+     *
+     * 真实后果（2026-09-20 实测确认）：用户装的 1.7.1 里 `run_executor.py` 是
+     * 「配置沙箱」提交（`eb4d00c`，09-19）**之前**的版本；即使装上含沙箱的新插件，
+     * 临时目录里的旧 `run_executor.py` 仍会被继续使用，于是**沙箱完全没生效** ——
+     * 执行器照样写目标项目的 `configs/`（实测：执行器运行期间项目 configs 被写、
+     * 沙箱目录纹丝不动）。
+     *
+     * 覆盖写出的代价是 8 个小文件（合计约 90 KB），相对"跑错脚本"完全可以忽略。
+     *
+     * @param baseDir 临时根目录。做成参数是为了让单测指向自己的临时目录 ——
+     *   否则测试一旦失败会在真实临时目录里留下损坏脚本，反而弄坏用户的插件。
+     */
+    fun extractBundledScripts(
+        baseDir: java.io.File = java.io.File(System.getProperty("java.io.tmpdir")),
+    ): java.nio.file.Path? {
         return try {
             val resource = PythonScriptLocator::class.java.classLoader
                 .getResourceAsStream("python/${BUNDLED_SCRIPTS.first()}") ?: return null
             resource.close()
 
-            val stamp = try {
-                PythonScriptLocator::class.java.classLoader.getResource("python/${BUNDLED_SCRIPTS.first()}")
-                    ?.openConnection()?.lastModified ?: 0L
-            } catch (_: Exception) { 0L }
-            val extractDir = java.nio.file.Paths.get(
-                System.getProperty("java.io.tmpdir"),
-                "ok-script-toolkit-scripts-$stamp",
-            )
-            if (BUNDLED_SCRIPTS.all { java.nio.file.Files.exists(extractDir.resolve(it)) }) return extractDir
-
+            val extractDir = baseDir.toPath().resolve(SCRIPT_DIR_NAME)
             java.nio.file.Files.createDirectories(extractDir)
+            var written = 0
             for (name in BUNDLED_SCRIPTS) {
                 val input = PythonScriptLocator::class.java.classLoader
                     .getResourceAsStream("python/$name") ?: continue
-                java.nio.file.Files.copy(
-                    input,
-                    extractDir.resolve(name),
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                )
-                input.close()
+                input.use { stream ->
+                    java.nio.file.Files.copy(
+                        stream,
+                        extractDir.resolve(name),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    )
+                }
+                written++
             }
-            LOG.info("Extracted bundled Python scripts to $extractDir")
-            cleanupOldScriptDirs(extractDir)
+            // 一个都没解出来说明 JAR 里确实没有脚本，交给调用方报错。
+            if (written == 0) return null
+            cleanupOldScriptDirs(extractDir, baseDir)
             extractDir
         } catch (e: Exception) {
             LOG.warn("Failed to extract bundled Python scripts", e)
@@ -188,13 +212,17 @@ object PythonScriptLocator {
         }
     }
 
-    /** 清理旧版本的脚本目录，只保留当前使用的目录 */
-    private fun cleanupOldScriptDirs(currentDir: java.nio.file.Path) {
+    /**
+     * 清理历史遗留的脚本目录（旧版把时间戳拼进了目录名，形如
+     * `ok-script-toolkit-scripts-0`），只保留当前使用的 [currentDir]。
+     */
+    private fun cleanupOldScriptDirs(currentDir: java.nio.file.Path, baseDir: java.io.File) {
         try {
-            val tmpDir = java.io.File(System.getProperty("java.io.tmpdir"))
-            val prefix = "ok-script-toolkit-scripts-"
-            tmpDir.listFiles()?.forEach { dir ->
-                if (dir.isDirectory && dir.name.startsWith(prefix) && dir.toPath() != currentDir) {
+            baseDir.listFiles()?.forEach { dir ->
+                if (dir.isDirectory &&
+                    dir.name.startsWith(SCRIPT_DIR_PREFIX) &&
+                    dir.toPath() != currentDir
+                ) {
                     try {
                         dir.deleteRecursively()
                         LOG.info("Cleaned up old script directory: ${dir.name}")
