@@ -50,6 +50,16 @@ Next review should override this table and update the status.
   与父仓 `.vscode/ok-script-toolkit` 对称；两端**共用同一份** `run_executor.py`
   （子仓将父仓 `python/` 整包进 JAR），`apply_config_sandbox` 行为完全一致，
   含 `devices.json` 桥接与 `screenshots_folder` 改道
+- **项目约定文件 `ok-script-toolkit.json`**：放在**被调试项目**根目录，两端共用同一份
+  （**只读**，插件绝不写入）。取值链 **个人设置 > 项目约定文件 > 内置默认**。
+  已接入：`labelEnum.path` / `labelEnum.name` / `labelEnum.aliases` / `templates.directory`。
+  两端各有一个**溯源面板**（父仓命令 `showConventionSources`；子仓 Tools 菜单
+  `ShowConventionSources`）：列出每一项的生效值来自哪一层，并给被个人设置覆盖过的项
+  一个「恢复」按钮。两端实现对称 —— 纯对象（父仓 `projectConfigPure.ts` /
+  子仓 `core/ProjectConvention.kt`）都产出 `{ value, layer }`，**来源层由取值链本身
+  产出、不在 UI 里复算**（复算会与实际生效值分叉，且分叉是静默的）。
+  ⚠️ 两端设置项都带**非空默认值**，接新设置前必须先拿到"用户是否真的改过"这个信号
+  （父仓 `inspect()`，子仓 `overriddenKeys`），否则项目声明会被**永久静默屏蔽**。
 - **折叠分组吸收内联显隐**：子仓抽成可单测纯对象 `tasklauncher/SchemaTreeOverlap.kt`
   （父仓对应实现内联在 `media/taskLauncher/configPanel.js`）；子仓另有
   `SchemaTreeOverlapTest.kt` 两条破坏性对照断言，规范度高于父仓
@@ -118,6 +128,7 @@ Next review should override this table and update the status.
 
 | 项 | VSCode 主仓 | JetBrains 子仓 |
 |---|---|---|
+| 项目约定文件 | `<project>/ok-script-toolkit.json`（**被调试项目**根目录） | 同左 —— 两端读同一份，只读 |
 | 配置沙箱 | `<workspace>/.vscode/ok-script-toolkit` | `<project>/.idea/ok-script-toolkit` |
 | 任务配置/启用集合 | `.vscode/ok-script-toolkit-tasks.json` | `.idea/ok-script-toolkit-tasks.json` |
 | Schema 缓存 | `.vscode/ok-script-toolkit-schema.json` | `.idea/ok-script-toolkit-schema.json` |
@@ -150,6 +161,19 @@ Remaining gaps are two kinds: **one annotation-editor save-semantics difference*
   `.vscode/ok-script-toolkit`; both sides **share the same** `run_executor.py` (the sub-repo bundles the
   parent `python/` into its JAR), so `apply_config_sandbox` behaves identically — including `devices.json`
   bridging and `screenshots_folder` redirection
+- **Project convention file `ok-script-toolkit.json`**: lives in the **debugged project's** root and is
+  shared by both ends (**read-only** — the plugin never writes it). Precedence is
+  **my settings > project convention file > built-in default**. Wired up:
+  `labelEnum.path` / `labelEnum.name` / `labelEnum.aliases` / `templates.directory`.
+  Both ends have a **source-tracing panel** (parent command `showConventionSources`; sub-repo Tools menu
+  `ShowConventionSources`) that lists which layer each effective value comes from and offers a Revert
+  button on rows you have overridden. The two implementations are symmetric — the pure objects
+  (`projectConfigPure.ts` / `core/ProjectConvention.kt`) both produce `{ value, layer }`, and the
+  **layer comes from the chain itself rather than being recomputed in the UI** (a recomputation would
+  drift from the effective value, silently).
+  ⚠️ Settings on both ends carry **non-empty defaults**, so before wiring a new setting you must first
+  obtain a "did the user actually change this" signal (parent `inspect()`, sub-repo `overriddenKeys`),
+  otherwise the project declaration is **permanently shadowed, silently**.
 - **Collapsible group absorbing inline show/hide**: the sub-repo extracts it into a unit-testable pure object
   `tasklauncher/SchemaTreeOverlap.kt` (the parent inlines it in `media/taskLauncher/configPanel.js`), plus
   `SchemaTreeOverlapTest.kt` with two destructive-control assertions — stricter than the parent side

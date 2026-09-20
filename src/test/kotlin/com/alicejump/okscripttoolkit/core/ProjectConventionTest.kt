@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * 项目约定文件 `ok-script-toolkit.json` 的解析与取值链测试。
@@ -318,6 +319,124 @@ class ProjectConventionTest {
             "mine",
             declared.directoryOr("mine", DEFAULT_TPL),
             "真实现必须让个人偏好胜出 —— 与对照相反，证明该断言确实在约束优先级",
+        )
+    }
+
+    // ── 取值链 3：来源层（溯源面板用） ────────────────────────────────
+    //
+    // 溯源面板要把"生效值来自哪一层"显示给用户。这一层**必须由取值链本身产出**：
+    // 另写一套判断去复算的话迟早与实际生效值分叉，而分叉的表现是
+    // "界面说来源是项目约定、实际生效的却是我的设置" —— 最难查的一类不一致。
+
+    @Test
+    fun `the resolved layer names the winning source for templates`() {
+        val declared = TemplatesConvention(directory = "my_tpl")
+        assertEquals(
+            ResolvedSetting("mine", ConventionLayer.PERSONAL),
+            declared.directoryResolved("mine", DEFAULT_TPL),
+            "**个人偏好命中时层是 PERSONAL**，且值就是它",
+        )
+        assertEquals(
+            ResolvedSetting("my_tpl", ConventionLayer.PROJECT),
+            declared.directoryResolved(null, DEFAULT_TPL),
+            "没设过个人偏好时落到项目声明",
+        )
+        assertEquals(
+            ResolvedSetting(DEFAULT_TPL, ConventionLayer.BUILTIN),
+            TemplatesConvention().directoryResolved(null, DEFAULT_TPL),
+            "都没声明时落到内置兜底",
+        )
+        assertEquals(
+            ResolvedSetting("my_tpl", ConventionLayer.PROJECT),
+            declared.directoryResolved("   ", DEFAULT_TPL),
+            "全空白的个人偏好按「没设置」处理，层不能变成 PERSONAL",
+        )
+    }
+
+    @Test
+    fun `the resolved layer names the winning source for aliases`() {
+        val declared = LabelEnumConvention(aliases = listOf("FL"))
+        assertEquals(
+            ResolvedSetting(listOf("mine"), ConventionLayer.PERSONAL),
+            declared.aliasesResolved(listOf("mine"), FALLBACK),
+            "个人偏好命中时层是 PERSONAL",
+        )
+        assertEquals(
+            ResolvedSetting(listOf("FL"), ConventionLayer.PROJECT),
+            declared.aliasesResolved(emptyList(), FALLBACK),
+            "空列表 = 没设置 → 落到项目声明",
+        )
+        assertEquals(
+            ResolvedSetting(FALLBACK, ConventionLayer.BUILTIN),
+            LabelEnumConvention().aliasesResolved(emptyList(), FALLBACK),
+            "都没声明时落到内置兜底",
+        )
+    }
+
+    /**
+     * 空白项在**两侧**都按"没写"处理。
+     *
+     * 声明侧由 `stringOrNull()` 保证；个人偏好侧原来没有过滤 —— 于是设置面板里
+     * 留一个空行（`[" "]`）会变成一条永远匹配不到的正则，且**静默**
+     * （代码补全就是不出结果，看不出哪儿错了）。VS Code 侧 `nonEmptyStrings()`
+     * 一直有这层过滤，两端必须一致。
+     */
+    @Test
+    fun `blank aliases count as not set on both sides of the chain`() {
+        val declared = LabelEnumConvention(aliases = listOf("FL"))
+        assertEquals(
+            ResolvedSetting(listOf("FL"), ConventionLayer.PROJECT),
+            declared.aliasesResolved(listOf("  "), FALLBACK),
+            "个人偏好只有空白项时等同于没设置 → 项目声明生效",
+        )
+        assertEquals(
+            ResolvedSetting(FALLBACK, ConventionLayer.BUILTIN),
+            LabelEnumConvention(aliases = listOf("  ")).aliasesResolved(emptyList(), FALLBACK),
+            "声明里只有空白项时等同于没声明 → 内置兜底",
+        )
+    }
+
+    /**
+     * `aliasesOr` / `directoryOr` 必须与带层版本给出**同一个值**。
+     *
+     * 它们是薄封装（`.value`）。这条断言存在的意义：如果哪天有人把其中一个改回
+     * 独立实现，两者就会开始漂移，而漂移的表现是"界面上显示的生效值与实际用的值不同"。
+     */
+    @Test
+    fun `the thin accessors agree with the layer carrying versions`() {
+        val templates = TemplatesConvention(directory = "my_tpl")
+        assertEquals(
+            templates.directoryResolved("mine", DEFAULT_TPL).value,
+            templates.directoryOr("mine", DEFAULT_TPL),
+            "directoryOr 必须就是 directoryResolved(...).value",
+        )
+        val aliases = LabelEnumConvention(aliases = listOf("FL"))
+        assertEquals(
+            aliases.aliasesResolved(listOf("mine"), FALLBACK).value,
+            aliases.aliasesOr(listOf("mine"), FALLBACK),
+            "aliasesOr 必须就是 aliasesResolved(...).value",
+        )
+    }
+
+    /**
+     * 对照：来源层被写死后，项目声明的值也会被报成「我的设置」——
+     * 这正是"界面与实际生效值分叉"的样子。用纯对象构造出那个错误结果，
+     * 证明上面那组断言确实在区分两种来源。
+     */
+    @Test
+    fun `regression guard - a hardcoded layer would misreport the project value`() {
+        val declared = TemplatesConvention(directory = "my_tpl")
+        val truth = declared.directoryResolved(null, DEFAULT_TPL)
+        assertEquals(ConventionLayer.PROJECT, truth.layer, "真实现：没设过个人偏好时来源是项目约定")
+        val hardcoded = ResolvedSetting(truth.value, ConventionLayer.PERSONAL)
+        assertEquals(
+            "my_tpl",
+            hardcoded.value,
+            "对照：来源写死后**值不变、层变错** —— 所以必须断言层本身，只断言值抓不到这个 bug",
+        )
+        assertTrue(
+            hardcoded.layer != truth.layer,
+            "对照：两者的层确实不同，证明断言层是有意义的",
         )
     }
 }

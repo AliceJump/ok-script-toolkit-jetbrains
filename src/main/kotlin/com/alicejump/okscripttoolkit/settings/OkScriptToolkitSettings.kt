@@ -1,6 +1,8 @@
 package com.alicejump.okscripttoolkit.settings
 
+import com.alicejump.okscripttoolkit.core.ConventionSourceRow
 import com.alicejump.okscripttoolkit.core.ProjectConventionConfig
+import com.alicejump.okscripttoolkit.core.conventionSourceRows
 import com.intellij.openapi.components.BaseState
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.SimplePersistentStateComponent
@@ -190,6 +192,48 @@ class OkScriptToolkitSettings(
             state.overriddenKeys = (state.overriddenKeys + key).toMutableList()
         }
     }
+
+    /**
+     * 撤销 [markOverridden] 的记账 —— 即「恢复为项目约定」。
+     *
+     * 只取消记账、**不清 state 里的值**：值留着，但"个人偏好"层不再命中，
+     * 于是取值链落到项目声明（没有声明则落到内置兜底）。这样做的好处是
+     * **可逆** —— 用户反悔时 state 里的值还在，不需要重新输入一遍。
+     *
+     * 注意这与"把值改回内置默认"**不等价**：后者会让用户无法表达
+     * "我就是要用恰好等于默认值的那个目录"（见 [SettingsState.featureAliasesTouched] 的同理说明）。
+     *
+     * @return 是否真的撤销了（键本来就不在集合里时返回 false，调用方据此决定要不要提示）
+     */
+    fun clearOverridden(key: String): Boolean {
+        if (key !in state.overriddenKeys) return false
+        state.overriddenKeys = state.overriddenKeys.filter { it != key }.toMutableList()
+        return true
+    }
+
+    /** 某个键当前是否有个人覆盖（= 记账里有没有它）。 */
+    fun isOverridden(key: String): Boolean = key in state.overriddenKeys
+
+    /**
+     * 溯源面板的数据源：「每一项的生效值来自哪一层」。
+     *
+     * 个人偏好层在这里**归一成"用户真正设过的值"**：标量看 [SettingsState.overriddenKeys]，
+     * 列表看是否为空 —— state 里的默认值非空，直接读会让这一层永远命中、项目声明失效
+     * （见 [SettingsState.overriddenKeys] 的说明）。
+     *
+     * 与 VS Code 侧 `conventionSources.ts` 的 `conventionSources()` 一一对应。
+     */
+    fun conventionSources(): List<ConventionSourceRow> = conventionSourceRows(
+        convention = ProjectConventionConfig.getInstance(project).load(),
+        personalTemplatesDirectory = if (isOverridden(KEY_OK_TEMPLATES_DIRECTORY)) {
+            state.okTemplatesDirectory.orEmpty()
+        } else {
+            null
+        },
+        personalFeatureAliases = state.featureAliases.filter { it.isNotBlank() },
+        templatesFallback = DEFAULT_TEMPLATES_DIRECTORY,
+        aliasesFallback = DEFAULT_FEATURE_ALIASES,
+    )
 
     fun captureMethod(): String = normalizeCaptureMethod(state.captureMethod)
 }

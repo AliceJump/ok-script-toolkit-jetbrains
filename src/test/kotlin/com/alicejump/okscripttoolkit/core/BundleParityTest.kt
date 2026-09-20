@@ -17,40 +17,12 @@ import kotlin.test.assertTrue
  */
 class BundleParityTest {
 
-    /**
-     * 定位 messages 目录。
-     *
-     * 不直接写死 `File("src/main/resources/messages")`：Gradle 跑测试时工作目录是
-     * 项目根（`jetbrains/`），但从 IDE 里单独跑这个测试类时工作目录可能是仓库根或
-     * 模块根 —— 写死路径会变成"本地能过、CI 挂了"的经典陷阱。这里逐级往上找。
-     * 完全找不到时**显式失败**，而不是让 `bundleNames()` 返回空列表把断言变成恒真。
-     */
-    private val messagesDir: File by lazy {
-        val relative = "src/main/resources/messages"
-        var dir: File? = File("").absoluteFile
-        val candidates = mutableListOf<File>()
-        while (dir != null) {
-            candidates += File(dir, relative)
-            candidates += File(dir, "jetbrains/$relative")
-            dir = dir.parentFile
-        }
-        candidates.firstOrNull { it.isDirectory }
-            ?: throw AssertionError(
-                "找不到 messages 目录。已尝试：\n" + candidates.joinToString("\n") { "  ${it.path}" },
-            )
-    }
+    /** 目录定位与读取抽在 [TestMessages]（[BundleCoverageTest] 也要用同一份实现）。 */
+    private val messagesDir: File get() = TestMessages.dir
 
-    private fun bundleNames(): List<String> =
-        messagesDir.listFiles { f -> f.name.startsWith("OkScriptToolkitBundle") && f.name.endsWith(".properties") }
-            ?.map { it.name }
-            ?.sorted()
-            .orEmpty()
+    private fun bundleNames(): List<String> = TestMessages.bundleNames()
 
-    private fun loadKeys(name: String): Set<String> {
-        val properties = Properties()
-        File(messagesDir, name).inputStream().use { properties.load(it) }
-        return properties.stringPropertyNames()
-    }
+    private fun loadKeys(name: String): Set<String> = TestMessages.loadKeys(name)
 
     @Test
     fun `every locale bundle carries the same keys as the base bundle`() {

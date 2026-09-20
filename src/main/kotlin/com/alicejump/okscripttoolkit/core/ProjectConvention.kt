@@ -72,6 +72,43 @@ internal fun normalizeRelPath(value: String?): String? {
     return cleaned.takeIf { it.isNotEmpty() }
 }
 
+/** 取值链命中的那一层。与 VS Code 侧 `SettingLayer` 一一对应。 */
+enum class ConventionLayer {
+    /** 个人偏好（IDE 设置 / 上次保存）—— 链的最高层 */
+    PERSONAL,
+
+    /** 项目约定文件 `ok-script-toolkit.json` */
+    PROJECT,
+
+    /** 调用方给的内置兜底 */
+    BUILTIN,
+}
+
+/** 取值链的结果：**生效值**加上它**来自哪一层**。 */
+data class ResolvedSetting<T>(
+    val value: T,
+    val layer: ConventionLayer,
+)
+
+/**
+ * 通用取值链：**个人偏好 > 项目约定文件 > 内置默认**，并**同时给出命中的层**。
+ *
+ * ⚠️ **"来源层"必须由这条链自己产出，不要在别处另写一套判断去复算。**
+ * 复算出来的层与实际生效值迟早会分叉 —— 而分叉的表现是"界面说来源是项目约定、
+ * 实际生效的却是我的设置"，属于最难查的那类不一致。
+ * 溯源面板（[com.alicejump.okscripttoolkit.core.conventionSourceRows]）直接消费这里的
+ * `layer`，所以它永远和生效值一致。与 VS Code 侧 `projectConfigPure.resolveSetting()` 对应。
+ *
+ * 调用方负责把"没设置过"归一成 `null`：
+ * - 标量设置看 `SettingsState.overriddenKeys`（state 默认值非空，不能直接当"用户设过"）；
+ * - 列表设置看"空列表"（`featureAliases` 的 state 默认值是空列表）。
+ */
+internal fun <T> resolveSetting(ideValue: T?, declared: T?, fallback: T): ResolvedSetting<T> = when {
+    ideValue != null -> ResolvedSetting(ideValue, ConventionLayer.PERSONAL)
+    declared != null -> ResolvedSetting(declared, ConventionLayer.PROJECT)
+    else -> ResolvedSetting(fallback, ConventionLayer.BUILTIN)
+}
+
 /** `templates` 一组：模板与标注资源的位置。 */
 data class TemplatesConvention(
     /** 模板目录（png 切图 + coco_annotations.json），相对项目根 */
@@ -81,20 +118,24 @@ data class TemplatesConvention(
 ) {
 
     /**
-     * 模板目录名（相对项目根），已归一化。
+     * 模板目录名（相对项目根），已归一化，**带来源层**。
      *
      * 取值链与全局一致：**个人偏好（IDE 设置）> 项目约定文件 > 兜底**。
      *
      * ⚠️ `ideValue` 必须是**用户真正设置过的值**，`null` / 空白表示"没设过"。
      * `SettingsState.okTemplatesDirectory` 的默认值就是 `"ok_templates"` ——
      * 若直接把 state 里的值当"个人偏好"传进来，这一层永远非空 →
-     * **项目声明的目录名永远不生效**。与 [LabelEnumConvention.aliasesOr] 是同一个陷阱。
+     * **项目声明的目录名永远不生效**。与 [LabelEnumConvention.aliasesResolved] 是同一个陷阱。
      *
      * 历史：VS Code 侧这个设置此前是**死设置**（常量硬编码、无人读），
      * 而子仓会读（10 处）—— 属反向不对等，见 `docs/project-config.md` §8.1。
      */
+    fun directoryResolved(ideValue: String?, fallback: String): ResolvedSetting<String> =
+        resolveSetting(normalizeRelPath(ideValue), normalizeRelPath(directory), fallback)
+
+    /** 只要值时的薄封装（绝大多数消费点用这个）。 */
     fun directoryOr(ideValue: String?, fallback: String): String =
-        normalizeRelPath(ideValue) ?: normalizeRelPath(directory) ?: fallback
+        directoryResolved(ideValue, fallback).value
 
     companion object {
         /** 解析 `templates` 节点。非对象、字段类型不符一律当没写。 */
@@ -121,7 +162,7 @@ data class LabelEnumConvention(
 ) {
 
     /**
-     * 枚举引用别名。
+     * 枚举引用别名，**带来源层**。
      *
      * 别名是"代码里怎么写 import"这一**项目约定** —— 项目 `config.py` 从不声明它，
      * 所以此前只能靠内置的 `fL`/`FeatureList` 硬猜；项目把枚举导入成别的名字就完全失效。
@@ -132,14 +173,30 @@ data class LabelEnumConvention(
      * （"接了等于没接"）。VS Code 侧有同一个陷阱（`package.json` 里 `featureAliases`
      * 的 `default`），那边靠 `inspect()` 区分"用户写过"与"默认值"，这边靠"默认值留空"区分。
      *
+     * 两侧的空白项都按"没写"处理（声明侧是 [stringOrNull]，个人偏好侧在这里过滤）——
+     * 否则一个 `" "` 别名会变成一条永远匹配不到的正则，且**静默**。
+     *
      * @param ideValue 调用方读到的个人偏好（IDE 设置）；空表示没设置
      * @param fallback 内置兜底
      */
-    fun aliasesOr(ideValue: List<String>, fallback: List<String>): List<String> {
-        if (ideValue.isNotEmpty()) return ideValue
-        if (aliases.isNotEmpty()) return aliases
-        return fallback
+    fun aliasesResolved(ideValue: List<String>, fallback: List<String>): ResolvedSetting<List<String>> {
+        val ide = ideValue.filter { it.isNotBlank() }
+        val declared = aliases.filter { it.isNotBlank() }
+        return resolveSetting(
+            ide.takeIf { it.isNotEmpty() },
+            declared.takeIf { it.isNotEmpty() },
+            fallback,
+        )
     }
+
+    /**
+     * 只要值时的薄封装。
+     *
+     * @param ideValue 调用方读到的个人偏好（IDE 设置）；空表示没设置
+     * @param fallback 内置兜底
+     */
+    fun aliasesOr(ideValue: List<String>, fallback: List<String>): List<String> =
+        aliasesResolved(ideValue, fallback).value
 
     /**
      * 枚举类名。没声明 [name] 时用 `filePath` 反推 —— 即旧行为。

@@ -130,5 +130,11 @@
             description="Open the ok-script temp screenshot viewer">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
+        <!-- 文案同样走 Action 代码里的 bundle，这里只声明 id / class -->
+        <action
+            id="com.alicejump.okscripttoolkit.ShowConventionSources"
+            class="com.alicejump.okscripttoolkit.ui.ShowConventionSourcesAction">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
     </actions>
 </idea-plugin>
