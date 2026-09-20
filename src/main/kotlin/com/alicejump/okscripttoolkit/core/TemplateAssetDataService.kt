@@ -213,7 +213,12 @@ class TemplateAssetDataService(private val project: Project) {
         }
 
         // 对齐 VSCode 版：素材面板的 COCO 是模板目录自己的 coco_annotations.json
-        fun cocoPath(projectDir: String, templatesDir: String = "ok_templates"): Path =
+        //
+        // `templatesDir` **刻意不给默认值**：目录名可配（取值链见
+        // `OkScriptToolkitSettings.okTemplatesDirectory()`），留一个 `"ok_templates"`
+        // 默认值等于给调用方留了一条**绕过取值链**的静默通道 —— 谁少传一个参数，
+        // 就会去读一个可能不存在的目录，而界面只是"空列表"，看不出是配置没生效。
+        fun cocoPath(projectDir: String, templatesDir: String): Path =
             Paths.get(projectDir, templatesDir, "coco_annotations.json")
 
         fun templateDir(projectDir: String, templatesDir: String): Path =
@@ -225,7 +230,7 @@ class TemplateAssetDataService(private val project: Project) {
     private var cocoFile: Path? = null
     private var templateFolder: Path? = null
 
-    fun load(projectDir: String, templatesDir: String = "ok_templates"): CocoData {
+    fun load(projectDir: String, templatesDir: String): CocoData {
         templateFolder = templateDir(projectDir, templatesDir)
         cocoFile = cocoPath(projectDir, templatesDir)
 

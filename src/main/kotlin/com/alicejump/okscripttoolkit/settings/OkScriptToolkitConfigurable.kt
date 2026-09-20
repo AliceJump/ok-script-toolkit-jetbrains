@@ -127,6 +127,12 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
 
     override fun apply() {
         val settings = OkScriptToolkitSettings.getInstance(project)
+        // 记账必须放在赋值**之前** —— 赋值后 state 已经是新值，比不出"变没变"。
+        // 只有值真的变了才算"用户覆盖了这一项"，没变就继续让项目约定文件生效；
+        // 否则打开一次设置面板点个「应用」就会把所有项目约定永久压住（静默）。
+        if (okTemplatesDirectory.text.trim() != settings.state.okTemplatesDirectory.orEmpty()) {
+            settings.markOverridden(OkScriptToolkitSettings.KEY_OK_TEMPLATES_DIRECTORY)
+        }
         settings.state.langDirectory = langDirectory.text.trim()
         settings.state.poDirectory = poDirectory.text.trim()
         settings.state.poDomains = splitList(poDomains.text).toMutableList()

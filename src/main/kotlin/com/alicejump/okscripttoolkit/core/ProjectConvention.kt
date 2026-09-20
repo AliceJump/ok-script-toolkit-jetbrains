@@ -22,6 +22,7 @@ import java.io.File
  */
 data class ProjectConvention(
     val labelEnum: LabelEnumConvention = LabelEnumConvention(),
+    val templates: TemplatesConvention = TemplatesConvention(),
 ) {
 
     companion object {
@@ -33,7 +34,10 @@ data class ProjectConvention(
         /** 解析约定文件内容。任何字段缺失/类型不符都退回该字段的默认值，不抛异常。 */
         fun parse(root: JsonNode?): ProjectConvention {
             if (root == null || !root.isObject) return EMPTY
-            return ProjectConvention(labelEnum = LabelEnumConvention.parse(root.get("labelEnum")))
+            return ProjectConvention(
+                labelEnum = LabelEnumConvention.parse(root.get("labelEnum")),
+                templates = TemplatesConvention.parse(root.get("templates")),
+            )
         }
 
         /**
@@ -49,6 +53,59 @@ data class ProjectConvention(
             parse(JSON.readTree(file))
         } catch (_: Exception) {
             EMPTY
+        }
+    }
+}
+
+/**
+ * 相对路径归一化：统一成 `/` 分隔、去掉首尾斜杠；空（或只有斜杠）→ `null`。
+ *
+ * 为什么需要它：这个值会被 `File(root, dir)` 拼绝对路径，也会被拿去做目录段匹配。
+ * 声明文件里写 `ok_templates\` 或 `/ok_templates` 时，匹配会**静默**失配 ——
+ * 界面一切正常，只是"改了设置不生效"。入口处统一归一化一次。
+ *
+ * 与 VS Code 侧 `projectConfigPure.normalizeRelPath()` 语义一一对应，改一边记得改另一边。
+ */
+internal fun normalizeRelPath(value: String?): String? {
+    val trimmed = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    val cleaned = trimmed.replace('\\', '/').trimStart('/').trimEnd('/')
+    return cleaned.takeIf { it.isNotEmpty() }
+}
+
+/** `templates` 一组：模板与标注资源的位置。 */
+data class TemplatesConvention(
+    /** 模板目录（png 切图 + coco_annotations.json），相对项目根 */
+    val directory: String? = null,
+    /** COCO 标注文件路径，相对项目根 */
+    val cocoAnnotations: String? = null,
+) {
+
+    /**
+     * 模板目录名（相对项目根），已归一化。
+     *
+     * 取值链与全局一致：**个人偏好（IDE 设置）> 项目约定文件 > 兜底**。
+     *
+     * ⚠️ `ideValue` 必须是**用户真正设置过的值**，`null` / 空白表示"没设过"。
+     * `SettingsState.okTemplatesDirectory` 的默认值就是 `"ok_templates"` ——
+     * 若直接把 state 里的值当"个人偏好"传进来，这一层永远非空 →
+     * **项目声明的目录名永远不生效**。与 [LabelEnumConvention.aliasesOr] 是同一个陷阱。
+     *
+     * 历史：VS Code 侧这个设置此前是**死设置**（常量硬编码、无人读），
+     * 而子仓会读（10 处）—— 属反向不对等，见 `docs/project-config.md` §8.1。
+     */
+    fun directoryOr(ideValue: String?, fallback: String): String =
+        normalizeRelPath(ideValue) ?: normalizeRelPath(directory) ?: fallback
+
+    companion object {
+        /** 解析 `templates` 节点。非对象、字段类型不符一律当没写。 */
+        fun parse(node: JsonNode?): TemplatesConvention {
+            if (node == null || !node.isObject) return TemplatesConvention()
+            return TemplatesConvention(
+                // 与 LabelEnumConvention.parse 同理：用严格版 `stringOrNull()`，
+                // `"directory": 42` 属于写错类型，应当作没写，而不是变成目录名 "42"。
+                directory = node.get("directory").stringOrNull(),
+                cocoAnnotations = node.get("cocoAnnotations").stringOrNull(),
+            )
         }
     }
 }

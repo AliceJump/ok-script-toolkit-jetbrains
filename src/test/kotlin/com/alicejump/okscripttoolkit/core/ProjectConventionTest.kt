@@ -19,6 +19,7 @@ class ProjectConventionTest {
 
     private val JSON = ObjectMapper()
     private val FALLBACK = listOf("fL", "FeatureList")
+    private val DEFAULT_TPL = "ok_templates"
 
     private fun convention(json: String): ProjectConvention = ProjectConvention.parse(JSON.readTree(json))
 
@@ -182,6 +183,79 @@ class ProjectConventionTest {
         assertEquals("mine/Label.py", LabelEnumConvention().filePathOr("mine/Label.py"), "只有个人偏好时用它")
     }
 
+    // ── 取值链 4：模板目录 ───────────────────────────────────────────
+
+    /**
+     * 这一项此前在 **VS Code 侧完全没被读过**（`ok_templates` 写成常量、设置项是死的），
+     * 而子仓会读（10 处）—— 属反向不对等（`docs/project-config.md` §8.1）。
+     * 现在两端都走这条链，所以这里把三段都钉住。
+     */
+    @Test
+    fun `templates directory - personal preference beats the project file, which beats the fallback`() {
+        val project = convention("""{"templates": {"directory": "my_tpl"}}""").templates
+        assertEquals(
+            DEFAULT_TPL,
+            TemplatesConvention().directoryOr(null, DEFAULT_TPL),
+            "都没声明时用内置兜底",
+        )
+        assertEquals(
+            "my_tpl",
+            project.directoryOr(null, DEFAULT_TPL),
+            "**项目声明生效** —— 修复前这一项在 VS Code 侧被完全忽略",
+        )
+        assertEquals(
+            "mine",
+            project.directoryOr("mine", DEFAULT_TPL),
+            "**个人偏好压过项目声明** —— 用户定的优先级（项目文件是团队默认，我改过就用我的）",
+        )
+    }
+
+    /**
+     * 与别名同理：`null` / 空白表示"没设置"，不是"清空"。
+     *
+     * 这条尤其重要，因为 `SettingsState.okTemplatesDirectory` 的默认值就是
+     * `ok_templates`（非空）—— 直接把它当个人偏好传进来，项目声明就永远不生效。
+     */
+    @Test
+    fun `a blank templates preference means not set, not cleared`() {
+        val project = TemplatesConvention(directory = "my_tpl")
+        assertEquals("my_tpl", project.directoryOr(null, DEFAULT_TPL), "null = 没设置 → 项目声明生效")
+        assertEquals("my_tpl", project.directoryOr("   ", DEFAULT_TPL), "全空白同样是没设置")
+    }
+
+    @Test
+    fun `templates directory is normalized before it reaches path building`() {
+        assertEquals("ok_templates", normalizeRelPath("ok_templates\\"), "反斜杠转正斜杠并去掉尾斜杠")
+        assertEquals("ok_templates", normalizeRelPath("/ok_templates/"), "去掉首尾斜杠")
+        assertEquals("a/b", normalizeRelPath("  a/b  "), "去掉首尾空白，多级目录保留")
+        assertEquals(null, normalizeRelPath("   "), "全空白 → 没写")
+        assertEquals(null, normalizeRelPath("/"), "只有斜杠 → 没写（不能变成空目录名）")
+        assertEquals(null, normalizeRelPath(null), "null → 没写")
+    }
+
+    @Test
+    fun `wrong field types in templates fall back instead of becoming a directory name`() {
+        val c = convention("""{"templates": {"directory": 42, "cocoAnnotations": ["x"]}}""")
+        assertEquals(null, c.templates.directory, """directory 是数字 → 当没写（不能变成目录名 "42"）""")
+        assertEquals(null, c.templates.cocoAnnotations, "cocoAnnotations 是数组 → 当没写")
+        assertEquals(
+            DEFAULT_TPL,
+            c.templates.directoryOr(null, DEFAULT_TPL),
+            "类型写错时整条链退回兜底",
+        )
+    }
+
+    @Test
+    fun `a declared directory with a trailing backslash still wins over the fallback`() {
+        // 原始字符串里 `\\` 就是两个反斜杠 → JSON 解析出来是 `my_tpl\`（尾随一个反斜杠）
+        val c = convention("""{"templates": {"directory": "my_tpl\\"}}""")
+        assertEquals(
+            "my_tpl",
+            c.templates.directoryOr(null, DEFAULT_TPL),
+            "**声明值也要归一化** —— 否则拼进路径/做目录段匹配时会静默失配",
+        )
+    }
+
     // ── 破坏性对照 ───────────────────────────────────────────────────
 
     /**
@@ -215,6 +289,34 @@ class ProjectConventionTest {
         assertEquals(
             "mine/Label.py",
             declared.filePathOr("mine/Label.py"),
+            "真实现必须让个人偏好胜出 —— 与对照相反，证明该断言确实在约束优先级",
+        )
+    }
+
+    /** 对照：不归一化时尾反斜杠会原样漏出去 —— 拼进 `File(root, dir)` 与目录段匹配就是静默失配。 */
+    @Test
+    fun `regression guard - without normalization a trailing backslash leaks through`() {
+        val declared = TemplatesConvention(directory = "ok_templates\\")
+        assertEquals(
+            "ok_templates\\",
+            declared.directory,
+            "对照：修复前直接把声明值当路径用 —— 尾反斜杠会一路带进路径拼接与匹配",
+        )
+        assertEquals(
+            "ok_templates",
+            declared.directoryOr(null, DEFAULT_TPL),
+            "真实现必须归一化，否则目录名匹配静默失配（界面正常，只是配置不生效）",
+        )
+    }
+
+    /** 对照：把模板目录的取值链写反（项目声明优先）会得到相反的结果。 */
+    @Test
+    fun `regression guard - reversing the templates precedence yields the other value`() {
+        val declared = TemplatesConvention(directory = "my_tpl")
+        assertEquals("my_tpl", declared.directory, "对照：链写反时拿到的是项目声明")
+        assertEquals(
+            "mine",
+            declared.directoryOr("mine", DEFAULT_TPL),
             "真实现必须让个人偏好胜出 —— 与对照相反，证明该断言确实在约束优先级",
         )
     }
