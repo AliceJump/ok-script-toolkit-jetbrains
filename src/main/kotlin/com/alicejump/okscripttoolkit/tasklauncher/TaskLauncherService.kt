@@ -106,7 +106,16 @@ class TaskLauncherService(private val project: Project) {
 
     // ── Path helpers ──────────────────────────────────────────────────
 
-    fun getProjectRoot(): String {
+    /**
+     * **工作区根**（`project.basePath`），用作 `.idea/` 数据文件（任务配置、schema 缓存）的落点。
+     *
+     * 与父仓 `taskLauncher.ts` 的 `dataFile()` 对齐 —— 那边明确用
+     * `workspaceFolders[0]`，**与 `okScriptProjectPath` 设置无关**。
+     *
+     * ⚠️ 这**不是** ok-script 项目根。要跑脚本请用 [ProjectDirResolution] 解析出的目录，
+     * 别拿这个函数的结果去跑 `parse_config_tasks.py`（曾经就是这么错的）。
+     */
+    fun getWorkspaceRoot(): String {
         return project.basePath ?: throw IllegalStateException("Project base path is null")
     }
 
@@ -115,8 +124,18 @@ class TaskLauncherService(private val project: Project) {
 
     // ── Task list ─────────────────────────────────────────────────────
 
-    fun parseConfigTasks(pythonPath: String, locale: String = "zh_CN"): TaskListResult {
-        val projectDir = getProjectRoot()
+    /**
+     * 解析任务注册表。
+     *
+     * [projectDir] 必须是 [ProjectDirResolution] 解析出的 **ok-script 项目根**，
+     * 不能是工作区根 —— 两者在设置了 `okScriptProjectPath` 时会不同，
+     * 拿错就会去别的目录找 `config.py`（父仓 `resolveProjectContext()` 同样是设置优先）。
+     */
+    fun parseConfigTasks(
+        pythonPath: String,
+        locale: String = "zh_CN",
+        projectDir: String = getWorkspaceRoot(),
+    ): TaskListResult {
         val scriptPath = Paths.get(getPythonScriptDir(), PARSE_CONFIG_SCRIPT).toString()
         if (!File(scriptPath).exists()) {
             return TaskListResult(ok = false, error = "Script not found: $scriptPath")
@@ -170,12 +189,13 @@ class TaskLauncherService(private val project: Project) {
 
     // ── Schema probing ────────────────────────────────────────────────
 
+    /** 采集参数 schema。[projectDir] 同 [parseConfigTasks]，必须是 ok-script 项目根。 */
     fun probeTaskSchemas(
         pythonPath: String,
         locale: String = "zh_CN",
         poDirectory: String = "i18n",
+        projectDir: String = getWorkspaceRoot(),
     ): SchemaProbeResult {
-        val projectDir = getProjectRoot()
         val scriptPath = Paths.get(getPythonScriptDir(), PROBE_SCHEMA_SCRIPT).toString()
         if (!File(scriptPath).exists()) {
             return SchemaProbeResult(ok = false, error = "Script not found: $scriptPath")
@@ -296,7 +316,7 @@ class TaskLauncherService(private val project: Project) {
 
     private fun loadTaskConfigsLocked(): TaskConfigStore {
         configStoreCache?.let { return it }
-        val configFile = Paths.get(getProjectRoot(), TASKS_CONFIG_FILE).toFile()
+        val configFile = Paths.get(getWorkspaceRoot(), TASKS_CONFIG_FILE).toFile()
         val store = if (!configFile.exists()) {
             TaskConfigStore()
         } else {
@@ -348,7 +368,7 @@ class TaskLauncherService(private val project: Project) {
     }
 
     fun saveTaskConfigs(store: TaskConfigStore) {
-        val configFile = Paths.get(getProjectRoot(), TASKS_CONFIG_FILE).toFile()
+        val configFile = Paths.get(getWorkspaceRoot(), TASKS_CONFIG_FILE).toFile()
         configFile.parentFile?.mkdirs()
         try {
             objectMapper.writerWithDefaultPrettyPrinter().writeValue(configFile, store)
@@ -360,12 +380,12 @@ class TaskLauncherService(private val project: Project) {
 
     fun getTaskConfig(taskKey: String): TaskConfig {
         val store = loadTaskConfigs()
-        return store.projects[getProjectRoot()]?.tasks?.get(taskKey) ?: TaskConfig()
+        return store.projects[getWorkspaceRoot()]?.tasks?.get(taskKey) ?: TaskConfig()
     }
 
     fun saveTaskConfig(taskKey: String, config: TaskConfig) {
         synchronized(storeLock) {
-            val root = getProjectRoot()
+            val root = getWorkspaceRoot()
             val updated = TaskConfigMerge.withTask(loadTaskConfigsLocked(), root, taskKey, config)
             saveTaskConfigs(updated)
             configStoreCache = updated
@@ -376,11 +396,11 @@ class TaskLauncherService(private val project: Project) {
 
     /** 已勾选的触发任务 key 列表（module::Class） */
     fun loadEnabledTriggers(): List<String> =
-        loadTaskConfigs().projects[getProjectRoot()]?.enabledTriggers ?: emptyList()
+        loadTaskConfigs().projects[getWorkspaceRoot()]?.enabledTriggers ?: emptyList()
 
     fun saveEnabledTriggers(keys: List<String>) {
         synchronized(storeLock) {
-            val root = getProjectRoot()
+            val root = getWorkspaceRoot()
             val updated = TaskConfigMerge.withEnabledTriggers(loadTaskConfigsLocked(), root, keys)
             saveTaskConfigs(updated)
             configStoreCache = updated
@@ -390,7 +410,7 @@ class TaskLauncherService(private val project: Project) {
     // ── Schema cache ──────────────────────────────────────────────────
 
     fun loadSchemaCache(projectDir: String, locale: String): SchemaProbeResult {
-        val cacheFile = Paths.get(getProjectRoot(), SCHEMA_CACHE_FILE).toFile()
+        val cacheFile = Paths.get(getWorkspaceRoot(), SCHEMA_CACHE_FILE).toFile()
         if (!cacheFile.exists()) return SchemaProbeResult(ok = false, error = "Schema cache not found")
         return try {
             // 手动从 JsonNode 解析：SchemaProbeResult 是 Kotlin data class，没有 Jackson 需要的
@@ -422,7 +442,7 @@ class TaskLauncherService(private val project: Project) {
     }
 
     fun saveSchemaCache(projectDir: String, locale: String, result: SchemaProbeResult) {
-        val cacheFile = Paths.get(getProjectRoot(), SCHEMA_CACHE_FILE).toFile()
+        val cacheFile = Paths.get(getWorkspaceRoot(), SCHEMA_CACHE_FILE).toFile()
         cacheFile.parentFile?.mkdirs()
         try {
             val enriched = result.copy(projectDir = projectDir, locale = locale)

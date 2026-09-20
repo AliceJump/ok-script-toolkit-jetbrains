@@ -28,29 +28,28 @@ class ScreenshotCapture(private val project: Project) {
         private val LOG = Logger.getInstance(ScreenshotCapture::class.java)
         private val JSON = ObjectMapper()
 
-        /** ok-script 项目根：设置优先，回退到含 src/config.py / config.py 的工作区 */
+        /** ok-script 项目根：设置优先，回退到含 src/config.py / config.py 的工作区。 */
         fun detectProjectDir(project: Project): String {
             val settings = OkScriptToolkitSettings.getInstance(project)
-            val configured = settings.okScriptProjectPath().replace("~", System.getProperty("user.home"))
-            if (configured.isNotBlank() && Files.isDirectory(Paths.get(configured))) {
-                val dir = configured.trimEnd('/', '\\')
-                LOG.info("Project dir from settings: $dir")
-                return dir
+            val dir = ProjectDirResolution.resolve(
+                configured = settings.okScriptProjectPath(),
+                basePath = project.basePath.orEmpty(),
+                homeDir = System.getProperty("user.home").orEmpty(),
+                isDirectory = { Files.isDirectory(Paths.get(it)) },
+                hasConfigFile = { base ->
+                    Files.exists(Paths.get(base, "src", "config.py")) ||
+                        Files.exists(Paths.get(base, "config.py"))
+                },
+            )
+            if (dir.isBlank()) {
+                LOG.warn(
+                    "No project dir found (settings='${settings.okScriptProjectPath()}', " +
+                        "basePath='${project.basePath}')"
+                )
+            } else {
+                LOG.info("Project dir resolved: $dir")
             }
-            val basePath = project.basePath ?: ""
-            if (basePath.isNotBlank() &&
-                (Files.exists(Paths.get(basePath, "src", "config.py")) || Files.exists(
-                    Paths.get(
-                        basePath,
-                        "config.py"
-                    )
-                ))
-            ) {
-                LOG.info("Project dir from workspace: $basePath")
-                return basePath
-            }
-            LOG.warn("No project dir found (settings='${settings.okScriptProjectPath()}', basePath='$basePath')")
-            return ""
+            return dir
         }
 
         /** Python 解释器：设置 -> 项目 .venv -> PATH 上的 python */

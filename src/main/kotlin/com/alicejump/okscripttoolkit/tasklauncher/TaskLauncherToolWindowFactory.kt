@@ -2,6 +2,7 @@ package com.alicejump.okscripttoolkit.tasklauncher
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
+import com.alicejump.okscripttoolkit.core.ProjectDirResolution
 import com.alicejump.okscripttoolkit.toolbox.ToolboxService
 import com.alicejump.okscripttoolkit.ui.ToolbarAction
 import com.alicejump.okscripttoolkit.ui.openCharacterManager
@@ -558,20 +559,21 @@ class TaskLauncherPanel(private val project: Project) {
         toolboxService.disconnectGame(projectDir, detectPythonPath())
     }
 
-    private fun detectProjectPath(): String {
-        val settings = OkScriptToolkitSettings.getInstance(project)
-        val configured = settings.okScriptProjectPath()
-        if (configured.isNotBlank()) {
-            val path = configured.replace("~", System.getProperty("user.home"))
-            if (Files.isDirectory(Paths.get(path))) return path
-        }
-        val basePath = project.basePath ?: return ""
-        val candidates = listOf(
-            Paths.get(basePath, "src", "config.py"),
-            Paths.get(basePath, "config.py"),
-        )
-        return if (candidates.any { Files.exists(it) }) basePath else ""
-    }
+    /**
+     * ok-script 项目根（设置优先，回退到含 `config.py` 的工作区根）。
+     *
+     * 规则收敛在 [ProjectDirResolution] —— 此前插件里有三份各自漂移的实现，
+     * 其中服务层那份只取 `project.basePath`，导致界面判定用设置、跑脚本却用工作区根。
+     */
+    private fun detectProjectPath(): String = ProjectDirResolution.resolve(
+        configured = OkScriptToolkitSettings.getInstance(project).okScriptProjectPath(),
+        basePath = project.basePath.orEmpty(),
+        homeDir = System.getProperty("user.home").orEmpty(),
+        isDirectory = { Files.isDirectory(Paths.get(it)) },
+        hasConfigFile = { dir ->
+            Files.exists(Paths.get(dir, "src", "config.py")) || Files.exists(Paths.get(dir, "config.py"))
+        },
+    )
 
     private fun detectPythonPath(): String {
         val settings = OkScriptToolkitSettings.getInstance(project)
@@ -606,7 +608,9 @@ class TaskLauncherPanel(private val project: Project) {
             val pythonPath = detectPythonPath()
             // parse_config_tasks.py 是纯 AST 解析（快）：每次刷新都重跑，
             // 保证 schema 缓存命中时新增任务也能出现（对齐 VSCode 行为）
-            val parseResult = taskService.parseConfigTasks(pythonPath, locale)
+            // ⚠️ 必须把 projectDir 传下去：服务层默认用工作区根，而项目根
+            // 可能来自 okScriptProjectPath 设置，两者不同时会去错的目录找 config.py。
+            val parseResult = taskService.parseConfigTasks(pythonPath, locale, projectDir)
             val cachedResult = taskService.loadSchemaCache(projectDir, locale)
             if (cachedResult.ok && cachedResult.schemas != null) {
                 return@supplyAsync cachedResult.copy(
@@ -614,7 +618,7 @@ class TaskLauncherPanel(private val project: Project) {
                     configModule = parseResult.configModule.takeIf { parseResult.ok } ?: cachedResult.configModule,
                 )
             }
-            val probeResult = taskService.probeTaskSchemas(pythonPath, locale, poDirectory)
+            val probeResult = taskService.probeTaskSchemas(pythonPath, locale, poDirectory, projectDir)
             if (probeResult.ok && probeResult.schemas != null) {
                 val withConfigModule = probeResult.copy(
                     configModule = probeResult.configModule ?: parseResult.configModule.takeIf { parseResult.ok },
@@ -1801,7 +1805,7 @@ class TaskLauncherPanel(private val project: Project) {
 
     /** 全量参数覆盖：{module::Class: {key: value}}，执行器按任务各自取用 */
     private fun allParamOverrides(): Map<String, Map<String, Any>> {
-        val projectConfig = taskService.loadTaskConfigs().projects[taskService.getProjectRoot()]
+        val projectConfig = taskService.loadTaskConfigs().projects[taskService.getWorkspaceRoot()]
             ?: return emptyMap()
         val overrides = linkedMapOf<String, Map<String, Any>>()
         for ((key, config) in projectConfig.tasks) {
@@ -1820,7 +1824,7 @@ class TaskLauncherPanel(private val project: Project) {
 
     /** 历史配置里的 extraArgs / env 在单进程模型下无法按任务生效，启动时提示一次 */
     private fun warnLegacyPerTaskSettings() {
-        val tasks = taskService.loadTaskConfigs().projects[taskService.getProjectRoot()]?.tasks ?: return
+        val tasks = taskService.loadTaskConfigs().projects[taskService.getWorkspaceRoot()]?.tasks ?: return
         val affected = tasks.values.count { !it.extraArgs.isNullOrBlank() || !it.env.isNullOrEmpty() }
         if (affected > 0) {
             taskRunner.log(OkScriptToolkitBundle.message("taskLauncher.legacySettingsIgnored", affected))
