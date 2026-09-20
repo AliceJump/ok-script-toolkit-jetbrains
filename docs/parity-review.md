@@ -1,11 +1,11 @@
-﻿# Sub-repo vs Main-repo Feature Parity Review (Updated 2026-09-20)
+﻿# Sub-repo vs Main-repo Feature Parity Review (Updated 2026-09-21)
 
-# 子仓库与主仓库功能差异审查（2026-09-20 更新）
+# 子仓库与主仓库功能差异审查（2026-09-21 更新）
 
-对照基准：主仓库 VSCode 扩展 v1.7.1、子仓库 JetBrains 插件 v1.7.1。
+对照基准：主仓库 VSCode 扩展 v1.8.0、子仓库 JetBrains 插件 v1.8.0。
 下次审查请覆盖本表并更新状态。
 
-Baseline: main repo VSCode extension v1.7.1, sub-repo JetBrains plugin v1.7.1.
+Baseline: main repo VSCode extension v1.8.0, sub-repo JetBrains plugin v1.8.0.
 Next review should override this table and update the status.
 
 > **上一版（2026-09-07，基线 v1.4.0）已严重失真**：它把当时尚未做的标注编辑器
@@ -24,6 +24,15 @@ Next review should override this table and update the status.
 > found the "6-language UI fully aligned" claim false (4 bundles were each missing 13 keys —
 > see the ⚠️ note below). Now fixed, with a build-time check. **Treat this table as
 > unverified; the code and the tests are authoritative.**
+>
+> **2026-09-21 追加复核**：项目约定文件那一节又漂了 —— 它只列了 4 个已接入字段，
+> 实际已全部接完（含新增的 `config.py` 事实层）。本次已重写该节。**再次印证：这张表
+> 只记录"上次查证时的结论"，读之前先按「待验证」处理。**
+> 同时修正基线版本号（v1.7.1 → v1.8.0）。
+>
+> **2026-09-21 follow-up**: the project-convention-file section had drifted again — it listed
+> only 4 wired fields while all of them are now wired (including the new `config.py` fact
+> layer). That section is rewritten here. Baseline bumped v1.7.1 → v1.8.0.
 
 ---
 
@@ -51,15 +60,36 @@ Next review should override this table and update the status.
   （子仓将父仓 `python/` 整包进 JAR），`apply_config_sandbox` 行为完全一致，
   含 `devices.json` 桥接与 `screenshots_folder` 改道
 - **项目约定文件 `ok-script-toolkit.json`**：放在**被调试项目**根目录，两端共用同一份
-  （**只读**，插件绝不写入）。取值链 **个人设置 > 项目约定文件 > 内置默认**。
-  已接入：`labelEnum.path` / `labelEnum.name` / `labelEnum.aliases` / `templates.directory`。
+  （**只读**，插件绝不写入）。取值链 **个人设置 > 项目约定文件 > 项目 `config.py` 已声明的事实
+  > 内置默认**。
+  **已接入全部字段**（2026-09-21 收尾）：`labelEnum.path` / `labelEnum.name` / `labelEnum.aliases` /
+  `templates.directory` / `templates.cocoAnnotations` / `i18n.enabled` / `i18n.langDirectory` /
+  `i18n.poDirectory` / `i18n.poDomains` / `characters.projectPath` / `characters.masterFile` /
+  `characters.skillsDirectory` / `characters.localeFile` / `characters.avatarTemplateRegex` /
+  `effects.file`。
+  - **`config.py` 事实层**目前只有 `templates.cocoAnnotations` 用上了：它是 ok 框架加载的
+    **运行时模板库**（`ok/__init__.py` 读 `template_matching.coco_feature_json`）的路径，
+    链为 `templates.cocoAnnotations` → `config.py` → 依次探测 `assets/coco_annotations.json`、
+    `ok_tasks/assets/coco_annotations.json`（即引入约定文件之前的行为）。
+    实测 6 个 ok 系项目**全都**声明了它，其中一个的文件名是 `coco_detection.json` ——
+    没有这条链时插件在那类项目上**一个候选都探不到，模板库是空的**。
+  - ⚠️ **素材面板自己的 `<模板目录>/coco_annotations.json` 是另一个文件**，路径由
+    `templates.directory` 决定，不受 `templates.cocoAnnotations` 影响。
+  - ⚠️ **按字段类型选归一化**：相对路径走 `normalizeRelPath`；绝对路径（`characters.projectPath`）
+    与正则（`characters.avatarTemplateRegex`）**绝不归一化** —— 前者会被吃掉开头斜杠、
+    后者会把 `\d` 换成 `/d`，都只是"匹配不到"，不报错。
   两端各有一个**溯源面板**（父仓命令 `showConventionSources`；子仓 Tools 菜单
   `ShowConventionSources`）：列出每一项的生效值来自哪一层，并给被个人设置覆盖过的项
   一个「恢复」按钮。两端实现对称 —— 纯对象（父仓 `projectConfigPure.ts` /
   子仓 `core/ProjectConvention.kt`）都产出 `{ value, layer }`，**来源层由取值链本身
   产出、不在 UI 里复算**（复算会与实际生效值分叉，且分叉是静默的）。
+  面板里的"项目文件里写了什么"也**由同一条链再跑一遍**得出（把个人偏好置空），
+  这样展示值与生效值走同一套归一化。
   ⚠️ 两端设置项都带**非空默认值**，接新设置前必须先拿到"用户是否真的改过"这个信号
   （父仓 `inspect()`，子仓 `overriddenKeys`），否则项目声明会被**永久静默屏蔽**。
+  两处都有守卫测试防漏：子仓 `OverrideKeyParityTest`（`personal` / `recordIfChanged` /
+  播种三处键集必须一致）、父仓 `test_convention_sources.js`（登记表必须覆盖每个
+  `ideSetting` 键）。
 - **折叠分组吸收内联显隐**：子仓抽成可单测纯对象 `tasklauncher/SchemaTreeOverlap.kt`
   （父仓对应实现内联在 `media/taskLauncher/configPanel.js`）；子仓另有
   `SchemaTreeOverlapTest.kt` 两条破坏性对照断言，规范度高于父仓
@@ -100,6 +130,9 @@ Next review should override this table and update the status.
     `ResourceBundle` 会静默回落成英文 —— 界面中英夹杂而无人报错。已补齐译文，
     并新增 `src/test/.../core/BundleParityTest.kt` 把「6 个 properties 键集必须逐一对等」钉死，
     以后漂移会在构建期失败而不是等用户发现。
+    （2026-09-21 复核：键集逐一对等，**译文也没有遗漏** —— 各语言与英文取值相同的只剩
+    `plugin.name`、`templateAsset.exportEnumTitle` 这类**刻意不译**的产品名/文件名，
+    以及西班牙语里本来就写作 `Error` 的那个词。）
 
 ### ⚠️ 待办
 
@@ -163,14 +196,33 @@ Remaining gaps are two kinds: **one annotation-editor save-semantics difference*
   bridging and `screenshots_folder` redirection
 - **Project convention file `ok-script-toolkit.json`**: lives in the **debugged project's** root and is
   shared by both ends (**read-only** — the plugin never writes it). Precedence is
-  **my settings > project convention file > built-in default**. Wired up:
-  `labelEnum.path` / `labelEnum.name` / `labelEnum.aliases` / `templates.directory`.
+  **my settings > project convention file > facts declared in the project's `config.py` > built-in default**.
+  **Every field is wired up** (finished 2026-09-21): `labelEnum.path` / `labelEnum.name` /
+  `labelEnum.aliases` / `templates.directory` / `templates.cocoAnnotations` / `i18n.enabled` /
+  `i18n.langDirectory` / `i18n.poDirectory` / `i18n.poDomains` / `characters.projectPath` /
+  `characters.masterFile` / `characters.skillsDirectory` / `characters.localeFile` /
+  `characters.avatarTemplateRegex` / `effects.file`.
+  - The **`config.py` fact layer** is used by exactly one field so far, `templates.cocoAnnotations`:
+    it is the path of the **runtime template library** the ok framework loads
+    (`ok/__init__.py` reads `template_matching.coco_feature_json`). Chain:
+    `templates.cocoAnnotations` → `config.py` → probe `assets/coco_annotations.json` then
+    `ok_tasks/assets/coco_annotations.json` (the pre-convention-file behaviour).
+    All 6 ok-family projects surveyed declare it, and one of them uses `coco_detection.json` —
+    without this chain the plugin found **no candidate at all there, so the library was empty**.
+  - ⚠️ The asset panel's own `<templates dir>/coco_annotations.json` is a **different file**;
+    its path comes from `templates.directory` and is unaffected by `templates.cocoAnnotations`.
+  - ⚠️ **Pick the normalization by field type**: relative paths go through `normalizeRelPath`;
+    absolute paths (`characters.projectPath`) and regexes (`characters.avatarTemplateRegex`)
+    must **not** be normalized — the former loses its leading slash, the latter turns `\d` into `/d`.
+    Both failures are silent: they just stop matching.
   Both ends have a **source-tracing panel** (parent command `showConventionSources`; sub-repo Tools menu
   `ShowConventionSources`) that lists which layer each effective value comes from and offers a Revert
   button on rows you have overridden. The two implementations are symmetric — the pure objects
   (`projectConfigPure.ts` / `core/ProjectConvention.kt`) both produce `{ value, layer }`, and the
   **layer comes from the chain itself rather than being recomputed in the UI** (a recomputation would
-  drift from the effective value, silently).
+  drift from the effective value, silently). The panel's "what the project file says" is likewise
+  produced by **re-running the same chain** with the personal value blanked out, so the displayed
+  and effective values share one normalization.
   ⚠️ Settings on both ends carry **non-empty defaults**, so before wiring a new setting you must first
   obtain a "did the user actually change this" signal (parent `inspect()`, sub-repo `overriddenKeys`),
   otherwise the project declaration is **permanently shadowed, silently**.
