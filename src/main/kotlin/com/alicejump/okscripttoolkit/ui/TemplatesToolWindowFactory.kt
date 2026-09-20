@@ -4,6 +4,7 @@ import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.FeatureTemplate
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
+import com.alicejump.okscripttoolkit.core.TemplateThumbBatch
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
@@ -199,16 +200,20 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
         pendingThumbLabels.clear()
         gridPanel.removeAll()
         gridPanel.layout = GridLayout(0, gridCols, ThumbGridPolicy.HGAP_VALUE, ThumbGridPolicy.HGAP_VALUE)
+        // 先收齐"这一轮真正要加载的"，再按源图分组一次性提交 ——
+        // 逐个提交会让同一张原图被反复解码（见 `requestThumbs` 的说明）。
+        val missing = filtered.filter { thumbs[it.name] == null && !requestedThumbs.contains(it.name) }
         for (img in filtered) {
-            gridPanel.add(createCard(img, generation))
+            gridPanel.add(createCard(img))
         }
         emptyLabel.isVisible = filtered.isEmpty()
         gridPanel.add(emptyLabel)
         gridPanel.revalidate()
         gridPanel.repaint()
+        requestThumbs(missing, generation)
     }
 
-    private fun createCard(template: FeatureTemplate, generation: Int): JComponent {
+    private fun createCard(template: FeatureTemplate): JComponent {
         val card = JBPanel<JBPanel<*>>(BorderLayout())
         card.isOpaque = false
 
@@ -217,9 +222,8 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
         imageArea.isOpaque = false
         imageArea.verticalAlignment = SwingConstants.CENTER
         imageArea.preferredSize = Dimension(CARD_WIDTH - 16, THUMB_HEIGHT + 4)
-        if (icon == null && !requestedThumbs.contains(template.name)) {
-            requestThumb(template, generation)
-        }
+        // 缩略图**不在这里请求** —— 由 `renderGrid` 收齐后按源图分组提交（见 `requestThumbs`）。
+        // 在这里逐个请求会让同一张原图被反复解码（实测最高 17 个模板共用一张图）。
         pendingThumbLabels.getOrPut(template.name) { java.util.Collections.synchronizedList(mutableListOf()) }.add(imageArea)
 
         val sizeText = "${template.width}×${template.height}"
@@ -272,39 +276,63 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
         popup.show(e.component, e.x, e.y)
     }
 
-    /** 异步生成网格缩略图（bbox 裁剪），完成后回填到已渲染的卡片，避免旧数据回流。 */
-    private fun requestThumb(template: FeatureTemplate, generation: Int) {
-        if (disposed) return
-        requestedThumbs.add(template.name)
-        thumbExecutor.submit {
-            val icon = loadThumb(template)
-            SwingUtilities.invokeLater {
-                // 清除请求标记，允许后续渲染重新请求
-                requestedThumbs.remove(template.name)
-                if (disposed) return@invokeLater
-                if (generation != renderGeneration.get()) {
-                    // 过期请求：重新请求当前生成的缩略图
-                    pendingThumbLabels[template.name]?.let {
-                        templates.firstOrNull { current -> current.name == template.name }?.let { current ->
-                            requestThumb(current, renderGeneration.get())
+    /**
+     * 为一批模板请求缩略图。
+     *
+     * **按源图分组，每张原图只解码一次** —— 否则"每图模板数"高的项目会反复解同一张图：
+     * 实测 ok-end-field 是 276 模板 / 16 图，按模板逐个处理会把每张原图解 **17 次**。
+     * 父仓对应的是 `warmCropCache` 的"按图分组 + 一次解码多张裁剪"。
+     *
+     * **单线程顺序执行是有意的**：解一张 → 立刻裁完这一组 → 释放，任意时刻只持有一张
+     * 解码后的原图（2560×1440 的 ARGB 就是 ~15MB）。换成线程池要同时持有 N 张，
+     * 堆压力比它省下的那点时间更贵。
+     */
+    private fun requestThumbs(batch: List<FeatureTemplate>, generation: Int) {
+        if (disposed || batch.isEmpty()) return
+        for (group in TemplateThumbBatch.groupByImage(batch) { it.imagePath }) {
+            for (template in group.items) requestedThumbs.add(template.name)
+            thumbExecutor.submit {
+                val original = decodeImage(group.imagePath)
+                val results = group.items.map { it to original?.let { img -> cropToThumb(img, it) } }
+                SwingUtilities.invokeLater {
+                    if (disposed) return@invokeLater
+                    val stale = generation != renderGeneration.get()
+                    val retry = mutableListOf<FeatureTemplate>()
+                    for ((template, icon) in results) {
+                        // 清除请求标记，允许后续渲染重新请求
+                        requestedThumbs.remove(template.name)
+                        if (stale) {
+                            // 过期请求：卡片还在的话，用当前生成重排一次
+                            if (pendingThumbLabels.containsKey(template.name)) {
+                                templates.firstOrNull { current -> current.name == template.name }
+                                    ?.let { retry.add(it) }
+                            }
+                            continue
+                        }
+                        if (icon != null) thumbs[template.name] = icon
+                        pendingThumbLabels.remove(template.name)?.forEach { label ->
+                            label.icon = icon
+                            label.repaint()
                         }
                     }
-                    return@invokeLater
-                }
-                if (icon != null) thumbs[template.name] = icon
-                pendingThumbLabels.remove(template.name)?.forEach { label ->
-                    label.icon = icon
-                    label.repaint()
+                    if (retry.isNotEmpty()) requestThumbs(retry, renderGeneration.get())
                 }
             }
         }
     }
 
-    private fun loadThumb(template: FeatureTemplate): Icon? {
+    /** 解码原图。失败返回 `null` —— 一张坏图不该让整组缩略图都消失。 */
+    private fun decodeImage(imagePath: java.nio.file.Path): BufferedImage? = try {
+        val file = imagePath.toFile()
+        if (file.exists()) ImageIO.read(file) else null
+    } catch (e: Exception) {
+        LOG.warn("Failed to decode template source image: $imagePath", e)
+        null
+    }
+
+    /** 从**已解码**的原图上裁 bbox 并等比缩放到预览框（绝不拉伸）。 */
+    private fun cropToThumb(original: BufferedImage, template: FeatureTemplate): Icon? {
         return try {
-            val file = template.imagePath.toFile()
-            if (!file.exists()) return null
-            val original = ImageIO.read(file) ?: return null
             val x = template.bbox[0].coerceIn(0, original.width - 1)
             val y = template.bbox[1].coerceIn(0, original.height - 1)
             val w = template.bbox[2].coerceAtMost(original.width - x)

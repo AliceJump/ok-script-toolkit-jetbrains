@@ -57,8 +57,25 @@ Based on `parity-review.md` (2026-09-06) and source code analysis, this report s
   **Concurrency Safety**: `@Volatile` + `ConcurrentHashMap` + `AtomicLong` ensure multi-thread safety, but there is no Worker thread pool — image processing executes in a `CompletableFuture` thread pool.
 - **平台服务**：利用 IntelliJ Platform 的 `@Service(Service.Level.PROJECT)` 注解自动管理生命周期，无需手动 dispose。
   **Platform Services**: Leverages IntelliJ Platform's `@Service(Service.Level.PROJECT)` annotation for automatic lifecycle management, without manual dispose.
-- **单线程缩略图加载**：`TemplatesToolWindowFactory` 使用 `Executors.newSingleThreadExecutor` 顺序加载缩略图，无并发解码。
-  **Single-Thread Thumbnail Loading**: `TemplatesToolWindowFactory` uses `Executors.newSingleThreadExecutor` to load thumbnails sequentially, without concurrent decoding.
+- **单线程缩略图加载**：`TemplatesToolWindowFactory` 使用 `Executors.newSingleThreadExecutor` 顺序加载缩略图。
+  **单线程是有意的**（不是没做并发）：解一张原图 → 立刻裁完它上面的全部模板 → 释放，
+  任意时刻只持有一张解码后的原图（2560×1440 ARGB ≈ 15MB）；换线程池要同时持有 N 张。
+  **2026-09-21 已修掉真正的瓶颈**：原先是"**每个模板各解一次原图**"，而实测
+  ok-end-field 是 276 模板 / **16** 张图（**17:1**）—— 同一张图被解 17 遍。
+  现改为**按源图分组**（`core/TemplateThumbBatch.kt` + 单测），与父仓 `warmCropCache`
+  的"按图分组 + 一次解码多张裁剪"对齐。
+  **仍然没有的是持久缓存**（父仓有 content-hash 命名的磁盘缩略图缓存 + Worker 预热），
+  所以每次 IDE 重启、以及每次数据变更（`thumbs.clear()`）后仍要重新解码一遍。
+  **Single-Thread Thumbnail Loading**: the sub-repo loads thumbnails sequentially in
+  `TemplatesToolWindowFactory`. **The single thread is deliberate**: decode one source image,
+  crop all of its templates, release it — only one decoded image is ever held (a 2560×1440 ARGB
+  bitmap is ~15MB); a thread pool would hold N at once. **The real bottleneck was fixed on
+  2026-09-21**: previously **each template decoded its own copy of the source image**, and
+  ok-end-field is 276 templates over **16** images (**17:1**) — the same image decoded 17 times.
+  Now grouped by source image (`core/TemplateThumbBatch.kt`, unit-tested), matching the parent's
+  `warmCropCache`. **What is still missing is a persistent cache** (the parent has
+  content-hash-named thumbnail files on disk plus Worker warm-up), so every IDE restart and every
+  data change (`thumbs.clear()`) re-decodes everything.
 
 **关键文件**：`OkProjectDataService.kt`（479 行）、`TaskLauncherToolWindowFactory.kt`（2044 行）、`TemplatesToolWindowFactory.kt`（476 行）
 **Key Files**: `OkProjectDataService.kt` (479 lines), `TaskLauncherToolWindowFactory.kt` (2044 lines), `TemplatesToolWindowFactory.kt` (476 lines)
@@ -343,7 +360,9 @@ end-to-end testing (requires a real IDE and a real game) — neither side does i
 | 二 / 2 | 标注快捷键配置 / Annotation shortcut configuration | ✅（走 IntelliJ 原生 Keymap，属载体差异）|
 
 **第三阶段（体验优化）—— 仍未做** / **Phase 3 (Experience Optimization) — still open**：
-1. 缩略图并发加载优化 / Thumbnail concurrent loading optimization
+1. ~~缩略图并发加载优化~~ → **诊断已修正**：真正的瓶颈不是"没并发"，而是
+   **每个模板各解一次原图**（ok-end-field 达 17:1），已于 2026-09-21 按**源图分组**修掉
+   （见 §1）。**剩下的是持久缓存**（父仓有 content-hash 磁盘缓存），需要时再做。
 2. 角色面板状态栏本地化 / Character panel status bar localization
 3. 大画廊双入口 / Large gallery dual entry points
 4. 任务卡片式 UI / Task card-style UI
