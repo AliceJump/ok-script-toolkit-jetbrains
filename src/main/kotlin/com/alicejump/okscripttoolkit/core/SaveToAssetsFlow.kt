@@ -1,5 +1,8 @@
 package com.alicejump.okscripttoolkit.core
 
+import java.io.File
+import java.io.IOException
+import java.nio.file.Path
 import java.nio.file.Paths
 
 /**
@@ -129,4 +132,59 @@ object SaveToAssetsFlow {
         val p = Paths.get(value)
         return if (p.isAbsolute) p.toString() else Paths.get(projectDir, value).toString()
     }
+}
+
+/**
+ * `candidate` 解析后是否仍位于 `rootDir` 内（Windows 跨盘符也会被拒绝）。
+ *
+ * 两道关：
+ * 1. **词法** —— 纯字符串折叠 `..`，不碰文件系统。越界直接否。
+ * 2. **符号链接** —— 把两边的**最近现存祖先**解析成真实路径再比一次。只做词法会漏掉
+ *    「项目内的父目录是指向项目外的符号链接」这条绕路，`writeFileSync` 照样写出去。
+ *
+ * 相对路径按 [rootDir] 解析，而不是按进程当前目录 —— 消费点传的都是绝对路径，
+ * 但那条隐式规则（`Paths.get` 只看 CWD）在这里会静默指到别处。
+ *
+ * 与 VS Code 侧 `saveToAssetsPure.isPathInsideRoot()` 一一对应，改一边记得改另一边。
+ */
+internal fun isPathInsideRoot(rootDir: String, candidate: String): Boolean {
+    val root = File(rootDir)
+    val raw = File(candidate)
+    val target = if (raw.isAbsolute) raw else File(root, candidate)
+
+    val lexicalRoot = root.absoluteFile.toPath().normalize()
+    if (!target.absoluteFile.toPath().normalize().startsWith(lexicalRoot)) return false
+
+    // 解析不了（根不存在等罕见情况）→ 保留词法结论，不因为一次 IO 异常就放行或误拦
+    val realRoot = realPathOf(root) ?: return true
+    val realTarget = realPathOf(target) ?: return true
+    return realTarget.startsWith(realRoot)
+}
+
+/**
+ * [file] 的真实路径：从它自己向上找到**第一个存在**的位置解析符号链接，再把中间缺失的段接回去。
+ *
+ * 为什么不直接用 `File.canonicalPath`：对**不存在**的路径它**不解析符号链接**
+ * （Windows 上实测：`link/x.py` 会原样返回，于是符号链接逃逸被放行）—— 而枚举文件恰恰
+ * 还没生成，正是要挡的情况。为什么不只解 `parentFile`：[parentFile] 自己也常常不存在
+ * （`a/b/c.py` 这种多级新目录）。
+ */
+private fun realPathOf(file: File): Path? {
+    val missing = ArrayDeque<String>()
+    var current: File? = file
+    while (current != null) {
+        val real: Path? = try {
+            current.toPath().toRealPath()
+        } catch (_: IOException) {
+            null
+        }
+        if (real != null) {
+            var resolved: Path = real
+            for (segment in missing) resolved = resolved.resolve(segment)
+            return resolved
+        }
+        current.name?.let { missing.addFirst(it) }
+        current = current.parentFile
+    }
+    return null
 }

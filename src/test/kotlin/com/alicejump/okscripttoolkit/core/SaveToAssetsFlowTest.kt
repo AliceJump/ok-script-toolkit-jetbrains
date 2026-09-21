@@ -1,112 +1,155 @@
 package com.alicejump.okscripttoolkit.core
 
+import java.nio.file.Files
 import java.nio.file.Paths
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
  * 「导出到 assets」纯逻辑测试（`SaveToAssetsFlow`）。
  *
- * 背景：枚举路径的输入框此前**每次导出都弹**。改成"项目约定文件声明过就不再问"之后，
- * 多出两条必须钉住的不变量 —— 它们都属于**改错也看不出来**的那类：
+ * 背景：候选列表原先只有「保存目标」，枚举路径靠一个**追加项**兜底 —— 那条「改路径项
+ * **当且仅当**跳过弹框时出现」的双向不变量曾是本文件的主要断言。现在列表改成了固定四行
+ * （两个目标 + 枚举路径 + 枚举类名），不变量随之换成了另外三条，它们同属**改错也看不出来**：
  *
- * 1. **跳过弹框 ⇒ 必须留一个改的口子。** 跳过它而不给替代入口，用户就再也改不了枚举路径；
- * 2. **不跳过 ⇒ 不能多出那一项。** 否则变成"既问了又给入口"，出现两个都能改路径的地方。
+ * 1. **目标永远在前、顺序不变** —— 它们是这个对话框存在的理由。
+ * 2. **两项枚举设置永远在，且靠下标认角色，不靠文案** —— 文案是本地化的，比较文案会在
+ *    换语言时静默失效；而少了任一项，用户就再也改不了那一项。
+ * 3. **首次仍然会先问一次路径** —— 「不问」会让从没配过的用户**静默拿不到枚举文件**。
  *
- * 所以「改路径」项必须**当且仅当**跳过弹框时出现 —— 这条双向的"当且仅当"是本文件的主要断言。
+ * 另外两条是**路径安全**（对 VSCode 侧 `saveToAssetsPure` 的镜像）：
+ * 用户输入不能是绝对路径 / 带 `..`（[labelEnumPathInputError]），而最终写入的绝对路径
+ * 必须仍在项目根内（[isPathInsideRoot]）—— 后者还要挡「项目内的父目录是指向项目外的
+ * 符号链接」这条绕路。
  */
 class SaveToAssetsFlowTest {
 
     private val TARGETS = listOf("assets", "ok_tasks/assets")
-    private val CHANGE = "Change LabelEnum.py path..."
+    private val PATH_CHOICE = "Enum file path: "
+    private val NAME_CHOICE = "Enum class name: "
 
-    private fun options(declared: String?) = SaveToAssetsFlow.options(TARGETS, declared, CHANGE)
+    private fun options() = SaveToAssetsFlow.options(TARGETS, PATH_CHOICE, NAME_CHOICE)
 
-    /** 列表里有没有「改路径」那一项 —— 用长度判断，与实现同一套口径。 */
-    private fun hasChangeEntry(list: List<String>) = list.size > TARGETS.size
-
-    // ── 目标永远都在 ─────────────────────────────────────────────────
+    // ── 目标永远都在，且在最前面 ─────────────────────────────────────
 
     @Test
-    fun `the export targets are always present in order`() {
-        for ((name, declared) in listOf("没声明" to null, "声明过" to "src/data/LabelEnum.py")) {
-            val list = options(declared)
-            assertEquals(TARGETS, list.take(TARGETS.size), "$name：两个目标都在，且顺序不变")
-        }
-    }
-
-    // ── 跳过弹框 ⇔ 提供改路径的入口 ──────────────────────────────────
-
-    @Test
-    fun `skipping the prompt comes with an escape hatch, and only then`() {
-        val declaredList = options("src/data/LabelEnum.py")
-        assertTrue(
-            hasChangeEntry(declaredList),
-            "**声明过 → 会跳过弹框，所以必须给出「改路径」项** —— 否则用户再也改不了枚举路径",
-        )
-        assertEquals(CHANGE, declaredList.last(), "那一项追加在末尾，不插进目标之间")
-
-        val undeclaredList = options(null)
-        assertTrue(
-            !hasChangeEntry(undeclaredList),
-            "**没声明 → 仍然会问，所以不能多出「改路径」项** —— 否则出现两个都能改路径的地方",
-        )
-        assertEquals(TARGETS, undeclaredList, "没声明时列表里只有目标")
-    }
-
-    @Test
-    fun `needsEnumPathPrompt agrees with the escape hatch in both directions`() {
-        for (declared in listOf<String?>(null, "src/data/LabelEnum.py", "src/label_enum.py")) {
-            val list = options(declared)
-            assertEquals(
-                !SaveToAssetsFlow.needsEnumPathPrompt(declared),
-                hasChangeEntry(list),
-                "declared=$declared：有「改路径」项 ⇔ 会跳过弹框（两个方向都要成立）",
-            )
-        }
-    }
-
-    @Test
-    fun `the prompt is only skipped when the project declared a path`() {
-        assertTrue(SaveToAssetsFlow.needsEnumPathPrompt(null), "没声明 → 必须问（否则用户没机会改路径）")
-        assertTrue(
-            !SaveToAssetsFlow.needsEnumPathPrompt("src/data/LabelEnum.py"),
-            "**声明了 → 不问**（团队约定好的值，每次导出都确认一遍是纯噪音）",
+    fun `the export targets are always present and come first in order`() {
+        val list = options().labels
+        assertEquals(TARGETS, list.take(TARGETS.size), "两个目标都在，且顺序不变")
+        assertEquals(
+            TARGETS.size + 2,
+            list.size,
+            "目标之后**恒定**是「枚举路径」与「枚举类名」两项 —— 不能再有「有时有、有时没有」的项",
         )
     }
 
-    // ── 下标判定 ─────────────────────────────────────────────────────
+    // ── 两项枚举设置永远在，靠下标认角色 ─────────────────────────────
 
     @Test
-    fun `the change path entry is recognised by index, not by label`() {
-        // 用下标区间判断而不是比较文案：文案是本地化的，比较文案会在换语言时静默失效。
-        assertTrue(!SaveToAssetsFlow.isChangePathChoice(0, TARGETS.size), "第 0 项是第一个目标")
-        assertTrue(!SaveToAssetsFlow.isChangePathChoice(1, TARGETS.size), "第 1 项是第二个目标")
-        assertTrue(SaveToAssetsFlow.isChangePathChoice(2, TARGETS.size), "第 2 项（= targets.size）才是「改路径」")
+    fun `both enum rows are always reachable and are identified by index`() {
+        val o = options()
+        assertEquals(SaveToAssetsFlow.Choice.TARGET, o.roleOf(0), "第 0 项是第一个目标")
+        assertEquals(SaveToAssetsFlow.Choice.TARGET, o.roleOf(1), "第 1 项是第二个目标")
+        assertEquals(SaveToAssetsFlow.Choice.ENUM_PATH, o.roleOf(2), "第 2 项（= targets.size）是「枚举路径」")
+        assertEquals(SaveToAssetsFlow.Choice.ENUM_NAME, o.roleOf(3), "第 3 项是「枚举类名」")
+
         assertTrue(
-            SaveToAssetsFlow.isChangePathChoice(2, TARGETS.size) !=
-                SaveToAssetsFlow.isChangePathChoice(0, TARGETS.size),
+            o.roleOf(2) != o.roleOf(0),
             "边界两边必须给出不同结论，否则下标判定形同虚设",
         )
     }
 
-    // ── 显式清空之后不再追问 ─────────────────────────────────────────
+    /**
+     * 角色判定必须**只认下标**。换成"比较文案"的写法，在换语言时（`Enum file path:` 变成
+     * 「枚举文件路径：」）会静默失效 —— 那一项会被当成目标、点下去直接开始导出。
+     */
+    @Test
+    fun `the role is decided by index, not by the localized label`() {
+        val translated = SaveToAssetsFlow.options(TARGETS, "枚举文件路径：", "枚举类名：")
+        assertEquals(SaveToAssetsFlow.Choice.ENUM_PATH, translated.roleOf(2), "换语言后角色不变")
+        assertEquals(SaveToAssetsFlow.Choice.ENUM_NAME, translated.roleOf(3), "换语言后角色不变")
+        assertEquals(
+            translated.roleOf(2),
+            options().roleOf(2),
+            "文案变了、角色判定必须完全一致",
+        )
+    }
+
+    // ── 一行的拼法：标签 + 值 ────────────────────────────────────────
 
     @Test
-    fun `an explicitly cleared path is not asked about again`() {
+    fun `choice line appends the current value, or the empty placeholder`() {
+        assertEquals("Enum file path: assets/LabelEnum.py", SaveToAssetsFlow.choiceLine(PATH_CHOICE, "assets/LabelEnum.py", "x"))
+        assertEquals(
+            "Enum file path: Not set — click to set",
+            SaveToAssetsFlow.choiceLine(PATH_CHOICE, "", "Not set — click to set"),
+            "值为空 → 用兜底文案，**必须让用户看到「这里能点」**",
+        )
+        assertEquals(
+            "Enum file path: Not set — click to set",
+            SaveToAssetsFlow.choiceLine(PATH_CHOICE, null, "Not set — click to set"),
+            "null 与空串同义",
+        )
+        assertEquals(
+            "Enum class name: ",
+            SaveToAssetsFlow.choiceLine(NAME_CHOICE, "   ", "", ),
+            "全空白也当作「没设置」（否则会拼出一行只有空格的值，看不见也点不准）",
+        )
+    }
+
+    // ── 首次导出预填的推导值 ─────────────────────────────────────────
+
+    @Test
+    fun `the derived path is the target directory plus LabelEnum dot py`() {
+        assertEquals("assets/LabelEnum.py", SaveToAssetsFlow.derivedEnumPath("assets"))
+        assertEquals("ok_tasks/assets/LabelEnum.py", SaveToAssetsFlow.derivedEnumPath("ok_tasks/assets"))
+        assertEquals(
+            "assets/LabelEnum.py",
+            SaveToAssetsFlow.derivedEnumPath("assets/"),
+            "尾斜杠不会拼出双斜杠",
+        )
+        assertEquals(
+            "LabelEnum.py",
+            SaveToAssetsFlow.derivedEnumPath(""),
+            "空目标 → 退回裸文件名，而不是以斜杠开头（那会变成绝对路径）",
+        )
+    }
+
+    // ── 什么时候还要先问一次路径 ─────────────────────────────────────
+
+    @Test
+    fun `the prompt only happens when nothing has been decided yet`() {
         assertTrue(
             SaveToAssetsFlow.needsEnumPathPrompt(null),
             "从没定过 → 必须问（默认值是推导出来的，跳过它用户就没机会改成别的路径）",
         )
         assertTrue(
             !SaveToAssetsFlow.needsEnumPathPrompt(null, decided = true),
-            "**用户在「修改路径」里显式清空了 → 不问** —— 那表达的是「回到项目约定」；" +
-                "再问一遍会变成「清空了还被追着问」",
+            "**用户显式清空过 → 不问**：那表达的是「回到项目约定」；再问一遍会变成「清空了还被追着问」",
+        )
+        assertTrue(
+            !SaveToAssetsFlow.needsEnumPathPrompt("src/data/LabelEnum.py"),
+            "已经有生效路径 → 不问（自己定的 / 团队约定好的值，每次导出都确认一遍是纯噪音）",
         )
         assertTrue(
             !SaveToAssetsFlow.needsEnumPathPrompt("src/data/LabelEnum.py", decided = true),
-            "有值 + 定过 → 同样不问（这个参数只用来抑制追问，不会让有值的情况变成要问）",
+            "有值 + 定过 → 同样不问（decided 只用来抑制追问，不会让有值的情况变成要问）",
+        )
+    }
+
+    /**
+     * [SaveToAssetsFlow.needsEnumPathPrompt] 收到的是 `String?`，调用方传的是
+     * `rel.takeIf { it.isNotEmpty() }`。这条钉住"空串 = 没定过"这一步转换 ——
+     * 少了它，清空过的路径会被当成"有值"，追问照旧弹出来。
+     */
+    @Test
+    fun `an empty path counts as undecided when it reaches the prompt check`() {
+        assertTrue(SaveToAssetsFlow.needsEnumPathPrompt("".takeIf { it.isNotEmpty() }), "空串 → null → 仍然要问")
+        assertTrue(
+            !SaveToAssetsFlow.needsEnumPathPrompt("assets/LabelEnum.py".takeIf { it.isNotEmpty() }),
+            "非空 → 不问",
         )
     }
 
@@ -169,26 +212,81 @@ class SaveToAssetsFlowTest {
         )
     }
 
-    // ── 破坏性对照 ───────────────────────────────────────────────────
+    // ── 写入前的边界复核（含符号链接） ───────────────────────────────
+
+    /** 建一棵假项目树：`proj/assets` 存在、`evil` 在项目外，`proj/link` 指向 `evil`。 */
+    private fun withFakeProject(block: (proj: java.io.File, outside: java.io.File) -> Unit) {
+        val base = Files.createTempDirectory("okTplFlow").toFile()
+        try {
+            val proj = java.io.File(base, "proj").apply { mkdirs() }
+            java.io.File(proj, "assets").mkdirs()
+            val outside = java.io.File(base, "evil").apply { mkdirs() }
+            block(proj, outside)
+        } finally {
+            base.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `paths inside the project are accepted`() {
+        withFakeProject { proj, _ ->
+            assertTrue(isPathInsideRoot(proj.path, "assets/LabelEnum.py"), "相对路径按项目根解析")
+            assertTrue(
+                isPathInsideRoot(proj.path, java.io.File(proj, "assets/LabelEnum.py").path),
+                "项目内的绝对路径",
+            )
+            assertTrue(
+                isPathInsideRoot(
+                    proj.path,
+                    java.io.File(java.io.File(proj, "a/b"), "c.py").path,
+                ),
+                "**目标还不存在**（多级新目录）也要能判 —— 枚举文件通常就是还没生成",
+            )
+            assertTrue(isPathInsideRoot(proj.path, proj.path), "项目根本身算在内")
+        }
+    }
+
+    @Test
+    fun `traversal and sibling-prefix paths are rejected`() {
+        withFakeProject { proj, outside ->
+            assertFalse(
+                isPathInsideRoot(proj.path, java.io.File(outside, "x.py").path),
+                "项目外的绝对路径",
+            )
+            assertFalse(
+                isPathInsideRoot(proj.path, "../evil/x.py"),
+                "相对写法上跳",
+            )
+            assertFalse(
+                isPathInsideRoot(proj.path, java.io.File(proj.parentFile, "projEvil/x.py").path),
+                "**前缀相同但不是子目录**（`projEvil` 不是 `proj` 的下级）—— 字符串比较会误放",
+            )
+        }
+    }
 
     /**
-     * 对照：把候选列表写死成"永远带改路径项"或"永远不带"，分别对应两种真实故障。
-     * 用纯对象构造出那两个错误形态，证明上面那组断言确实在约束"当且仅当"。
+     * 符号链接绕路：`proj/link` 指向项目外，`proj/link/x.py` 的**词法**路径明明在项目内。
+     * 只看字符串（或 `File.canonicalPath`：对不存在的路径不解析链接）会放行，
+     * 于是 `writeFileSync` 把文件写到了项目外面。
+     *
+     * CI 是 ubuntu-24.04，一定跑得到；Windows 上需要开发者模式/管理员权限才能建链接，
+     * 建不出来时**显式跳过并打印原因**，而不是让断言静默恒真。
      */
     @Test
-    fun `regression guard - a hardcoded option list breaks the invariant in one direction`() {
-        // ① 永远带：没声明时也多一项 —— 与「没声明 → 不问」矛盾，用户看到两个改路径的地方
-        val alwaysAdd = TARGETS + CHANGE
-        assertTrue(
-            hasChangeEntry(alwaysAdd) && SaveToAssetsFlow.needsEnumPathPrompt(null),
-            "对照：既在问、又给了入口 —— 第 2 组的「没声明时列表里只有目标」会抓到它",
-        )
-
-        // ② 永远不带：声明过时没有入口 —— 用户再也改不了枚举路径（功能静默丢失）
-        val neverAdd = TARGETS
-        assertTrue(
-            !hasChangeEntry(neverAdd) && !SaveToAssetsFlow.needsEnumPathPrompt("src/data/LabelEnum.py"),
-            "对照：跳过了弹框却没有入口 —— 第 2 组的「声明过时必须有那一项」会抓到它",
-        )
+    fun `a symlink escaping the project is rejected`() {
+        withFakeProject { proj, outside ->
+            val link = java.io.File(proj, "link")
+            try {
+                Files.createSymbolicLink(link.toPath(), outside.toPath())
+            } catch (e: Exception) {
+                println("跳过符号链接断言：当前环境不支持创建符号链接（${e.javaClass.simpleName}）")
+                return@withFakeProject
+            }
+            assertTrue(Files.isSymbolicLink(link.toPath()), "前提：链接真的建出来了")
+            assertFalse(
+                isPathInsideRoot(proj.path, java.io.File(link, "x.py").path),
+                "**链接指向项目外 → 必须拒绝**（这一步只靠词法路径是抓不到的）",
+            )
+        }
     }
 }

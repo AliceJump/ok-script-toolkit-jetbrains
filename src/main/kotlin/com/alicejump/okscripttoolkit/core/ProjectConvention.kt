@@ -103,6 +103,34 @@ internal fun normalizeLabelEnumFile(value: String?): String? {
     return if (rel.endsWith(".py", ignoreCase = true)) rel else "$rel.py"
 }
 
+/** 用户输入的枚举路径为什么不能按「项目根相对路径」使用。 */
+enum class LabelEnumPathInputError { ABSOLUTE, TRAVERSAL }
+
+/**
+ * 校验**输入框里的原始值**，必须在 [normalizeRelPath] 剥掉开头斜杠**之前**调用。
+ *
+ * 空值合法（表示这次不生成枚举）；非空值必须是项目根相对路径。Windows 盘符、UNC/POSIX
+ * 绝对路径，以及任意 `..` 段都拒绝 —— 后者即使当前组合恰好没越界也不保留：
+ * 路径在日后被移动或前缀变化时可能越过项目根，而且枚举文件没有使用上跳段的合理需求。
+ *
+ * 为什么单独立一个函数、而不是让 [normalizeLabelEnumFile] 顺手拒绝：归一化是**共用的**
+ * （项目约定文件里的 `labelEnum.path` 也走它），在那里拒 `..` 会连"项目自己声明的路径"
+ * 一起改语义；而且 [normalizeRelPath] 会把开头的 `/` 剥掉 —— 剥完就分不清
+ * `/etc/x.py` 与合法的 `etc/x.py` 了。所以校验只对**用户输入**做，且在归一化之前。
+ *
+ * 与 VS Code 侧 `projectConfigPure.labelEnumPathInputError()` 一一对应，改一边记得改另一边。
+ */
+fun labelEnumPathInputError(value: String?): LabelEnumPathInputError? {
+    val raw = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    // 开头是斜杠（POSIX 绝对路径 / UNC）或盘符（`C:`）→ 绝对路径
+    if (ABSOLUTE_INPUT_PREFIX.containsMatchIn(raw)) return LabelEnumPathInputError.ABSOLUTE
+    if (raw.replace('\\', '/').split('/').contains("..")) return LabelEnumPathInputError.TRAVERSAL
+    return null
+}
+
+/** `[\\/]` 是"反斜杠或斜杠"：`\\` 在正则里就是字面反斜杠。与 VS Code 侧同名正则同义。 */
+private val ABSOLUTE_INPUT_PREFIX = Regex("""^(?:[\\/]|[A-Za-z]:)""")
+
 /**
  * 从文件路径取"去掉 `.py` 的文件名"，用作类名的兜底。
  *

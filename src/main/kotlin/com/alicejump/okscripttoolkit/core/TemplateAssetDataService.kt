@@ -1,5 +1,6 @@
 package com.alicejump.okscripttoolkit.core
 
+import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -231,7 +232,17 @@ class TemplateAssetDataService(private val project: Project) {
     private var cocoFile: Path? = null
     private var templateFolder: Path? = null
 
+    /**
+     * 上一次 [load] 用的项目根。
+     *
+     * 留着它是为了 [saveToAssets] 能自己复核"枚举文件还在不在项目里" —— 那道闸不能只放在
+     * UI 层：本服务也可能被别的调用方（脚本、测试）直接用，而**写到项目外面的文件用户根本
+     * 看不到**，"导出成功"的提示却照样会弹。
+     */
+    private var projectDir: String = ""
+
     fun load(projectDir: String, templatesDir: String): CocoData {
+        this.projectDir = projectDir
         templateFolder = templateDir(projectDir, templatesDir)
         cocoFile = cocoPath(projectDir, templatesDir)
 
@@ -356,6 +367,24 @@ class TemplateAssetDataService(private val project: Project) {
         enumPath: String?,
         onProgress: (Int, Int) -> Unit,
     ) {
+        // 枚举输出路径**先算出来、先校验，在所有写入之前**：越界就抛，此时 assets/COCO
+        // 一个字节都还没动。放到写完 COCO 之后再校验的话，用户会看到"一半成功" ——
+        // 资产已经更新、枚举没生成，而且文件被丢到了项目外面。
+        //
+        // `takeIf { it.isNotBlank() }` 是**必须的防御**，不是风格问题：调用方若传进来一个
+        // 空串（"用户留空 = 跳过"），下面的 `enumPath ?: 默认` 判断不出来（空串不是 null），
+        // 会一路传到 `File("")` 上 —— 那是个看不出原因的 FileNotFoundException。
+        val enumFile = if (generateEnum) {
+            enumPath?.takeIf { it.isNotBlank() } ?: Paths.get(targetFolder, "LabelEnum.py").toString()
+        } else {
+            null
+        }
+        if (enumFile != null) {
+            require(isPathInsideRoot(projectDir, enumFile)) {
+                OkScriptToolkitBundle.message("templateAsset.exportEnumPathInvalid")
+            }
+        }
+
         val targetImagesDir = Paths.get(targetFolder, "images")
 
         // 清空目标目录中的旧图片（重新生成前清理）
@@ -496,13 +525,8 @@ class TemplateAssetDataService(private val project: Project) {
         cocoTarget.parentFile?.mkdirs()
         JSON.writerWithDefaultPrettyPrinter().writeValue(cocoTarget, serializeCoco(croppedCoco))
 
-        if (generateEnum) {
+        if (enumFile != null) {
             val labels = croppedCoco.categories.map { it.name }.sorted()
-            // `takeIf { it.isNotBlank() }` 是**必须的防御**，不是风格问题：调用方若传进来一个
-            // 空串（"用户留空 = 跳过"），`enumPath ?: 默认` 判断不出来（空串不是 null），
-            // 会一路传到 `File("")` 上 —— 那是个看不出原因的 FileNotFoundException。
-            val enumFile = enumPath?.takeIf { it.isNotBlank() }
-                ?: Paths.get(targetFolder, "LabelEnum.py").toString()
             generateLabelEnum(enumFile, labels)
         }
     }

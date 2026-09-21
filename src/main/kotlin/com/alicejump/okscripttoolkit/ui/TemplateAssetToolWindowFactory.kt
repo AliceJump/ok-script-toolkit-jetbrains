@@ -4,10 +4,12 @@ import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.LabelEnumGuard
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
 import com.alicejump.okscripttoolkit.core.SaveToAssetsFlow
-import com.alicejump.okscripttoolkit.core.normalizeLabelEnumFile
 import com.alicejump.okscripttoolkit.core.ScreenshotCapture
 import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
 import com.alicejump.okscripttoolkit.core.TemplateImage
+import com.alicejump.okscripttoolkit.core.isPathInsideRoot
+import com.alicejump.okscripttoolkit.core.labelEnumPathInputError
+import com.alicejump.okscripttoolkit.core.normalizeLabelEnumFile
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.icons.AllIcons
 import com.intellij.notification.NotificationGroupManager
@@ -691,6 +693,16 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
                         effectiveEnumPath(),
                         null,
                     ) ?: continue // 取消 → 回到目标选择
+                    // ⚠️ 校验必须在**归一化之前**做：`normalizeLabelEnumFile` 会把开头的 `/`
+                    // 剥掉，剥完就分不清 `/etc/x.py` 与合法的 `etc/x.py` 了。
+                    // 非法值**不落盘**，回到选择列表让用户重填 —— 输错一次不该把设置写坏。
+                    if (labelEnumPathInputError(input) != null) {
+                        notify(
+                            OkScriptToolkitBundle.message("templateAsset.exportEnumPathInvalid"),
+                            NotificationType.WARNING,
+                        )
+                        continue
+                    }
                     // ⚠️ 必须先归一化（补 `.py`）再存：用户很可能填的是模块路径
                     // （`src/data/feature_list`，与 config.py 的 label_enum_relative_path 同形），
                     // 不补后缀会生成一个 Python 根本 import 不到的文件。
@@ -732,20 +744,39 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             // 每次导出都确认一遍是纯噪音）。要改的话走列表里的「枚举文件路径」那一项 ——
             // 它**永远在**，所以"跳过弹框"与"还能改"这两件事永远同时成立。
             if (SaveToAssetsFlow.needsEnumPathPrompt(rel.takeIf { it.isNotEmpty() }, enumPathDecided)) {
-                val input = com.intellij.openapi.ui.Messages.showInputDialog(
-                    project,
-                    OkScriptToolkitBundle.message("templateAsset.exportEnumPathPrompt"),
-                    OkScriptToolkitBundle.message("templateAsset.exportEnumTitle"),
-                    com.intellij.openapi.ui.Messages.getInformationIcon(),
-                    // 预填**相对**写法：与提示语"相对于项目根目录"一致（与 VS Code 侧同值）。
-                    // 原先预填的是绝对路径，和提示语自相矛盾。
-                    SaveToAssetsFlow.derivedEnumPath(selectedTarget),
-                    null,
-                ) ?: return
-                val normalized = normalizeLabelEnumFile(input.trim()).orEmpty()
-                settings.setLabelEnumPath(SaveToAssetsFlow.toProjectRelative(projectDir, normalized))
-                if (normalized.isNotEmpty()) enumAbsolutePath = SaveToAssetsFlow.toAbsolute(projectDir, normalized)
-            } else {
+                // 校验不过就**重新问**，而不是把整条导出流程丢掉 —— 一次手滑不该让用户重选目标。
+                while (true) {
+                    val input = com.intellij.openapi.ui.Messages.showInputDialog(
+                        project,
+                        OkScriptToolkitBundle.message("templateAsset.exportEnumPathPrompt"),
+                        OkScriptToolkitBundle.message("templateAsset.exportEnumTitle"),
+                        com.intellij.openapi.ui.Messages.getInformationIcon(),
+                        // 预填**相对**写法：与提示语"相对于项目根目录"一致（与 VS Code 侧同值）。
+                        // 原先预填的是绝对路径，和提示语自相矛盾。
+                        SaveToAssetsFlow.derivedEnumPath(selectedTarget),
+                        null,
+                    ) ?: return
+                    // 同上：校验在归一化**之前**，非法值不落盘也不继续往下走。
+                    if (labelEnumPathInputError(input) != null) {
+                        com.intellij.openapi.ui.Messages.showWarningDialog(
+                            project,
+                            OkScriptToolkitBundle.message("templateAsset.exportEnumPathInvalid"),
+                            OkScriptToolkitBundle.message("templateAsset.exportEnumTitle"),
+                        )
+                        continue
+                    }
+                    val normalized = normalizeLabelEnumFile(input.trim()).orEmpty()
+                    settings.setLabelEnumPath(SaveToAssetsFlow.toProjectRelative(projectDir, normalized))
+                    if (normalized.isNotEmpty()) {
+                        enumAbsolutePath = SaveToAssetsFlow.toAbsolute(projectDir, normalized)
+                    }
+                    break
+                }
+            } else if (rel.isNotEmpty()) {
+                // ⚠️ `rel` 为空时**不能**走 `toAbsolute`：`Paths.get(projectDir, "")` 就是
+                // `projectDir` 本身（非空！），于是 `generateEnum` 变 true，越过了下面那道
+                // "空 = 不生成"的闸，去把 LabelEnum.py 写到项目根目录上 —— 而且要等
+                // assets/COCO 都已经写完了才失败。用户在列表里清空路径正是这条路径。
                 enumAbsolutePath = SaveToAssetsFlow.toAbsolute(projectDir, rel)
             }
         }
@@ -753,10 +784,22 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         // `saveToAssets` 内部是 `enumPath ?: 默认路径`，空串不是 null，
         // 会一路传到 `File("")` 上 —— 那是个 FileNotFoundException，报错还看不出原因。
         val generateEnum = wantsEnum && !enumAbsolutePath.isNullOrBlank()
-        // 覆盖已有枚举文件、且**类名会变**时先问一句。这是唯一一处"个人覆盖能把项目弄坏"的地方：
-        // 项目的代码按类名 import（`from src.data.feature_list import FeatureList`），
-        // 改名之后那些 import 全部 ImportError，而导出成功的提示照样会弹出来。
-        if (generateEnum && !confirmLabelEnumRename(project, projectDir, enumAbsolutePath!!)) return
+        // 这里的非空由 `isNullOrBlank()` 的契约推出，不必再判一次。
+        if (generateEnum) {
+            // 写入前**再**复核一次边界。输入框那一关只认"那一刻的原始字符串"，而设置里的值
+            // 还可能来自手改配置文件 / 别的工具 —— 越界就不写，别把文件丢到项目外面去。
+            if (!isPathInsideRoot(projectDir, enumAbsolutePath)) {
+                notify(
+                    OkScriptToolkitBundle.message("templateAsset.exportEnumPathInvalid"),
+                    NotificationType.WARNING,
+                )
+                return
+            }
+            // 覆盖已有枚举文件、且**类名会变**时先问一句。这是唯一一处"个人覆盖能把项目弄坏"的地方：
+            // 项目的代码按类名 import（`from src.data.feature_list import FeatureList`），
+            // 改名之后那些 import 全部 ImportError，而导出成功的提示照样会弹出来。
+            if (!confirmLabelEnumRename(project, projectDir, enumAbsolutePath)) return
+        }
 
         statusLabel.text = OkScriptToolkitBundle.message("templateAsset.exportRunning")
         progressBar.isIndeterminate = true
