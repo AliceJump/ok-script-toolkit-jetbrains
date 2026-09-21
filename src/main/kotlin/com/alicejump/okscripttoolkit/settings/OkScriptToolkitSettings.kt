@@ -350,6 +350,22 @@ class OkScriptToolkitSettings(
     }
 
     /**
+     * 写**个人偏好**：枚举类名。由导出对话框的「枚举类名」那一项调用。
+     *
+     * 与 [setLabelEnumPath] 同一条规则：传空/空白 → **撤销记账**（回到项目约定，
+     * 项目也没声明时由文件名推导），而不是"钉死为空"。
+     * 值本身留着（[clearOverridden] 只取消记账、不清 state），用户反悔时不用重新输入。
+     *
+     * ⚠️ 这个字段**决定写进源码的类名**，项目代码按名字 import。改错就是全项目
+     * `ImportError`，所以覆盖已有文件前会先做类名变更校验（[LabelEnumGuard]）。
+     */
+    fun setLabelEnumName(value: String?) {
+        val trimmed = value?.trim().orEmpty()
+        state.labelEnumName = trimmed
+        if (trimmed.isEmpty()) clearOverridden(KEY_LABEL_ENUM_NAME) else markOverridden(KEY_LABEL_ENUM_NAME)
+    }
+
+    /**
      * 效果定义源文件（`EffectType` / `EFFECT_DESCRIPTIONS` 所在），相对项目根。
      *
      * 取值链：**个人偏好（IDE 设置）> 项目约定文件 `effects.file` > `src/data/effects.py`**。
