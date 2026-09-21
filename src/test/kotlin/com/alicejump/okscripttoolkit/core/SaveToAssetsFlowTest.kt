@@ -1,5 +1,6 @@
 package com.alicejump.okscripttoolkit.core
 
+import com.alicejump.okscripttoolkit.TestTmp
 import java.nio.file.Files
 import java.nio.file.Paths
 import kotlin.test.Test
@@ -216,7 +217,7 @@ class SaveToAssetsFlowTest {
 
     /** 建一棵假项目树：`proj/assets` 存在、`evil` 在项目外，`proj/link` 指向 `evil`。 */
     private fun withFakeProject(block: (proj: java.io.File, outside: java.io.File) -> Unit) {
-        val base = Files.createTempDirectory("okTplFlow").toFile()
+        val base = TestTmp.create("okTplFlow")
         try {
             val proj = java.io.File(base, "proj").apply { mkdirs() }
             java.io.File(proj, "assets").mkdirs()

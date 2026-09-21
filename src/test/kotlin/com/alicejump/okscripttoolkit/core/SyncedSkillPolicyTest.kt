@@ -1,7 +1,7 @@
 package com.alicejump.okscripttoolkit.core
 
+import com.alicejump.okscripttoolkit.TestTmp
 import java.io.File
-import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -125,7 +125,7 @@ class SyncedSkillPolicyTest {
     // ── 真实写回（端到端）─────────────────────────────────────────────
 
     private fun skillFile(custom: Boolean): File {
-        val dir = createTempDirectory("ok-skill-policy").toFile()
+        val dir = TestTmp.create("ok-skill-policy")
         val file = File(dir, "skills.json")
         val customFlag = if (custom) "\"_ok_lang_hints_custom\": true," else ""
         file.writeText(
@@ -266,7 +266,7 @@ class SyncedSkillPolicyTest {
     /** 改名撞上已有 ID 必须报错，不能静默产生重复 ID。 */
     @Test
     fun `renaming onto an existing skill_id is rejected`() {
-        val dir = createTempDirectory("ok-skill-rename-dup").toFile()
+        val dir = TestTmp.create("ok-skill-rename-dup")
         val file = File(dir, "skills.json")
         file.writeText(
             """

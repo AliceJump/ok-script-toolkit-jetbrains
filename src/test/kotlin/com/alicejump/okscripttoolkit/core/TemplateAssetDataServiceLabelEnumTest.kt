@@ -1,6 +1,6 @@
 package com.alicejump.okscripttoolkit.core
 
-import java.io.File
+import com.alicejump.okscripttoolkit.TestTmp
 import java.nio.charset.StandardCharsets
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -39,7 +39,7 @@ class TemplateAssetDataServiceLabelEnumTest {
                 ProcessBuilder(exe, "--version").redirectErrorStream(true).start().waitFor() == 0
             }.getOrDefault(false)
         } ?: return null
-        val tmp = File.createTempFile("ok-label-enum-check", ".py")
+        val tmp = TestTmp.createFile("ok-label-enum-check", ".py")
         tmp.writeText(source, StandardCharsets.UTF_8)
         return try {
             val proc = ProcessBuilder(

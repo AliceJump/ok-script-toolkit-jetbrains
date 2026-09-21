@@ -87,9 +87,45 @@ kotlin {
     jvmToolchain(21)
 }
 
+// ---------------------------------------------------------------------------
+// 测试临时文件统一落盘
+// ---------------------------------------------------------------------------
+// 背景：测试原先各自往系统临时目录**根部**写 `ok-xxx` 目录且从不清理，
+// 三天堆了 2671 个目录 + 1194 个 `.bak`。现在三端（Kotlin / Python / Node）
+// 统一落到系统临时目录下的固定子目录，跑完统一删除。
+//
+// 注意这里刻意**不用** `doFirst { }` / `doLast { }` 闭包：
+// 本项目开了 org.gradle.configuration-cache，闭包捕获建脚本对象会序列化失败
+// （见上文 copyPythonScripts 的注释，之前就被这个坑过一次）。
+// 改成两个声明式的 Delete 任务，零闭包捕获，configuration cache 绝对安全。
+val testTmpRoot = File(System.getProperty("java.io.tmpdir"), "ok-script-toolkit-tests")
+
+// 开跑前清一次：上一次构建被强杀 / 崩掉时留下的残渣。
+val cleanTestTmpBefore = tasks.register<Delete>("cleanTestTmpBefore") {
+    description = "删除上一轮遗留的统一测试临时根"
+    delete(testTmpRoot)
+}
+
+// 跑完统一删除。挂 finalizedBy 而不是 doLast —— doLast 在测试失败时不会执行，
+// 而"失败之后残留"恰恰是最需要清干净的情况。
+val cleanTestTmpAfter = tasks.register<Delete>("cleanTestTmpAfter") {
+    description = "测试结束后统一删除测试临时根（无论测试成功或失败）"
+    delete(testTmpRoot)
+}
+
 tasks {
     test {
         useJUnitPlatform()
+
+        // Kotlin 侧（TestTmp）读系统属性；TestTmp 会在其下用 kt/ 子目录落盘
+        systemProperty("ok.test.tmp.root", testTmpRoot.absolutePath)
+        // 让生产代码 AtomicWritePaths 的 .bak 备份也落进同一个根，避免漏到系统临时目录
+        systemProperty("ok-script-toolkit.backup.dir", File(testTmpRoot, "kt/backup").absolutePath)
+        // Python / Node 测试脚本读环境变量，各自用 py/ 、js/ 子目录落盘
+        environment("OK_TEST_TMP_ROOT", testTmpRoot.absolutePath)
+
+        dependsOn(cleanTestTmpBefore)
+        finalizedBy(cleanTestTmpAfter)
     }
 }
 

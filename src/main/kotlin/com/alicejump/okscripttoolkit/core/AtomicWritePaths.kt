@@ -29,6 +29,22 @@ internal object AtomicWritePaths {
     const val BACKUP_PREFIX = "ok-script-toolkit-"
 
     /**
+     * 备份落盘根目录的覆盖开关。
+     *
+     * 默认就是系统临时目录（与改动前一致）。测试把它指向统一的测试临时根，
+     * 好让生产写入路径产生的备份跟其他测试产物一起被删掉，不再漏到系统临时目录根部；
+     * 需要时用户也可以借此把备份挪到别的盘。
+     */
+    const val BACKUP_DIR_PROPERTY = "ok-script-toolkit.backup.dir"
+
+    /** 备份落盘根目录。见 [BACKUP_DIR_PROPERTY]。 */
+    val backupRoot: File
+        get() = System.getProperty(BACKUP_DIR_PROPERTY)
+            ?.takeIf { it.isNotBlank() }
+            ?.let(::File)
+            ?: File(System.getProperty("java.io.tmpdir"))
+
+    /**
      * 目标文件旁边的临时文件（写入中），例如 `effects.py.ok-script-toolkit.tmp`。
      *
      * 必须与目标同目录 —— 见类注释关于 `ATOMIC_MOVE` 的说明。
@@ -36,13 +52,17 @@ internal object AtomicWritePaths {
     fun tempBeside(target: File): File = File(target.parentFile, target.name + ".ok-script-toolkit.tmp")
 
     /**
-     * 备份文件路径：放系统临时目录，且**每次调用都返回一个新的独占文件**。
+     * 备份文件路径：放备份根目录（默认系统临时目录），且**每次调用都返回一个新的独占文件**。
      *
      * 目标文件还不存在时返回 null（没有东西可备份，不该凭空造一个空备份）。
+     *
+     * 已知局限：备份写完**不做清理**，成功路径也保留（这是"能回滚"的设计取舍）。
+     * 因此它在时间上是单调增长的，清理责任在外部 —— 测试期统一由测试临时根收走。
      */
     fun backupTarget(target: File): File? {
         if (!target.exists()) return null
         val readable = target.name.replace(Regex("[^A-Za-z0-9._-]"), "_")
-        return java.nio.file.Files.createTempFile(BACKUP_PREFIX, "-$readable.bak").toFile()
+        val root = backupRoot.apply { mkdirs() }
+        return java.nio.file.Files.createTempFile(root.toPath(), BACKUP_PREFIX, "-$readable.bak").toFile()
     }
 }

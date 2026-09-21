@@ -1,7 +1,7 @@
 package com.alicejump.okscripttoolkit.core
 
+import com.alicejump.okscripttoolkit.TestTmp
 import java.io.File
-import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
@@ -70,7 +70,7 @@ class PythonScriptLocatorTest {
     @Test
     fun `extracts every bundled script into a stable directory`() {
         requireBundledScripts()
-        val base = createTempDirectory("ok-scripts-test").toFile()
+        val base = TestTmp.create("ok-scripts-test")
 
         val dir = PythonScriptLocator.extractBundledScripts(base)
         assertNotNull(dir, "classpath 上有 python/*.py 时必须解压成功（build 里由 copyPythonScripts 提供）")
@@ -98,7 +98,7 @@ class PythonScriptLocatorTest {
     @Test
     fun `a tampered script is overwritten on the next call`() {
         requireBundledScripts()
-        val base = createTempDirectory("ok-scripts-tamper").toFile()
+        val base = TestTmp.create("ok-scripts-tamper")
         val target = "run_executor.py"
         val original = bundledText(target)
         assertNotNull(original, "基准内容必须可读，否则这条断言没有意义")
@@ -127,7 +127,7 @@ class PythonScriptLocatorTest {
     @Test
     fun `legacy timestamped directories are cleaned up`() {
         requireBundledScripts()
-        val base = createTempDirectory("ok-scripts-legacy").toFile()
+        val base = TestTmp.create("ok-scripts-legacy")
         val legacy = File(base, "ok-script-toolkit-scripts-0").apply { mkdirs() }
         File(legacy, "run_executor.py").writeText("# 旧版留下的脚本\n", Charsets.UTF_8)
 
@@ -147,7 +147,7 @@ class PythonScriptLocatorTest {
     @Test
     fun `repeated extraction is idempotent`() {
         requireBundledScripts()
-        val base = createTempDirectory("ok-scripts-idempotent").toFile()
+        val base = TestTmp.create("ok-scripts-idempotent")
 
         val first = PythonScriptLocator.extractBundledScripts(base)
         val second = PythonScriptLocator.extractBundledScripts(base)

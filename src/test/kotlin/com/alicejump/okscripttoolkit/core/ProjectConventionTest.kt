@@ -1,7 +1,7 @@
 package com.alicejump.okscripttoolkit.core
 
+import com.alicejump.okscripttoolkit.TestTmp
 import com.fasterxml.jackson.databind.ObjectMapper
-import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -77,7 +77,7 @@ class ProjectConventionTest {
 
     @Test
     fun `a broken file on disk never throws - it just means no convention`() {
-        val dir = Files.createTempDirectory("ok-toolkit-convention")
+        val dir = TestTmp.create("ok-toolkit-convention").toPath()
         try {
             val file = dir.resolve(ProjectConventionConfig.PROJECT_CONFIG_FILE).toFile()
             assertEquals(ProjectConvention.EMPTY, ProjectConvention.parseFile(file), "文件不存在时当没写")
