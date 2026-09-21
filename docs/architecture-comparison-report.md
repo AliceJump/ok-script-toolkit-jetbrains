@@ -1,6 +1,14 @@
-# VS Code 扩展与 JetBrains 插件：功能取舍与实现策略差异总结报告
+# VS Code 扩展与 JetBrains 插件：功能取舍与实现策略差异总结报告 / VS Code Extension vs JetBrains Plugin: Feature Trade-offs and Implementation Strategy Differences Summary Report
 
-[English](architecture-comparison-report.en.md) | **中文**
+<div align="center">
+
+[![简体中文](https://img.shields.io/badge/Language-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87%20%E2%9C%93-2EA043?style=for-the-badge)](architecture-comparison-report.md) [![English](https://img.shields.io/badge/Language-English-6E7681?style=for-the-badge)](architecture-comparison-report.en.md)
+
+</div>
+
+基于 `parity-review.md`（2026-09-06）及源代码分析，总结主仓库（VS Code 扩展）与子仓库（JetBrains 插件）之间的架构设计、功能完整性、性能优化、UI/UX 体验、开发维护成本差异，并提出未来改进建议。
+
+Based on `parity-review.md` (2026-09-06) and source code analysis, this report summarizes the differences in architecture design, feature completeness, performance optimization, UI/UX experience, and development/maintenance costs between the main repository (VS Code extension) and sub-repository (JetBrains plugin), and proposes future improvement suggestions.
 
 > ⚠️ **本文档是 2026-09-06 的快照，部分结论已被推翻 —— 读之前先看这段。**
 >
@@ -12,9 +20,6 @@
 > 各节开头已就地标注。**架构与取舍分析（第 1、3、4、5 节）仍然有效。**
 >
 > 权威来源是代码与测试；`parity-review.md` 是当前的功能对照表。
->
-
-基于 `parity-review.md`（2026-09-06）及源代码分析，总结主仓库（VS Code 扩展）与子仓库（JetBrains 插件）之间的架构设计、功能完整性、性能优化、UI/UX 体验、开发维护成本差异，并提出未来改进建议。
 
 > 📏 **行数是 2026-09-21 重新实测的**（原文那批停在 2026-09-06，其中
 > `TaskLauncherToolWindowFactory.kt` 已从 925 行涨到 **2044 行**）。
@@ -85,7 +90,6 @@
 > ⚠️ **本表是 2026-09-06 的状态。2026-09-21 逐条回查代码后，原来标「❌ 缺失」的 5 项
 > 全部已实现**（状态列已就地更新，说明列保留原文以便对照）。现在真正的功能缺口见
 > `parity-review.md` 的「⚠️ 待办」表 —— 那里剩的都是低优先级 UI 形态差异。
->
 
 | # | 功能| 严重度| 说明|
 |---|------|--------|------|
@@ -130,7 +134,6 @@
 
 ## 4. UI/UX 体验差异
 
-
 | 维度| VS Code (Webview) | JetBrains (Swing) |
 |------|-------------------|-------------------|
 | 渲染技术| HTML/CSS/JS | JPanel + Graphics2D |
@@ -171,7 +174,6 @@
 > 据此隐含"子仓是更轻量的实现"。现在两端**总量相当**，而子仓的**宿主源码反而更多**
 > （16.3k vs 11.1k）—— 因为 Swing 没有 HTML/CSS 可复用，UI 也得用 Kotlin 写。
 > 原文那个"子仓更简单"的印象已经不成立了。
->
 
 ### 可维护性对比
 
@@ -208,7 +210,6 @@
 > 那三节保留下来是作为**当时权衡过程的历史记录** —— 里面写的平台差异与实现复杂度判断
 > 仍然成立，只是结论（"因此不做"）已被推翻。**别按它们判断当前状态。**
 > 6.1 里除「改动即存」之外的差距同样已补齐。
->
 
 ### 6.1 标注编辑器功能差距的原因
 
@@ -270,7 +271,6 @@
 > ⚠️ **原表列的 7 项全部已完成**（2026-09-21 复核：文件监听、标注编辑器进阶交互、
 > sub_configs 子配置树、条件可见性、调试浮层、标注快捷键、强化组编辑）。
 > 下面换成**现在真正剩下的**缺口 —— 与 `parity-review.md` 的「⚠️ 待办」表一致，都是低优先级。
->
 
 | 优先级| 功能| 价值|
 |--------|------|------|
@@ -318,7 +318,6 @@ VS Code 扩展与 JetBrains 插件的设计差异本质上是**平台能力差�
 条件可见性、调试浮层）**都已实现**，见 §7.2。现在剩下的只有低优先级的 UI 形态差异
 （大画廊双入口、任务卡片式 UI）与一项**设计取舍**（标注编辑器用 OK/Cancel 而非改动即存）。
 真正还没做的只有**缩略图并发加载**这类性能优化，以及两端都没有的端到端测试。
-
 
 ---
 

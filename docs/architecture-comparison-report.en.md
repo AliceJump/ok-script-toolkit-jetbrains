@@ -1,10 +1,15 @@
-# VS Code Extension vs JetBrains Plugin: Feature Trade-offs and Implementation Strategy Differences Summary Report
+# VS Code 扩展与 JetBrains 插件：功能取舍与实现策略差异总结报告 / VS Code Extension vs JetBrains Plugin: Feature Trade-offs and Implementation Strategy Differences Summary Report
 
-[中文](architecture-comparison-report.md) | **English**
+<div align="center">
 
->
->
->
+[![简体中文](https://img.shields.io/badge/Language-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-6E7681?style=for-the-badge)](architecture-comparison-report.md) [![English](https://img.shields.io/badge/Language-English%20%E2%9C%93-2EA043?style=for-the-badge)](architecture-comparison-report.en.md)
+
+</div>
+
+基于 `parity-review.md`（2026-09-06）及源代码分析，总结主仓库（VS Code 扩展）与子仓库（JetBrains 插件）之间的架构设计、功能完整性、性能优化、UI/UX 体验、开发维护成本差异，并提出未来改进建议。
+
+Based on `parity-review.md` (2026-09-06) and source code analysis, this report summarizes the differences in architecture design, feature completeness, performance optimization, UI/UX experience, and development/maintenance costs between the main repository (VS Code extension) and sub-repository (JetBrains plugin), and proposes future improvement suggestions.
+
 > ⚠️ **This document is a 2026-09-06 snapshot and some of its conclusions are overturned.**
 > It was based on the `parity-review.md` revision that was later found badly stale, so it
 > lists features that were not yet built at the time but **have since been implemented** as
@@ -15,8 +20,6 @@
 > annotated in place. **The architecture and trade-off analysis (sections 1, 3, 4, 5) still
 > holds.** The code and the tests are authoritative; `parity-review.md` is the current table.
 
-Based on `parity-review.md` (2026-09-06) and source code analysis, this report summarizes the differences in architecture design, feature completeness, performance optimization, UI/UX experience, and development/maintenance costs between the main repository (VS Code extension) and sub-repository (JetBrains plugin), and proposes future improvement suggestions.
-
 > **Line counts below were re-measured on 2026-09-21** (the original batch was from
 > 2026-09-06; `TaskLauncherToolWindowFactory.kt` has since grown from 925 to **2044** lines).
 
@@ -26,20 +29,20 @@ Based on `parity-review.md` (2026-09-06) and source code analysis, this report s
 
 ### VS Code Extension: Modular, Fine-Grained Design
 
-  **Independent Data Sources**: Each data source (Lang, Feature, Effect, Character, TemplateAsset) has an independent TypeScript class (`LangData`, `FeatureData`, `EffectData`, `CharacterData`, `TemplateAssetData`), each managing its own lifecycle, caching, and refresh.
-  **Worker Thread Pool**: Image processing (PNG crop/thumbnails, saveToAssets packing) uses independent Worker thread pools (`pngCropWorker.ts`, `assetPackWorker.ts`), with zero main thread blocking.
-  **Webview Isolation**: Each tool panel (template gallery, task launcher, character management, asset management, annotation editor) runs in an independent Webview, communicating with the host through message passing, with UI and logic completely separated.
-  **Multi-Layer Caching**: Thumbnail file cache + in-memory LRU + Worker warm-up; task schema disk cache; language data in-memory snapshot.
-  **File Watching**: Monitors data file changes in real-time via `createFileSystemWatcher`, with 300ms debounce before selectively refreshing the corresponding data source.
+- **Independent Data Sources**: Each data source (Lang, Feature, Effect, Character, TemplateAsset) has an independent TypeScript class (`LangData`, `FeatureData`, `EffectData`, `CharacterData`, `TemplateAssetData`), each managing its own lifecycle, caching, and refresh.
+- **Worker Thread Pool**: Image processing (PNG crop/thumbnails, saveToAssets packing) uses independent Worker thread pools (`pngCropWorker.ts`, `assetPackWorker.ts`), with zero main thread blocking.
+- **Webview Isolation**: Each tool panel (template gallery, task launcher, character management, asset management, annotation editor) runs in an independent Webview, communicating with the host through message passing, with UI and logic completely separated.
+- **Multi-Layer Caching**: Thumbnail file cache + in-memory LRU + Worker warm-up; task schema disk cache; language data in-memory snapshot.
+- **File Watching**: Monitors data file changes in real-time via `createFileSystemWatcher`, with 300ms debounce before selectively refreshing the corresponding data source.
 
 **Key Files**: `extension.ts` (442 lines), `pngCrop.ts` (1080 lines), `assetPack.ts` (206 lines), `assetPackWorker.ts` (315 lines)
 
 ### JetBrains Plugin: Centralized, Unified Snapshot Design
 
-  **Unified Data Center**: `OkProjectDataService` is the sole project-level data service, containing a `Snapshot` data class that merges the three major data sources (Lang, Feature, Effect) into a single immutable snapshot, with all consumers reading from the same snapshot.
-  **Concurrency Safety**: `@Volatile` + `ConcurrentHashMap` + `AtomicLong` ensure multi-thread safety, but there is no Worker thread pool — image processing executes in a `CompletableFuture` thread pool.
-  **Platform Services**: Leverages IntelliJ Platform's `@Service(Service.Level.PROJECT)` annotation for automatic lifecycle management, without manual dispose.
-  **Single-Thread Thumbnail Loading**: the sub-repo loads thumbnails sequentially in
+- **Unified Data Center**: `OkProjectDataService` is the sole project-level data service, containing a `Snapshot` data class that merges the three major data sources (Lang, Feature, Effect) into a single immutable snapshot, with all consumers reading from the same snapshot.
+- **Concurrency Safety**: `@Volatile` + `ConcurrentHashMap` + `AtomicLong` ensure multi-thread safety, but there is no Worker thread pool — image processing executes in a `CompletableFuture` thread pool.
+- **Platform Services**: Leverages IntelliJ Platform's `@Service(Service.Level.PROJECT)` annotation for automatic lifecycle management, without manual dispose.
+- **Single-Thread Thumbnail Loading**: the sub-repo loads thumbnails sequentially in
   `TemplatesToolWindowFactory`. **The single thread is deliberate**: decode one source image,
   crop all of its templates, release it — only one decoded image is ever held (a 2560×1440 ARGB
   bitmap is ~15MB); a thread pool would hold N at once. **The real bottleneck was fixed on
@@ -85,7 +88,6 @@ Aligned Features (11 Items)
 
 JetBrains Missing/Simplified Features (Ranked by Severity)
 
->
 > ⚠️ **This table reflects 2026-09-06.** Re-verified against the code on 2026-09-21: all five
 > rows previously marked "❌ Missing" **are implemented** (the status column is updated in
 > place; the description column is kept as-is for comparison). For the real remaining gaps see
@@ -172,7 +174,6 @@ JetBrains Missing/Simplified Features (Ranked by Severity)
 |Test code |4,430 lines (18 files) |5,318 lines (34 files) |
 |**Total** |**~23,700 lines** |**~21,700 lines** |
 
->
 > ⚠️ **Conclusion reversed**: the 2026-09-06 revision recorded ~11,700 / ~6,176, implying the
 > sub-repo was the lighter implementation. Today the totals are comparable and the sub-repo's
 > **host source is larger** (16.3k vs 11.1k) — Swing has no HTML/CSS to lean on, so the UI is
@@ -211,7 +212,6 @@ end-to-end testing (requires a real IDE and a real game) — neither side does i
 
 ## Key Trade-off Decision Analysis
 
->
 > ⚠️ **Sections 6.2 / 6.3 / 6.4 explain why things are missing that now exist** (re-verified
 > 2026-09-21). They are kept as a **historical record of the trade-off reasoning** — the platform
 > differences and complexity judgements still hold, only the conclusion ("so we skipped it")
@@ -275,7 +275,6 @@ end-to-end testing (requires a real IDE and a real game) — neither side does i
 
 ### Features JetBrains Plugin Needs to Prioritize
 
->
 > ⚠️ **All 7 rows in the original table are done** (re-verified 2026-09-21). Replaced with the
 > **actual remaining** gaps, matching the "⚠️ TODO" table in `parity-review.md` — all low priority.
 
@@ -314,9 +313,8 @@ end-to-end testing (requires a real IDE and a real game) — neither side does i
 
 The design differences between the VS Code extension and JetBrains plugin are essentially a reflection of **platform capability differences**:
 
-  **VS Code**: The Web platform provides modern web technologies such as Canvas/WebGL/WebWorker, suitable for building rich interactive UIs and parallel computing, but limited by Webview sandbox and message passing overhead.
-  **JetBrains**: IntelliJ Platform provides mature Swing components and platform services (VirtualFileListener, NotificationGroup, ToolWindow), suitable for building native integration experiences, but image processing and rich interactive UIs require more manual implementation.
-
+- **VS Code**: The Web platform provides modern web technologies such as Canvas/WebGL/WebWorker, suitable for building rich interactive UIs and parallel computing, but limited by Webview sandbox and message passing overhead.
+- **JetBrains**: IntelliJ Platform provides mature Swing components and platform services (VirtualFileListener, NotificationGroup, ToolWindow), suitable for building native integration experiences, but image processing and rich interactive UIs require more manual implementation.
 
 Both sides are fully aligned on core language features (completion/hover/inlay).
 ~~The main gaps are concentrated in **image-intensive operations** (annotation editor, thumbnail

@@ -1,11 +1,16 @@
 ﻿<div align="center">
 
+[![简体中文](https://img.shields.io/badge/Language-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-6E7681?style=for-the-badge)](README.md) [![English](https://img.shields.io/badge/Language-English%20%E2%9C%93-2EA043?style=for-the-badge)](README.en.md)
+
 <img src="icon.png" alt="ok-script Toolkit for JetBrains" width="128" height="128">
 
 # ok-script Toolkit for JetBrains
 
+**ok-script Toolkit VS Code 扩展的 JetBrains Platform / PyCharm 移植版。**
+
 **The JetBrains Platform / PyCharm port of the [ok-script Toolkit](https://github.com/AliceJump/ok-script-toolkit) VS Code extension.**
 
+将 ok-script 语言键、OCR 修正、模板、效果和任务带入你的 IDE。
 Brings ok-script language keys, OCR fixes, templates, effects and tasks into your IDE.
 
 [![JetBrains Marketplace](https://img.shields.io/badge/JetBrains%20Marketplace-OK%20Script%20Toolkit-000000?logo=jetbrains&logoColor=white)](https://plugins.jetbrains.com/plugin/34091-ok-script-toolkit)
@@ -15,11 +20,12 @@ Brings ok-script language keys, OCR fixes, templates, effects and tasks into you
 [![Kotlin](https://img.shields.io/badge/Kotlin-JDK%2021-7F52FF?logo=kotlin&logoColor=white)](build.gradle.kts)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-[Install](#install) · [Features](#features) · [Build](#build) · [Releases](#releases) · [Development](#agent-skills) · [中文](README.md)
+[Install](#install) · [Features](#features) · [Build](#build) · [Releases](#releases) · [Development](#agent-skills)
 
 </div>
 ---
 
+本仓库是仓库根目录中 VS Code 扩展的 JetBrains Platform/PyCharm 移植版。两个版本共享相同的数据源和配置模型，因此 ok-script 项目在任一 IDE 中的行为一致。
 
 This repository is the JetBrains Platform/PyCharm port of the VS Code extension in
 the repository root. Both editions share the same data sources and configuration

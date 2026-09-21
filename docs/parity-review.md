@@ -1,9 +1,16 @@
-# 子仓库与主仓库功能差异审查（2026-09-21 更新）
+# 子仓库与主仓库功能差异审查（2026-09-21 更新） / Sub-repo vs Main-repo Feature Parity Review (Updated 2026-09-21)
 
-[English](parity-review.en.md) | **中文**
+<div align="center">
+
+[![简体中文](https://img.shields.io/badge/Language-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87%20%E2%9C%93-2EA043?style=for-the-badge)](parity-review.md) [![English](https://img.shields.io/badge/Language-English-6E7681?style=for-the-badge)](parity-review.en.md)
+
+</div>
 
 对照基准：主仓库 VSCode 扩展 v1.8.0、子仓库 JetBrains 插件 v1.8.0。
 下次审查请覆盖本表并更新状态。
+
+Baseline: main repo VSCode extension v1.8.0, sub-repo JetBrains plugin v1.8.0.
+Next review should override this table and update the status.
 
 > **上一版（2026-09-07，基线 v1.4.0）已严重失真**：它把当时尚未做的标注编辑器
 > 进阶交互整批列为「待办」，但其中绝大多数随后已实现，文档未同步。本次审查逐条
@@ -20,8 +27,7 @@
 
 ---
 
-
-### 结论概览
+## 结论概览
 
 10 个功能域（编辑器语言功能、模板画廊、模板素材、任务启动、参数控件、角色管理、
 工具箱、标注编辑器、临时截图、截图采集）**全部在子仓库有对应实现，无整块缺失**。
@@ -29,7 +35,7 @@
 剩余差异集中在两类：**标注编辑器的 1 项落盘语义**、以及 **4 项低优先级的 UI 形态差异**
 （均为载体不同而非功能缺失，见「差异说明」）。
 
-### ✅ 已对齐
+## ✅ 已对齐
 
 - 编辑器：4 类引用识别（lang/模板/效果/OCR）、5 场景补全（模板置顶、效果分类排序）、
   hover（全语言表格/缩略图预览/OCR 运行时说明）、行内提示 + tooltip、JSON 侧效果提示
@@ -127,7 +133,7 @@
     `plugin.name`、`templateAsset.exportEnumTitle` 这类**刻意不译**的产品名/文件名，
     以及西班牙语里本来就写作 `Error` 的那个词。）
 
-### ⚠️ 待办
+## ⚠️ 待办
 
 | # | 问题 | 严重度 | 状态 |
 |---|---|---|---|
@@ -141,7 +147,7 @@
 > 双击数值编辑` 一并列为待办 —— **这些均已实现**，本次移入「已对齐」。
 > 该行仅剩「改动即存」。
 
-### 差异说明（载体不同，非功能缺失）
+## 差异说明（载体不同，非功能缺失）
 
 - 子仓库为**纯 Kotlin + Swing 原生 UI**，无 JCEF/webview；父仓为 webview HTML。
 - 标注编辑器：父仓是独立面板（`src/annotationPanel.ts`），子仓是 `AnnotationDialog`
@@ -150,7 +156,7 @@
 - 资产打包：父仓用 worker 池 + 自实现 PNG/JPEG/BMP 编解码，子仓同线程 AWT + `ImageIO`
   （无并行度，仅 `onProgress` 回调）；分包算法与命名一致。
 
-### 存储路径对照
+## 存储路径对照
 
 | 项 | VSCode 主仓 | JetBrains 子仓 |
 |---|---|---|

@@ -1,6 +1,13 @@
-﻿# Sub-repo vs Main-repo Feature Parity Review (Updated 2026-09-21)
+﻿# 子仓库与主仓库功能差异审查（2026-09-21 更新） / Sub-repo vs Main-repo Feature Parity Review (Updated 2026-09-21)
 
-[中文](parity-review.md) | **English**
+<div align="center">
+
+[![简体中文](https://img.shields.io/badge/Language-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-6E7681?style=for-the-badge)](parity-review.md) [![English](https://img.shields.io/badge/Language-English%20%E2%9C%93-2EA043?style=for-the-badge)](parity-review.en.md)
+
+</div>
+
+对照基准：主仓库 VSCode 扩展 v1.8.0、子仓库 JetBrains 插件 v1.8.0。
+下次审查请覆盖本表并更新状态。
 
 Baseline: main repo VSCode extension v1.8.0, sub-repo JetBrains plugin v1.8.0.
 Next review should override this table and update the status.
@@ -20,8 +27,7 @@ Next review should override this table and update the status.
 
 ---
 
-
-### Summary
+## Summary
 
 All 10 feature domains (editor language features, template gallery, template assets, task launcher,
 parameter controls, character manager, toolbox, annotation editor, temp screenshots, screenshot capture)
@@ -30,7 +36,7 @@ parameter controls, character manager, toolbox, annotation editor, temp screensh
 Remaining gaps are two kinds: **one annotation-editor save-semantics difference**, and
 **four low-priority UI-shape differences** (carrier differences, not missing functionality — see below).
 
-### ✅ Aligned
+## ✅ Aligned
 
 - Editor: 4 reference recognition types (lang/template/effect/OCR), 5 completion scenarios, hover
   (full locale table / thumbnail preview / OCR runtime description), inline hints + tooltip, JSON-side effect hints
@@ -126,7 +132,7 @@ Remaining gaps are two kinds: **one annotation-editor save-semantics difference*
   thumbnail drag to asset panel (`TempShotTransferable` custom DataFlavor)
 - 6-language UI, settings, PythonScriptLocator extracts scripts only from the plugin JAR
 
-### ⚠️ TODO
+## ⚠️ TODO
 
 | # | Issue | Severity | Status |
 |---|---|---|---|
@@ -140,7 +146,7 @@ Remaining gaps are two kinds: **one annotation-editor save-semantics difference*
 > cross-image navigation, double-click value edit` as TODO — **all are implemented** and moved to
 > "Aligned" here. Only "save-on-change" remains from that row.
 
-### Differences (carrier, not missing functionality)
+## Differences (carrier, not missing functionality)
 
 - The sub-repo is **pure Kotlin + Swing**, no JCEF/webview; the parent uses webview HTML.
 - Annotation editor: parent is a standalone panel (`src/annotationPanel.ts`); sub-repo is
@@ -150,7 +156,7 @@ Remaining gaps are two kinds: **one annotation-editor save-semantics difference*
   on the same thread with AWT + `ImageIO` (no parallelism, only an `onProgress` callback);
   packing algorithm and naming match.
 
-### Storage path comparison
+## Storage path comparison
 
 | Item | VSCode (parent) | JetBrains (sub-repo) |
 |---|---|---|
