@@ -1,5 +1,6 @@
 package com.alicejump.okscripttoolkit.core
 
+import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.SerializationFeature
@@ -497,7 +498,11 @@ class TemplateAssetDataService(private val project: Project) {
 
         if (generateEnum) {
             val labels = croppedCoco.categories.map { it.name }.sorted()
-            val enumFile = enumPath ?: Paths.get(targetFolder, "LabelEnum.py").toString()
+            // `takeIf { it.isNotBlank() }` 是**必须的防御**，不是风格问题：调用方若传进来一个
+            // 空串（"用户留空 = 跳过"），`enumPath ?: 默认` 判断不出来（空串不是 null），
+            // 会一路传到 `File("")` 上 —— 那是个看不出原因的 FileNotFoundException。
+            val enumFile = enumPath?.takeIf { it.isNotBlank() }
+                ?: Paths.get(targetFolder, "LabelEnum.py").toString()
             generateLabelEnum(enumFile, labels)
         }
     }
@@ -515,12 +520,17 @@ class TemplateAssetDataService(private val project: Project) {
     fun generateLabelEnum(filePath: String, labels: List<String>) {
         val file = File(filePath)
         file.parentFile?.mkdirs()
-        // 类名优先取项目约定文件的 `labelEnum.name`，缺席才退回文件名 —— 即旧行为。
+        // 类名走取值链：**个人偏好（IDE 设置）> 项目约定 `labelEnum.name` > 文件名推导**。
         // 解耦的意义：文件可以叫 feature_labels.py，而类叫 FeatureList。
         // （旧写法只有 basename 一条路，想叫 FeatureList 就必须把文件命名成 FeatureList.py。）
-        val rawClassName = ProjectConventionConfig.getInstance(project).load().labelEnum.classNameOr(filePath)
-        // 类名同样进源码：非法标识符直接退回一个安全的默认名，而不是生成坏文件
-        val className = if (PYTHON_IDENTIFIER.matches(rawClassName)) rawClassName else "LabelEnum"
+        //
+        // ⚠️ 个人覆盖会改掉写进源码的类名，而项目的代码按名字 import。那道闸不在这一层：
+        // 覆盖前的确认在 `ui/TemplateAssetToolWindowFactory`（UI 层）做，见 [LabelEnumGuard]。
+        val rawClassName = OkScriptToolkitSettings.getInstance(project).labelEnumName(filePath).value
+        // 类名同样进源码：非法标识符直接退回一个安全的默认名，而不是生成坏文件。
+        // 走 `writableClassName` 而**不是**内联一个正则 —— 面板的写入前校验要用**同一个**函数
+        // 算"将要写入的类名"，两处各写一遍会让警告内容与实际写进去的东西不符。
+        val className = LabelEnumGuard.writableClassName(rawClassName)
         val content = buildString {
             append("from enum import Enum\n\n\n")
             append("class ").append(className).append("(str, Enum):\n")

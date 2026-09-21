@@ -75,6 +75,16 @@ Next review should override this table and update the status.
     没有这条链时插件在那类项目上**一个候选都探不到，模板库是空的**。
   - ⚠️ **素材面板自己的 `<模板目录>/coco_annotations.json` 是另一个文件**，路径由
     `templates.directory` 决定，不受 `templates.cocoAnnotations` 影响。
+  - **`labelEnum.path` / `labelEnum.name` 有个人偏好层**（设置界面「模板素材」组里的
+    `labelEnumPath` / `labelEnumName`）。这两项比其它设置危险：它们**决定往哪写文件、类叫什么**，
+    而项目的代码是按名字 import 的（`from src.data.feature_list import FeatureList`）——
+    个人覆盖改错就是全项目 `ImportError`。所以两端都在**覆盖已有文件前**做一次类名变更校验
+    （`core/LabelEnumGuard.kt` ↔ `src/labelEnumGuard.ts`）：文件不存在不问、同名不问、
+    但**类名会变时**先扫一遍项目里按旧类名 import 的文件、把"会炸多少处"报给用户确认。
+    **只校验类名不校验路径** —— 换路径时旧文件原样留着，按旧模块路径 import 的代码仍然能跑。
+  - ⚠️ 「修改路径…」填的值会写进设置（相对项目根的写法），所以"填过一次就记住"两端一致；
+    留空 = **撤销覆盖、回到项目约定**（与 `labelEnum.aliases` 的空值同一条规则）。
+    VS Code 侧此前把这层藏在 `globalState` 里（全局、界面看不见、跨项目串味），已废弃。
   - ⚠️ **按字段类型选归一化**：相对路径走 `normalizeRelPath`；绝对路径（`characters.projectPath`）
     与正则（`characters.avatarTemplateRegex`）**绝不归一化** —— 前者会被吃掉开头斜杠、
     后者会把 `\d` 换成 `/d`，都只是"匹配不到"，不报错。
@@ -211,6 +221,20 @@ Remaining gaps are two kinds: **one annotation-editor save-semantics difference*
     without this chain the plugin found **no candidate at all there, so the library was empty**.
   - ⚠️ The asset panel's own `<templates dir>/coco_annotations.json` is a **different file**;
     its path comes from `templates.directory` and is unaffected by `templates.cocoAnnotations`.
+  - **`labelEnum.path` / `labelEnum.name` have a personal-preference layer** (settings
+    `labelEnumPath` / `labelEnumName`). These two are more dangerous than the others: they decide
+    **where the file is written and what the class is called**, and project code imports the class
+    by name (`from src.data.feature_list import FeatureList`) — a wrong override is a project-wide
+    `ImportError`. So both ends check for a class-name change **before overwriting an existing file**
+    (`core/LabelEnumGuard.kt` ↔ `src/labelEnumGuard.ts`): silent when the file is new or the name is
+    unchanged, but when the name *would* change they scan the project for files importing the old
+    name and report how many would break. **Only the class name is checked, not the path** — moving
+    the file leaves the old one in place, so imports of the old module keep working.
+  - ⚠️ The "Change path…" dialog writes into the setting (stored project-relative), so
+    "remembered after the first time" behaves the same on both ends; leaving it empty **drops the
+    override and falls back to the project convention** (same rule as an empty `labelEnum.aliases`).
+    VS Code used to keep this layer in `globalState` (global, invisible in the UI, leaking across
+    projects) — that is gone.
   - ⚠️ **Pick the normalization by field type**: relative paths go through `normalizeRelPath`;
     absolute paths (`characters.projectPath`) and regexes (`characters.avatarTemplateRegex`)
     must **not** be normalized — the former loses its leading slash, the latter turns `\d` into `/d`.

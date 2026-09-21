@@ -30,6 +30,9 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
     private val characterAvatarTemplateRegex = JBTextField()
     // Template assets settings
     private val okTemplatesDirectory = JBTextField()
+    // LabelEnum settings
+    private val labelEnumPath = JBTextField()
+    private val labelEnumName = JBTextField()
     // Screenshot settings
     private val captureMethod = javax.swing.JComboBox(OkScriptToolkitSettings.CAPTURE_METHODS.toTypedArray())
 
@@ -94,6 +97,12 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
             row(OkScriptToolkitBundle.message("settings.okTemplatesDirectory")) {
                 cell(okTemplatesDirectory).align(AlignX.FILL)
             }
+            row(OkScriptToolkitBundle.message("settings.labelEnumPath")) {
+                cell(labelEnumPath).align(AlignX.FILL)
+            }
+            row(OkScriptToolkitBundle.message("settings.labelEnumName")) {
+                cell(labelEnumName).align(AlignX.FILL)
+            }
         }
         group(OkScriptToolkitBundle.message("settings.capture")) {
             row(OkScriptToolkitBundle.message("settings.captureMethod")) {
@@ -121,6 +130,8 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
             characterLocaleFile.text != state.characterLocaleFile.orEmpty() ||
             characterAvatarTemplateRegex.text != state.characterAvatarTemplateRegex.orEmpty() ||
             okTemplatesDirectory.text != state.okTemplatesDirectory.orEmpty() ||
+            labelEnumPath.text.trim() != state.labelEnumPath.orEmpty() ||
+            labelEnumName.text.trim() != state.labelEnumName.orEmpty() ||
             (captureMethod.selectedItem as? String).orEmpty() !=
                 OkScriptToolkitSettings.normalizeCaptureMethod(state.captureMethod)
     }
@@ -134,6 +145,16 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
             OkScriptToolkitSettings.KEY_OK_TEMPLATES_DIRECTORY,
             settings.state.okTemplatesDirectory.orEmpty(),
             okTemplatesDirectory.text.trim(),
+        )
+        settings.recordIfChanged(
+            OkScriptToolkitSettings.KEY_LABEL_ENUM_PATH,
+            settings.state.labelEnumPath.orEmpty(),
+            labelEnumPath.text.trim(),
+        )
+        settings.recordIfChanged(
+            OkScriptToolkitSettings.KEY_LABEL_ENUM_NAME,
+            settings.state.labelEnumName.orEmpty(),
+            labelEnumName.text.trim(),
         )
         settings.recordIfChanged(
             OkScriptToolkitSettings.KEY_LANG_DIRECTORY,
@@ -206,6 +227,8 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
         settings.state.characterLocaleFile = characterLocaleFile.text.trim()
         settings.state.characterAvatarTemplateRegex = characterAvatarTemplateRegex.text.trim()
         settings.state.okTemplatesDirectory = okTemplatesDirectory.text.trim()
+        settings.state.labelEnumPath = labelEnumPath.text.trim()
+        settings.state.labelEnumName = labelEnumName.text.trim()
         settings.state.captureMethod = (captureMethod.selectedItem as? String).orEmpty()
     }
 
@@ -228,6 +251,8 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
         characterLocaleFile.text = state.characterLocaleFile.orEmpty()
         characterAvatarTemplateRegex.text = state.characterAvatarTemplateRegex.orEmpty()
         okTemplatesDirectory.text = state.okTemplatesDirectory.orEmpty()
+        labelEnumPath.text = state.labelEnumPath.orEmpty()
+        labelEnumName.text = state.labelEnumName.orEmpty()
         captureMethod.selectedItem = OkScriptToolkitSettings.normalizeCaptureMethod(state.captureMethod)
     }
 

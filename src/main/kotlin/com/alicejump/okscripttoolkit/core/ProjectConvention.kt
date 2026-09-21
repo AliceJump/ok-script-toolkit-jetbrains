@@ -87,6 +87,32 @@ internal fun normalizeRelPath(value: String?): String? {
 private val LEADING_SLASH_OR_DOT_SLASH = Regex("^(?:\\.?/)+")
 
 /**
+ * 枚举路径的归一化：**模块路径与文件路径都容忍**。
+ *
+ * 项目约定文件里写的是模块路径（`src/data/FeatureList`，不带 `.py` —— 与 `config.py` 的
+ * `label_enum_relative_path` 同形），而 IDE 设置那个输入框要的是文件路径（带 `.py`）。
+ * 两种写法指同一个文件，没必要让用户记住"哪个框该写哪种" —— 有 `.py` 就用，没有就补。
+ *
+ * 旧实现只给"项目声明"补后缀、把"上次保存"原样返回，于是从输入框里填模块路径会生成一个
+ * **没有扩展名**的文件。统一在这里补，消费点不用各自判断。
+ *
+ * 与 VS Code 侧 `projectConfigPure.normalizeLabelEnumFile` 一一对应。
+ */
+internal fun normalizeLabelEnumFile(value: String?): String? {
+    val rel = normalizeRelPath(value) ?: return null
+    return if (rel.endsWith(".py", ignoreCase = true)) rel else "$rel.py"
+}
+
+/**
+ * 从文件路径取"去掉 `.py` 的文件名"，用作类名的兜底。
+ *
+ * 自己按分隔符切（不引 `java.io.File`），纯字符串处理 → 与平台无关、好断言。
+ * 与 VS Code 侧 `path.basename(filePath, '.py')` 对应。
+ */
+fun fileNameWithoutPy(filePath: String): String =
+    filePath.substringAfterLast('/').substringAfterLast('\\').removeSuffix(".py")
+
+/**
  * 纯文本类字段（正则、绝对路径…）：只做"非空"判断，**不做斜杠归一化**。
  *
  * ⚠️ 与 [normalizeRelPath] 分开是刻意的，混用会**静默**弄坏值：
@@ -126,11 +152,27 @@ object ConventionDefaults {
     const val AVATAR_TEMPLATE_REGEX = "^battle[_-]?icon[_-]?"
 
     const val EFFECTS_FILE = "src/data/effects.py"
+
+    /**
+     * 枚举文件路径的兜底：**空串 = 没指定**（这次不生成枚举）。
+     *
+     * 与 [CHARACTER_PROJECT_PATH] 一样，空串是有含义的值、不是"缺省忘了填" ——
+     * 所以溯源面板必须把它渲染成一句人话（直接展示空串在列表里是一段空白，看着像坏了）。
+     */
+    const val LABEL_ENUM_PATH = ""
+
+    /**
+     * 枚举类名的兜底：**空串 = 没有可用的名字**，调用方退回"用文件名推导"。
+     *
+     * 兜底层不是一个常量而是**从文件路径算出来的**，所以这里只能放占位空串；
+     * 真正求值在 `LabelEnumConvention.classNameOr(ideValue, basename)` 里。
+     */
+    const val LABEL_ENUM_NAME = ""
 }
 
 /** 取值链命中的那一层。与 VS Code 侧 `SettingLayer` 一一对应。 */
 enum class ConventionLayer {
-    /** 个人偏好（IDE 设置 / 上次保存）—— 链的最高层 */
+    /** 个人偏好（IDE 设置）—— 链的最高层 */
     PERSONAL,
 
     /** 项目约定文件 `ok-script-toolkit.json` */
@@ -407,7 +449,7 @@ data class EffectsConvention(
 
 /** `labelEnum` 一组：模板标签枚举的路径、类名与引用别名。 */
 data class LabelEnumConvention(
-    /** 枚举文件路径，相对项目根，不带 .py */
+    /** 枚举文件路径，相对项目根。模块路径（不带 .py）与文件路径都容忍，见 [normalizeLabelEnumFile] */
     val path: String? = null,
     /** 枚举类名。缺席时调用方退回文件名 */
     val name: String? = null,
@@ -453,21 +495,31 @@ data class LabelEnumConvention(
         aliasesResolved(ideValue, fallback).value
 
     /**
-     * 枚举类名。没声明 [name] 时用 `filePath` 反推 —— 即旧行为。
+     * 枚举类名，**带来源层**。
+     *
+     * 取值链：**个人偏好（IDE 设置）> 项目约定 `labelEnum.name` > 文件名推导**。
+     *
+     * 兜底层是"用文件名推导"（旧行为）—— **不是常量**，所以 [fallback] 由调用方传入
+     * （通常是 `filePath` 的 basename 去掉 `.py`）。溯源面板拿不到文件路径，传空串，
+     * 由 `render` 渲染成一句人话（与 `characters.projectPath` 的空兜底同样处理）。
      *
      * 解耦的意义：文件可以叫 `feature_labels.py`，而类叫 `FeatureList`。
      * 旧写法只有 basename 一条路，想叫 `FeatureList` 就必须把文件命名成 `FeatureList.py`。
      *
-     * 这里自己按分隔符切文件名（不引 `java.io.File`），纯字符串处理 → 与平台无关、好断言。
+     * ⚠️ 这个字段比其它设置危险：它**决定写进源码的类名**，而项目的代码是按名字 import 的
+     * （`from src.data.feature_list import FeatureList`）。个人覆盖改错就是全项目 `ImportError`。
+     * 所以消费端在**覆盖已有文件**前会先做一次类名变更校验（[LabelEnumGuard]）。
+     *
+     * @param ideValue 调用方读到的个人偏好（IDE 设置）；空白表示没设置
      */
-    fun classNameOr(filePath: String): String {
-        name?.let { return it }
-        val fileName = filePath.substringAfterLast('/').substringAfterLast('\\')
-        return fileName.removeSuffix(".py")
-    }
+    fun classNameResolved(ideValue: String?, fallback: String): ResolvedSetting<String> =
+        resolveSetting(textOrNull(ideValue), textOrNull(name), fallback)
+
+    /** 只要值时的薄封装。返回空串表示"没有名字可用"（调用方应退回文件名）。 */
+    fun classNameOr(ideValue: String?, fallback: String): String = classNameResolved(ideValue, fallback).value
 
     /**
-     * 枚举文件的**文件路径**（相对项目根，带 `.py`）。
+     * 枚举文件的**文件路径**（相对项目根，带 `.py`）。**带来源层**。
      *
      * ⚠️ 必须做一次「模块路径 → 文件路径」的转换，别直接返回声明值。
      * 本字段与项目 `config.py` 的 `label_enum_relative_path` 一样是**模块路径**
@@ -477,16 +529,19 @@ data class LabelEnumConvention(
      * 拼绝对路径）需要的是**文件路径**：拿模块路径直接去写，会产出一个叫
      * `FeatureList`、**没有扩展名**的文件 —— Python 根本 import 不到。
      *
-     * 两者都没有时返回 null，表示交给调用方用内置默认（`<目标目录>/LabelEnum.py`）。
+     * 取值链：**个人偏好（IDE 设置）> 项目约定 `labelEnum.path` > 空串（= 这次不生成）**。
      *
-     * @param lastSaved 个人偏好（上次保存的路径）。**已经是文件路径**，原样返回、不补后缀
+     * 空串 = "没有指定"。注意空串同时也是"没设置过"的归一化结果，所以用户在设置里
+     * 清空它就等于"回到项目约定" —— 与 `labelEnum.aliases` 同一条规则
+     * （空值表达"回到项目约定"，而不是"钉死为空"）。
+     *
+     * @param ideValue 调用方读到的个人偏好（IDE 设置）；空白表示没设置
      */
-    fun filePathOr(lastSaved: String?): String? {
-        val saved = lastSaved?.takeIf { it.isNotBlank() }
-        if (saved != null) return saved
-        val declared = path ?: return null
-        return if (declared.endsWith(".py", ignoreCase = true)) declared else "$declared.py"
-    }
+    fun pathResolved(ideValue: String?): ResolvedSetting<String> =
+        resolveSetting(normalizeLabelEnumFile(ideValue), normalizeLabelEnumFile(path), "")
+
+    /** 只要值时的薄封装。空串 = 没指定（调用方应跳过生成）。 */
+    fun filePathOr(ideValue: String?): String = pathResolved(ideValue).value
 
     companion object {
         /** 解析 `labelEnum` 节点。非对象、字段类型不符一律当没写。 */

@@ -76,7 +76,7 @@ class OverrideKeyParityTest {
                 "**不能让扫描静默扫空**：空集与空集比较会恒真，整个测试就废了",
         )
         assertEquals(
-            11,
+            13,
             declaredKeys().size,
             "声明的记账键数量变了。如果是**新增**了设置项，请同步补 personal / recordIfChanged / 播种三处；" +
                 "如果是**删除**，改这个数字",

@@ -46,6 +46,10 @@ data class ConventionSourceRow(
 data class ConventionPersonal(
     val templatesDirectory: String? = null,
     val featureAliases: List<String> = emptyList(),
+    /** 枚举文件的**文件路径**（已补 `.py`）；`null` = 没设过 */
+    val labelEnumPath: String? = null,
+    /** 枚举**类名**；`null` = 没设过 */
+    val labelEnumName: String? = null,
     val i18nEnabled: Boolean? = null,
     val langDirectory: String? = null,
     val poDirectory: String? = null,
@@ -115,6 +119,26 @@ fun conventionSourceRows(
             personal = personal.featureAliases,
             chain = { convention.labelEnum.aliasesResolved(it.orEmpty(), defaults.FEATURE_ALIASES) },
             render = { it.joinToString(", ") },
+        ),
+        // 枚举路径 / 类名的兜底层**不是常量**：
+        //   - 路径的兜底是"没指定"（空串），消费端据此跳过生成；
+        //   - 类名的兜底是"用文件名推导"，要拿到文件路径才能求值 —— 面板拿不到，
+        //     所以链上用空串占位、由 `render` 说清"这一层到底会做什么"。
+        // 两者都必须渲染成一句人话：列表里一段空白看着像坏了
+        // （与 `characterProjectPath` 的空兜底同样处理）。
+        rowOf(
+            key = "labelEnumPath",
+            fallback = defaults.LABEL_ENUM_PATH,
+            personal = personal.labelEnumPath,
+            chain = { convention.labelEnum.pathResolved(it) },
+            render = { it.ifEmpty { OkScriptToolkitBundle.message("conventionSources.notSetAskOnSave") } },
+        ),
+        rowOf(
+            key = "labelEnumName",
+            fallback = defaults.LABEL_ENUM_NAME,
+            personal = personal.labelEnumName,
+            chain = { convention.labelEnum.classNameResolved(it, defaults.LABEL_ENUM_NAME) },
+            render = { it.ifEmpty { OkScriptToolkitBundle.message("conventionSources.derivedFromFileName") } },
         ),
         rowOf(
             key = "okTemplatesDirectory",

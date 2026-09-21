@@ -44,6 +44,12 @@ class ConventionSourcesTest {
         assertEquals(
             listOf(
                 "featureAliases",
+                // 枚举路径 / 类名此前**没有**个人偏好层（VS Code 侧藏在 `globalState` 里，
+                // 界面上看不见、还跨项目串味；类名则完全没有）。升级成正式设置之后，
+                // 它们必须和其它设置一样可溯源、可恢复 —— 否则用户改过类名之后
+                // **看不到团队声明、也回不去**，而这一项改错会让整个项目 import 失败。
+                "labelEnumPath",
+                "labelEnumName",
                 "okTemplatesDirectory",
                 "enablePoData",
                 "langDirectory",
@@ -63,6 +69,66 @@ class ConventionSourcesTest {
     }
 
     // ── 三层的来源标注 ───────────────────────────────────────────────
+
+    @Test
+    fun `the enum path and class name are traceable too`() {
+        val json = """{"labelEnum": {"path": "src/data/feature_list", "name": "FeatureList"}}"""
+        val pathRow = row(rows(json), "labelEnumPath")
+        val nameRow = row(rows(json), "labelEnumName")
+
+        assertEquals(
+            "src/data/feature_list.py",
+            pathRow.effective,
+            "路径行展示的是**文件路径** —— 项目声明写的是模块路径，链上已经补过 .py",
+        )
+        assertEquals("src/data/feature_list.py", pathRow.declared, "declared 走同一条链，所以展示值与生效值一致")
+        assertEquals(ConventionLayer.PROJECT, pathRow.layer)
+        assertEquals("FeatureList", nameRow.effective, "类名行按项目声明取值")
+        assertEquals(ConventionLayer.PROJECT, nameRow.layer)
+
+        // 个人覆盖
+        val overridden = rows(
+            json,
+            ConventionPersonal(labelEnumPath = "mine/x.py", labelEnumName = "MyEnum"),
+        )
+        val path2 = row(overridden, "labelEnumPath")
+        val name2 = row(overridden, "labelEnumName")
+        assertEquals("mine/x.py", path2.effective, "路径的个人偏好压过项目声明")
+        assertEquals(ConventionLayer.PERSONAL, path2.layer)
+        assertEquals("MyEnum", name2.effective, "类名的个人偏好压过项目声明")
+        assertEquals(ConventionLayer.PERSONAL, name2.layer)
+        assertEquals("src/data/feature_list.py", path2.declared, "被覆盖时仍然展示项目声明")
+        assertEquals(
+            "FeatureList",
+            name2.declared,
+            "类名同理 —— 这一项被覆盖后尤其危险（会让整个项目 ImportError），必须能看见原值",
+        )
+        assertTrue(path2.overridden && name2.overridden, "两项都提供「恢复为项目约定」")
+
+        // 空值 = 没设置，不是「钉死为空」
+        val blank = rows(json, ConventionPersonal(labelEnumPath = "   ", labelEnumName = ""))
+        assertEquals(ConventionLayer.PROJECT, row(blank, "labelEnumPath").layer, "空白 = 回到项目约定")
+        assertEquals(ConventionLayer.PROJECT, row(blank, "labelEnumName").layer)
+    }
+
+    @Test
+    fun `the empty fallbacks of the enum rows are rendered as readable text`() {
+        val bare = rows()
+        val pathRow = row(bare, "labelEnumPath")
+        val nameRow = row(bare, "labelEnumName")
+
+        assertEquals(ConventionLayer.BUILTIN, pathRow.layer, "都没声明时报「内置默认」")
+        assertNull(pathRow.declared)
+        assertTrue(
+            pathRow.effective.isNotEmpty(),
+            "**空兜底也要渲染成可读文案** —— 直接展示空串在列表里是一段空白，看着像坏了",
+        )
+        assertEquals(pathRow.effective, pathRow.builtin, "builtin 与 effective 都是同一句兜底文案")
+        assertTrue(
+            nameRow.effective.isNotEmpty(),
+            "类名的兜底是「用文件名推导」（**不是常量**，面板拿不到文件路径）—— 文案要说清这一层会做什么",
+        )
+    }
 
     @Test
     fun `a project declaration is reported as the project layer`() {

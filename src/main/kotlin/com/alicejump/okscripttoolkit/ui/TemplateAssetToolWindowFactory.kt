@@ -1,8 +1,8 @@
 package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
+import com.alicejump.okscripttoolkit.core.LabelEnumGuard
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
-import com.alicejump.okscripttoolkit.core.ProjectConventionConfig
 import com.alicejump.okscripttoolkit.core.SaveToAssetsFlow
 import com.alicejump.okscripttoolkit.core.ScreenshotCapture
 import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
@@ -38,6 +38,12 @@ import java.util.concurrent.CancellationException
 import java.util.concurrent.CompletableFuture
 import javax.swing.*
 import javax.swing.border.EmptyBorder
+
+/** 引用扫描时跳过的目录：这些不是项目代码，扫进去既慢又没意义。 */
+private val SKIPPED_SCAN_DIRS = setOf("node_modules", ".venv", "venv", ".git", "__pycache__", ".idea")
+
+/** 引用扫描的文件数上限。项目代码远小于这个数，设它只为兜住"项目根填错"这种情形。 */
+private const val LABEL_ENUM_REFERENCE_SCAN_LIMIT = 2000
 
 class TemplateAssetToolWindowFactory : ToolWindowFactory {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
@@ -542,6 +548,67 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         }
     }
 
+    /**
+     * 覆盖已有枚举文件、且**类名会变**时先问一句。
+     *
+     * 为什么这道闸在 UI 层而不是 `TemplateAssetDataService.generateLabelEnum` 里：
+     * 那是个同步的数据写入，里面弹模态框会让它没法被测、也把 UI 决策塞进了数据层。
+     * 判据本身是纯对象（[LabelEnumGuard]），IO 与弹窗留在这里。
+     *
+     * 失败一律放行：读不了文件、扫不了项目都只影响"提示的完整度"，不能反过来阻断导出。
+     *
+     * @return `false` = 用户选择放弃这次导出（**整个**导出，不只是枚举 —— 半导出状态更难解释）
+     */
+    private fun confirmLabelEnumRename(project: Project, projectDir: String, enumAbsolutePath: String): Boolean {
+        val existing = try {
+            File(enumAbsolutePath).takeIf { it.isFile }?.readText()
+        } catch (_: Exception) {
+            null
+        } ?: return true // 文件不存在（或读不了）→ 全新生成，没有旧名字可废
+        // 用**将要写入的那个类名**（`writableClassName` 会把非法标识符退回兜底名）去比 ——
+        // 直接拿用户填的原始值比，会为"填了个非法名字、实际什么都没变"的情况报警。
+        val newClassName = LabelEnumGuard.writableClassName(
+            OkScriptToolkitSettings.getInstance(project).labelEnumClassName(enumAbsolutePath),
+        )
+        val impact = LabelEnumGuard.renameImpact(existing, newClassName) ?: return true
+        val references = findLabelEnumReferences(projectDir, impact.existingClassName)
+        val choice = com.intellij.openapi.ui.Messages.showYesNoDialog(
+            project,
+            LabelEnumGuard.renameMessage(impact, references),
+            OkScriptToolkitBundle.message("labelEnum.rename.title"),
+            com.intellij.openapi.ui.Messages.getWarningIcon(),
+        )
+        return choice == com.intellij.openapi.ui.Messages.YES
+    }
+
+    /**
+     * 扫项目里的 `.py`，找出**按旧类名 import** 的文件（相对项目根）。
+     *
+     * 只在"类名真的变了"时才调用（罕见），所以不做缓存、也不做增量。
+     * 排除目录是常见的"不是项目代码"的地方 —— 扫进虚拟环境里的几千个文件既慢又没意义。
+     *
+     * 返回**全部**命中；文案里只列前几个，但总数照实报。
+     */
+    private fun findLabelEnumReferences(projectDir: String, className: String): List<String> {
+        if (className.isEmpty()) return emptyList()
+        val root = File(projectDir)
+        if (!root.isDirectory) return emptyList()
+        val collected = ArrayList<Pair<String, String>>()
+        root.walkTopDown()
+            .onEnter { it == root || it.name !in SKIPPED_SCAN_DIRS }
+            .filter { it.isFile && it.extension == "py" }
+            .take(LABEL_ENUM_REFERENCE_SCAN_LIMIT)
+            .forEach { file ->
+                try {
+                    val relative = root.toPath().relativize(file.toPath()).toString().replace('\\', '/')
+                    collected += relative to file.readText()
+                } catch (_: Exception) {
+                    // 读不了就跳过 —— 这是"提示"不是"校验"，不能因为一个文件读不了就少报或误报
+                }
+            }
+        return LabelEnumGuard.referencingFiles(collected, className)
+    }
+
     private fun clearDropHint(border: javax.swing.border.Border?) {
         mainPanel.border = border
         statusLabel.text = " "
@@ -565,33 +632,38 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             return
         }
 
-        // 枚举路径的取值链：**项目约定文件的 labelEnum.path > `<目标目录>/LabelEnum.py`**。
-        // （子仓没有"上次保存的路径"这一层 —— 那是 VS Code 侧 globalState 才有的个人偏好。）
-        //
-        // 注意必须走 `filePathOr` 而不是直接拿 `labelEnum.path`：后者是**模块路径**
-        // （`src/data/FeatureList`，不带 .py，与 config.py 的 label_enum_relative_path 同形），
-        // 而这里要的是**文件路径** —— 直接塞进去会生成一个没有扩展名的文件，Python import 不到。
-        val declaredAbsolute = ProjectConventionConfig.getInstance(project)
-            .load()
-            .labelEnum
-            .filePathOr(lastSaved = null)
-            ?.let { java.nio.file.Paths.get(projectDir, it).toString() }
+        val settings = OkScriptToolkitSettings.getInstance(project)
+
+        /**
+         * 当前**生效**的枚举文件绝对路径；`null` = 没指定（这次不生成）。
+         *
+         * 取值链：**个人偏好（IDE 设置 `labelEnumPath`）> 项目约定文件的 `labelEnum.path` > 空**。
+         * 个人偏好层由下面的「修改路径…」写入设置（`setLabelEnumPath`），所以"填过一次就记住"
+         * 与 VS Code 侧一致，而且那个值在设置界面能看到、在溯源面板能溯源、也能一键恢复。
+         *
+         * 注意必须走 `labelEnumPath()` 而不是直接拿 `labelEnum.path`：后者是**模块路径**
+         * （`src/data/FeatureList`，不带 .py，与 config.py 的 label_enum_relative_path 同形），
+         * 而这里要的是**文件路径** —— 直接塞进去会生成一个没有扩展名的文件，Python import 不到。
+         */
+        fun effectiveEnumPath(): String? = settings.labelEnumPath()
+            .takeIf { it.isNotEmpty() }
+            ?.let { SaveToAssetsFlow.toAbsolute(projectDir, it) }
 
         val targets = listOf("assets", "ok_tasks/assets")
         val changePathLabel = OkScriptToolkitBundle.message("templateAsset.exportEnumChangePath")
 
-        /** 用户在「修改路径」里填的值。**只对本次导出生效** —— 子仓没有个人偏好层可写。 */
-        var overrideEnumPath: String? = null
+        /** 用户是否已经在「修改路径」里做过决定 —— 决定过就不再追问，哪怕他清空了 */
+        var enumPathDecided = false
 
         // 目标选择与「修改路径」共用一轮循环：改完路径要回到目标选择，
-        // 所以候选列表每次都重新构造（声明了枚举路径时才多出那一项，见 `SaveToAssetsFlow`）。
+        // 所以候选列表每次都重新构造（有生效路径时才多出那一项，见 `SaveToAssetsFlow`）。
         var selectedTarget = ""
         while (true) {
             val chosenIndex = ChooseDialog.show(
                 project,
                 OkScriptToolkitBundle.message("templateAsset.exportTargetPrompt", annotatedCount),
                 OkScriptToolkitBundle.message("templateAsset.export"),
-                SaveToAssetsFlow.options(targets, declaredAbsolute, changePathLabel),
+                SaveToAssetsFlow.options(targets, effectiveEnumPath(), changePathLabel),
             ) ?: return
             if (!SaveToAssetsFlow.isChangePathChoice(chosenIndex, targets.size)) {
                 selectedTarget = targets[chosenIndex]
@@ -602,16 +674,18 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
                 OkScriptToolkitBundle.message("templateAsset.exportEnumPathPrompt"),
                 OkScriptToolkitBundle.message("templateAsset.exportEnumTitle"),
                 com.intellij.openapi.ui.Messages.getInformationIcon(),
-                overrideEnumPath ?: declaredAbsolute ?: "",
+                effectiveEnumPath() ?: "",
                 null,
             ) ?: continue // 取消改路径 → 回到目标选择
-            // 留空视为"没改"：这条链上没有"个人偏好"层可清，留空没有别的含义，
-            // 让它变成"不生成枚举"会和下面的「生成枚举？」确认框互相矛盾。
-            input.trim().takeIf { it.isNotEmpty() }?.let { overrideEnumPath = it }
+            // 写进**个人偏好**（IDE 设置）。留空 = **撤销覆盖、回到项目约定**
+            // （`setLabelEnumPath` 传空会取消记账，而不是钉死为空）—— 与 aliases 同一条规则。
+            // 存的是**相对项目根**的路径，设置里的值才能跟"项目在哪"无关。
+            settings.setLabelEnumPath(SaveToAssetsFlow.toProjectRelative(projectDir, input.trim()))
+            enumPathDecided = true
         }
         val targetFolder = java.nio.file.Paths.get(projectDir, selectedTarget.replace("/", java.io.File.separator)).toString()
 
-        val generateEnum = com.intellij.openapi.ui.Messages.showYesNoDialog(
+        val wantsEnum = com.intellij.openapi.ui.Messages.showYesNoDialog(
             project,
             OkScriptToolkitBundle.message("templateAsset.exportEnumPrompt"),
             OkScriptToolkitBundle.message("templateAsset.export"),
@@ -619,12 +693,12 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         ) == com.intellij.openapi.ui.Messages.YES
 
         var enumPath: String? = null
-        if (generateEnum) {
-            enumPath = overrideEnumPath ?: declaredAbsolute
-            // **已经声明过就不再问路径**（那是团队约定好的值，每次导出都确认一遍是纯噪音）。
-            // 要改的话走目标列表里的「修改路径」项 —— 那个入口只在跳过弹框时出现，
-            // 所以"跳过"与"还能改"这两件事永远同时成立。
-            if (enumPath == null) {
+        if (wantsEnum) {
+            enumPath = effectiveEnumPath()
+            // **已经有生效路径就不再问**（那是用户自己定的、或团队约定好的值，
+            // 每次导出都确认一遍是纯噪音）。要改的话走目标列表里的「修改路径」项 ——
+            // 那个入口只在跳过弹框时出现，所以"跳过"与"还能改"这两件事永远同时成立。
+            if (SaveToAssetsFlow.needsEnumPathPrompt(enumPath, enumPathDecided)) {
                 val input = com.intellij.openapi.ui.Messages.showInputDialog(
                     project,
                     OkScriptToolkitBundle.message("templateAsset.exportEnumPathPrompt"),
@@ -633,9 +707,21 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
                     java.nio.file.Paths.get(targetFolder, "LabelEnum.py").toString(),
                     null,
                 ) ?: return
-                enumPath = input.trim()
+                val trimmed = input.trim()
+                if (trimmed.isNotEmpty()) {
+                    settings.setLabelEnumPath(SaveToAssetsFlow.toProjectRelative(projectDir, trimmed))
+                    enumPath = trimmed
+                }
             }
         }
+        // 路径为空 = **不生成枚举**（用户留空跳过）。必须显式判断：
+        // `saveToAssets` 内部是 `enumPath ?: 默认路径`，空串不是 null，
+        // 会一路传到 `File("")` 上 —— 那是个 FileNotFoundException，报错还看不出原因。
+        val generateEnum = wantsEnum && !enumPath.isNullOrBlank()
+        // 覆盖已有枚举文件、且**类名会变**时先问一句。这是唯一一处"个人覆盖能把项目弄坏"的地方：
+        // 项目的代码按类名 import（`from src.data.feature_list import FeatureList`），
+        // 改名之后那些 import 全部 ImportError，而导出成功的提示照样会弹出来。
+        if (generateEnum && !confirmLabelEnumRename(project, projectDir, enumPath!!)) return
 
         statusLabel.text = OkScriptToolkitBundle.message("templateAsset.exportRunning")
         progressBar.isIndeterminate = true

@@ -131,27 +131,67 @@ class ProjectConventionTest {
         )
     }
 
-    // ── 取值链 2：类名 ───────────────────────────────────────────────
+    // ── 取值链 2：类名（个人偏好 > 项目声明 > 文件名）─────────────────
 
     @Test
     fun `class name is decoupled from the file name once declared`() {
         assertEquals(
             "feature_labels",
-            LabelEnumConvention().classNameOr("D:/proj/src/data/feature_labels.py"),
+            LabelEnumConvention().classNameOr(null, fileNameWithoutPy("D:/proj/src/data/feature_labels.py")),
             "没声明时退回文件名（去 .py）—— 即旧行为",
         )
         assertEquals(
             "FeatureList",
-            LabelEnumConvention(name = "FeatureList").classNameOr("D:/proj/src/data/feature_labels.py"),
+            LabelEnumConvention(name = "FeatureList")
+                .classNameOr(null, fileNameWithoutPy("D:/proj/src/data/feature_labels.py")),
             "**声明后文件与类名解耦** —— 文件叫 feature_labels.py、类叫 FeatureList",
         )
     }
 
     @Test
     fun `class name handles both separators and a missing extension`() {
-        assertEquals("LabelEnum", LabelEnumConvention().classNameOr("C:\\proj\\assets\\LabelEnum.py"), "Windows 反斜杠")
-        assertEquals("LabelEnum", LabelEnumConvention().classNameOr("assets/LabelEnum.py"), "相对路径")
-        assertEquals("LabelEnum", LabelEnumConvention().classNameOr("assets/LabelEnum"), "没有扩展名时也要能给出名字")
+        assertEquals("LabelEnum", fileNameWithoutPy("C:\\proj\\assets\\LabelEnum.py"), "Windows 反斜杠")
+        assertEquals("LabelEnum", fileNameWithoutPy("assets/LabelEnum.py"), "相对路径")
+        assertEquals("LabelEnum", fileNameWithoutPy("assets/LabelEnum"), "没有扩展名时也要能给出名字")
+    }
+
+    @Test
+    fun `personal preference beats the declared class name`() {
+        val declared = LabelEnumConvention(name = "FeatureList")
+        assertEquals(
+            "MyEnum",
+            declared.classNameOr("MyEnum", "feature_labels"),
+            "**个人偏好压过项目声明** —— 与全局取值链一致（个人偏好最高）",
+        )
+        assertEquals(
+            "FeatureList",
+            declared.classNameOr("   ", "feature_labels"),
+            "个人偏好写成空白 = 没设置，退回项目声明（与 aliases 的空列表同一条规则）",
+        )
+        assertEquals(
+            "feature_labels",
+            LabelEnumConvention().classNameOr(null, "feature_labels"),
+            "都没设置时落到兜底层（由调用方算出来的文件名）",
+        )
+    }
+
+    @Test
+    fun `class name reports which layer it came from`() {
+        assertEquals(
+            ConventionLayer.PERSONAL,
+            LabelEnumConvention(name = "FeatureList").classNameResolved("MyEnum", "x").layer,
+            "有个人偏好时报「我的设置」",
+        )
+        assertEquals(
+            ConventionLayer.PROJECT,
+            LabelEnumConvention(name = "FeatureList").classNameResolved(null, "x").layer,
+            "只有项目声明时报「项目约定」",
+        )
+        assertEquals(
+            ConventionLayer.BUILTIN,
+            LabelEnumConvention().classNameResolved(null, "from_file").layer,
+            "都没有时报「内置默认」—— 面板据此显示「由文件名推导」",
+        )
     }
 
     // ── 取值链 3：文件路径（含「模块路径 → 文件路径」转换）─────────────
@@ -173,15 +213,40 @@ class ProjectConventionTest {
     }
 
     @Test
-    fun `last saved path beats the declared one and is used verbatim`() {
+    fun `personal preference beats the declared path`() {
         val declared = LabelEnumConvention(path = "src/data/FeatureList")
         assertEquals(
             "mine/Label.py",
             declared.filePathOr("mine/Label.py"),
-            "**个人偏好压过项目声明** —— 且它已经是文件路径，不能再去补一次 .py",
+            "**个人偏好压过项目声明**",
         )
-        assertEquals(null, LabelEnumConvention().filePathOr(null), "都没有时返回 null，交给调用方用内置默认")
+        assertEquals(
+            "mine/Label.py",
+            declared.filePathOr("mine/Label"),
+            "**个人偏好写的是模块路径也要补 .py** —— 旧实现把这一层原样返回，" +
+                "于是从输入框里填模块路径会生成一个没有扩展名的文件，Python import 不到",
+        )
+        assertEquals(
+            "src/data/FeatureList.py",
+            declared.filePathOr("   "),
+            "个人偏好写成空白 = 没设置，退回项目声明",
+        )
+        assertEquals("", LabelEnumConvention().filePathOr(null), "都没有时返回空串（= 这次不生成）")
         assertEquals("mine/Label.py", LabelEnumConvention().filePathOr("mine/Label.py"), "只有个人偏好时用它")
+    }
+
+    @Test
+    fun `path reports which layer it came from`() {
+        assertEquals(
+            ConventionLayer.PERSONAL,
+            LabelEnumConvention(path = "src/data/FeatureList").pathResolved("mine/x.py").layer,
+            "有个人偏好时报「我的设置」",
+        )
+        assertEquals(
+            ConventionLayer.BUILTIN,
+            LabelEnumConvention().pathResolved(null).layer,
+            "都没有时报「内置默认」（面板据此显示「未设置 —— 导出时询问」）",
+        )
     }
 
     // ── 取值链 4：模板目录 ───────────────────────────────────────────

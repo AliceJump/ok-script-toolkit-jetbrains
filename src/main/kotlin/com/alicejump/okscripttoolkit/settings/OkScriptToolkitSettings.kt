@@ -6,7 +6,9 @@ import com.alicejump.okscripttoolkit.core.ConventionPersonal
 import com.alicejump.okscripttoolkit.core.ConventionSourceRow
 import com.alicejump.okscripttoolkit.core.ProjectConvention
 import com.alicejump.okscripttoolkit.core.ProjectConventionConfig
+import com.alicejump.okscripttoolkit.core.ResolvedSetting
 import com.alicejump.okscripttoolkit.core.conventionSourceRows
+import com.alicejump.okscripttoolkit.core.fileNameWithoutPy
 import com.intellij.openapi.components.BaseState
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.SimplePersistentStateComponent
@@ -77,6 +79,9 @@ class OkScriptToolkitSettings(
         var characterAvatarTemplateRegex by string("^battle[_-]?icon[_-]?")
         // Template assets settings
         var okTemplatesDirectory by string("ok_templates")
+        // LabelEnum settings —— 个人偏好层，**默认留空**（空 = 没设过，让项目约定生效）
+        var labelEnumPath by string("")
+        var labelEnumName by string("")
         // Screenshot settings
         var captureMethod by string("auto")
     }
@@ -172,6 +177,22 @@ class OkScriptToolkitSettings(
         val DEFAULT_AVATAR_TEMPLATE_REGEX = ConventionDefaults.AVATAR_TEMPLATE_REGEX
 
         /**
+         * 枚举文件路径的兜底：**空串 = 没指定**（这次不生成枚举）。
+         *
+         * 与 [DEFAULT_CHARACTER_PROJECT_PATH] 一样，空串是有含义的值 ——
+         * 溯源面板必须把它渲染成一句人话。
+         */
+        const val DEFAULT_LABEL_ENUM_PATH = ConventionDefaults.LABEL_ENUM_PATH
+
+        /**
+         * 枚举类名的兜底：**空串 = 没有可用的名字**，调用方退回"用文件名推导"。
+         *
+         * 兜底层不是一个常量而是**从文件路径算出来的**，所以这里只能放占位空串；
+         * 真正求值在 [labelEnumName] 里。
+         */
+        const val DEFAULT_LABEL_ENUM_NAME = ConventionDefaults.LABEL_ENUM_NAME
+
+        /**
          * `templates.directory` 对应的设置键名，用于 [SettingsState.overriddenKeys] 记账。
          * 与设置面板字段名一一对应。
          */
@@ -187,6 +208,16 @@ class OkScriptToolkitSettings(
         const val KEY_CHARACTER_SKILLS_DIRECTORY = "characterSkillsDirectory"
         const val KEY_CHARACTER_LOCALE_FILE = "characterLocaleFile"
         const val KEY_CHARACTER_AVATAR_TEMPLATE_REGEX = "characterAvatarTemplateRegex"
+
+        /**
+         * 枚举路径 / 类名的设置键名，用于 [SettingsState.overriddenKeys] 记账。
+         *
+         * 与项目约定文件里的字段**同名**（`labelEnumPath` ↔ `labelEnum.path`）——
+         * 不像 `enablePoData` ↔ `i18n.enabled` 那样刻意分名：两边语义相同
+         * （"这个项目的枚举在哪、类叫什么"），分名反而要用户多记一个词。
+         */
+        const val KEY_LABEL_ENUM_PATH = "labelEnumPath"
+        const val KEY_LABEL_ENUM_NAME = "labelEnumName"
 
         /** 非法值（含旧配置残留）一律回退到 auto，避免把脏值传给 python 脚本 */
         fun normalizeCaptureMethod(value: String?): String =
@@ -269,6 +300,54 @@ class OkScriptToolkitSettings(
 
     /** 设置面板用：显示"我设了什么"，而不是"最终生效什么"（取值链会掺进项目约定） */
     fun rawFeatureAliases(): List<String> = state.featureAliases.toList()
+
+    /**
+     * 枚举文件的**文件路径**（相对项目根，带 `.py`）。空串 = 没指定（跳过生成）。
+     *
+     * 取值链：**个人偏好（IDE 设置）> 项目约定文件 `labelEnum.path` > 空**。
+     * 个人偏好层与 VS Code 侧 `labelEnumPath` 设置对应；导出对话框的「修改路径…」
+     * 会把用户填的值写进这里（[setLabelEnumPath]），所以"填过一次就记住"在两端都成立。
+     *
+     * 注意必须走 [LabelEnumConvention.filePathOr] 而不是直接拿 `labelEnum.path` ——
+     * 后者是**模块路径**（`src/data/FeatureList`，不带 .py），消费端要的是文件路径。
+     */
+    fun labelEnumPath(): String =
+        convention().labelEnum.filePathOr(personal(KEY_LABEL_ENUM_PATH) { state.labelEnumPath.orEmpty() })
+
+    /**
+     * 枚举**类名**（带来源层）。`filePath` 是**即将写入**的文件路径。
+     *
+     * 取值链：**个人偏好（IDE 设置）> 项目约定文件 `labelEnum.name` > 文件名推导**。
+     * 兜底层是"用文件名推导"，必须拿到文件路径才能求值，所以这里比 [labelEnumPath]
+     * 多收一个参数。
+     *
+     * ⚠️ 这个字段**决定写进源码的类名**，而项目的代码按名字 import。个人覆盖改错就是
+     * 全项目 `ImportError` —— 所以覆盖已有文件前会先做一次类名变更校验（[LabelEnumGuard]）。
+     */
+    fun labelEnumName(filePath: String): ResolvedSetting<String> = convention().labelEnum.classNameResolved(
+        personal(KEY_LABEL_ENUM_NAME) { state.labelEnumName.orEmpty() },
+        fileNameWithoutPy(filePath),
+    )
+
+    /** 只要类名时的薄封装（绝大多数消费点用这个）。 */
+    fun labelEnumClassName(filePath: String): String = labelEnumName(filePath).value
+
+    /** 设置面板用：显示"我设了什么"，而不是"最终生效什么"。 */
+    fun rawLabelEnumPath(): String = state.labelEnumPath.orEmpty()
+    fun rawLabelEnumName(): String = state.labelEnumName.orEmpty()
+
+    /**
+     * 写**个人偏好**：枚举文件路径。由导出对话框的「修改路径…」调用。
+     *
+     * 传空/空白 → **撤销记账**（回到项目约定），而不是"钉死为空" —— 与
+     * `labelEnum.aliases` 的"空值 = 回到项目约定"是同一条规则。
+     * 值本身留着（[clearOverridden] 只取消记账、不清 state），用户反悔时不用重新输入。
+     */
+    fun setLabelEnumPath(value: String?) {
+        val trimmed = value?.trim().orEmpty()
+        state.labelEnumPath = trimmed
+        if (trimmed.isEmpty()) clearOverridden(KEY_LABEL_ENUM_PATH) else markOverridden(KEY_LABEL_ENUM_PATH)
+    }
 
     /**
      * 效果定义源文件（`EffectType` / `EFFECT_DESCRIPTIONS` 所在），相对项目根。
@@ -391,6 +470,10 @@ class OkScriptToolkitSettings(
         personal = ConventionPersonal(
             templatesDirectory = personal(KEY_OK_TEMPLATES_DIRECTORY) { state.okTemplatesDirectory.orEmpty() },
             featureAliases = state.featureAliases.filter { it.isNotBlank() },
+            // 这两项读的是 state 原值（没补 .py、没走归一化）—— 归一化由取值链自己做，
+            // 面板的 `declared` 探测也走同一条链，所以展示值与生效值不会错位。
+            labelEnumPath = personal(KEY_LABEL_ENUM_PATH) { state.labelEnumPath.orEmpty() },
+            labelEnumName = personal(KEY_LABEL_ENUM_NAME) { state.labelEnumName.orEmpty() },
             i18nEnabled = personal(KEY_ENABLE_PO_DATA) { state.enablePoData },
             langDirectory = personal(KEY_LANG_DIRECTORY) { state.langDirectory.orEmpty() },
             poDirectory = personal(KEY_PO_DIRECTORY) { state.poDirectory.orEmpty() },

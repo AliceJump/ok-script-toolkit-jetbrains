@@ -1,5 +1,6 @@
 package com.alicejump.okscripttoolkit.core
 
+import java.nio.file.Paths
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -87,6 +88,84 @@ class SaveToAssetsFlowTest {
             SaveToAssetsFlow.isChangePathChoice(2, TARGETS.size) !=
                 SaveToAssetsFlow.isChangePathChoice(0, TARGETS.size),
             "边界两边必须给出不同结论，否则下标判定形同虚设",
+        )
+    }
+
+    // ── 显式清空之后不再追问 ─────────────────────────────────────────
+
+    @Test
+    fun `an explicitly cleared path is not asked about again`() {
+        assertTrue(
+            SaveToAssetsFlow.needsEnumPathPrompt(null),
+            "从没定过 → 必须问（默认值是推导出来的，跳过它用户就没机会改成别的路径）",
+        )
+        assertTrue(
+            !SaveToAssetsFlow.needsEnumPathPrompt(null, decided = true),
+            "**用户在「修改路径」里显式清空了 → 不问** —— 那表达的是「回到项目约定」；" +
+                "再问一遍会变成「清空了还被追着问」",
+        )
+        assertTrue(
+            !SaveToAssetsFlow.needsEnumPathPrompt("src/data/LabelEnum.py", decided = true),
+            "有值 + 定过 → 同样不问（这个参数只用来抑制追问，不会让有值的情况变成要问）",
+        )
+    }
+
+    // ── 路径存成相对、解析回绝对 ─────────────────────────────────────
+
+    /**
+     * 设置里存的值必须**相对项目根**（换个检出目录、或同事用同一份配置都还有效），
+     * 而导出时需要一个绝对路径。这两步是纯路径运算，所以放在纯对象里钉住。
+     */
+    private val root: String = Paths.get("").toAbsolutePath().normalize().toString()
+
+    private fun underRoot(vararg parts: String): String = Paths.get(root, *parts).toString()
+
+    @Test
+    fun `a relative input is stored unchanged`() {
+        assertEquals(
+            "src/data/LabelEnum.py",
+            SaveToAssetsFlow.toProjectRelative(root, "src/data/LabelEnum.py"),
+            "本来就是相对路径 → 原样返回，不要自作聪明",
+        )
+    }
+
+    @Test
+    fun `an absolute path inside the project is stored relative`() {
+        assertEquals(
+            "src/data/LabelEnum.py",
+            SaveToAssetsFlow.toProjectRelative(root, underRoot("src", "data", "LabelEnum.py")),
+            "**存绝对路径的话，换个检出目录就指向了不存在的地方**",
+        )
+    }
+
+    @Test
+    fun `an absolute path outside the project cannot be relativised and is kept`() {
+        val outside = Paths.get(root, "..", "other_proj", "LabelEnum.py").toAbsolutePath().normalize().toString()
+        assertEquals(
+            outside,
+            SaveToAssetsFlow.toProjectRelative(root, outside),
+            "项目外的绝对路径相对化不了 —— 原样存，由 toAbsolute 按「绝对优先」处理",
+        )
+    }
+
+    @Test
+    fun `toAbsolute resolves relative values and passes absolute ones through`() {
+        val abs = underRoot("src", "data", "LabelEnum.py")
+        assertEquals(abs, SaveToAssetsFlow.toAbsolute(root, "src/data/LabelEnum.py"), "相对值按项目根解析")
+        assertEquals(
+            abs,
+            SaveToAssetsFlow.toAbsolute("D:/somewhere/else", abs),
+            "**已经是绝对路径的原样返回** —— 否则会被拼成 `<项目根>/D:/other/x.py`，报一个看不懂的错",
+        )
+    }
+
+    @Test
+    fun `store then resolve round-trips to the same absolute path`() {
+        val abs = underRoot("src", "data", "LabelEnum.py")
+        assertEquals(
+            abs,
+            SaveToAssetsFlow.toAbsolute(root, SaveToAssetsFlow.toProjectRelative(root, abs)),
+            "**存进去再取出来必须是同一个文件** —— 这两步是配对的，单独改任一个都会静默指到别处",
         )
     }
 
