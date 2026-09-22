@@ -17,3 +17,6 @@ local.properties
 # 原子写的临时产物（写入中的 .tmp 与旧版备份）
 *.ok-script-toolkit.tmp
 *.bak
+
+# 协作 agent 的本地工作记录（记忆/日志）。属于开发工具状态，不是项目内容 —— 只在本地留存。
+.workbuddy/
