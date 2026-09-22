@@ -1,9 +1,10 @@
 package com.alicejump.okscripttoolkit.core
 
+import com.alicejump.okscripttoolkit.TestTmp
 import com.fasterxml.jackson.databind.ObjectMapper
-import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -76,7 +77,7 @@ class ProjectConventionTest {
 
     @Test
     fun `a broken file on disk never throws - it just means no convention`() {
-        val dir = Files.createTempDirectory("ok-toolkit-convention")
+        val dir = TestTmp.create("ok-toolkit-convention").toPath()
         try {
             val file = dir.resolve(ProjectConventionConfig.PROJECT_CONFIG_FILE).toFile()
             assertEquals(ProjectConvention.EMPTY, ProjectConvention.parseFile(file), "文件不存在时当没写")
@@ -297,6 +298,67 @@ class ProjectConventionTest {
         assertEquals(null, normalizeRelPath("   "), "全空白 → 没写")
         assertEquals(null, normalizeRelPath("/"), "只有斜杠 → 没写（不能变成空目录名）")
         assertEquals(null, normalizeRelPath(null), "null → 没写")
+    }
+
+    // ── 枚举路径输入校验：只能是项目根相对路径 ───────────────────────
+    //
+    // 为什么单独立一组：[normalizeLabelEnumFile] 是**共用**的归一化（项目约定文件里的
+    // `labelEnum.path` 也走它），在那里拒 `..` 会连"项目自己声明的路径"一起改语义；
+    // 而且 [normalizeRelPath] 会把开头的 `/` 剥掉 —— 剥完就分不清 `/etc/x.py` 与合法的
+    // `etc/x.py`。所以校验只对**用户输入**做，且必须在归一化**之前**。
+
+    @Test
+    fun `blank enum path input is valid and means skip generation`() {
+        assertEquals(null, labelEnumPathInputError(null), "null = 没填")
+        assertEquals(null, labelEnumPathInputError(""), "空串 = 这次不生成枚举 → 合法")
+        assertEquals(null, labelEnumPathInputError("   "), "全空白同上")
+    }
+
+    @Test
+    fun `absolute enum path input is rejected`() {
+        assertEquals(LabelEnumPathInputError.ABSOLUTE, labelEnumPathInputError("/etc/LabelEnum.py"), "POSIX 绝对路径")
+        assertEquals(LabelEnumPathInputError.ABSOLUTE, labelEnumPathInputError("""C:\tmp\LabelEnum.py"""), "Windows 盘符")
+        assertEquals(LabelEnumPathInputError.ABSOLUTE, labelEnumPathInputError("c:/tmp/x.py"), "盘符不分大小写")
+        assertEquals(LabelEnumPathInputError.ABSOLUTE, labelEnumPathInputError("""\\server\share\x.py"""), "UNC")
+    }
+
+    @Test
+    fun `enum path input with a parent segment is rejected`() {
+        assertEquals(LabelEnumPathInputError.TRAVERSAL, labelEnumPathInputError("../LabelEnum.py"), "上跳一段")
+        assertEquals(LabelEnumPathInputError.TRAVERSAL, labelEnumPathInputError("a/../../x.py"), "藏在中间的上跳")
+        assertEquals(
+            LabelEnumPathInputError.TRAVERSAL,
+            labelEnumPathInputError("""a\..\..\x.py"""),
+            "反斜杠写法同样要挡 —— 归一化会把 `\\` 换成 `/`，只查正斜杠等于没查",
+        )
+    }
+
+    @Test
+    fun `ordinary relative enum path input is accepted`() {
+        assertEquals(null, labelEnumPathInputError("src/data/feature_list"), "模块路径（无扩展名）合法")
+        assertEquals(null, labelEnumPathInputError("assets/data/LabelEnum.py"), "带扩展名的相对路径合法")
+        assertEquals(null, labelEnumPathInputError("./assets/LabelEnum.py"), "开头的 `./` 不是上跳")
+        assertEquals(
+            null,
+            labelEnumPathInputError("src/data/foo..bar.py"),
+            "`..` 必须是**独立的路径段**才拒：文件名里带两个点很正常",
+        )
+    }
+
+    /**
+     * 破坏性对照：证明上一条不是恒真 —— 把判据换成"包含两个点"，`foo..bar.py` 就会被误拒。
+     * 这里手工构造那两种判据，确认结论确实不同。
+     */
+    @Test
+    fun `regression guard - the traversal rule looks at path segments, not substrings`() {
+        val bySegment = { v: String -> v.replace('\\', '/').split('/').contains("..") }
+        val bySubstring = { v: String -> v.contains("..") }
+        assertFalse(bySegment("foo..bar.py"), "按段判：合法")
+        assertTrue(bySubstring("foo..bar.py"), "按子串判：会把合法名字误判成上跳")
+        assertTrue(
+            bySegment("a/../b.py") && bySubstring("a/../b.py"),
+            "两种判据都必须抓住真正的上跳段",
+        )
     }
 
     @Test

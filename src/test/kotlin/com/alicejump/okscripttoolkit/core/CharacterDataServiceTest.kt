@@ -1,6 +1,6 @@
 package com.alicejump.okscripttoolkit.core
 
-import kotlin.io.path.createTempDirectory
+import com.alicejump.okscripttoolkit.TestTmp
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -16,7 +16,7 @@ class CharacterDataServiceTest {
      */
     @Test
     fun `skill file paths come from the scan, not from character_id guessing`() {
-        val dir = createTempDirectory("ok-character-service").toFile()
+        val dir = TestTmp.create("ok-character-service")
         val skillsDir = dir.resolve("character_skills").apply { mkdirs() }
         skillsDir.resolve("yvonne.json").writeText(
             """
@@ -58,7 +58,7 @@ class CharacterDataServiceTest {
 
     @Test
     fun `character_id falls back to the file name when absent`() {
-        val dir = createTempDirectory("ok-character-service").toFile()
+        val dir = TestTmp.create("ok-character-service")
         val skillsDir = dir.resolve("character_skills").apply { mkdirs() }
         skillsDir.resolve("noid.json").writeText("""{"name": "无名", "skills": []}""")
 
@@ -94,7 +94,7 @@ class CharacterDataServiceTest {
      */
     @Test
     fun `explicit JSON null never becomes the literal string null`() {
-        val dir = createTempDirectory("ok-character-null").toFile()
+        val dir = TestTmp.create("ok-character-null")
         val skillsDir = dir.resolve("character_skills").apply { mkdirs() }
         skillsDir.resolve("nullish.json").writeText(
             """

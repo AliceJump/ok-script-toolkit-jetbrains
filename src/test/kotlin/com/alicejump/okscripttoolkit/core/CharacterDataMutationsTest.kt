@@ -1,7 +1,7 @@
 package com.alicejump.okscripttoolkit.core
 
+import com.alicejump.okscripttoolkit.TestTmp
 import com.fasterxml.jackson.databind.ObjectMapper
-import kotlin.io.path.createTempDirectory
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -49,7 +49,7 @@ class CharacterDataMutationsTest {
     """.trimIndent()
 
     private fun writeSkill(): java.io.File {
-        val dir = createTempDirectory("ok-character-mutations").toFile()
+        val dir = TestTmp.create("ok-character-mutations")
         return dir.resolve("yvonne.json").apply { writeText(skillJson, Charsets.UTF_8) }
     }
 
@@ -304,7 +304,7 @@ class CharacterDataMutationsTest {
 
     /** 一份 `"skill_id": null` 的技能文件（Jackson 里是 NullNode，不是 Kotlin null）。 */
     private fun writeSkillWithNullId(): java.io.File {
-        val dir = createTempDirectory("ok-character-null-id").toFile()
+        val dir = TestTmp.create("ok-character-null-id")
         return dir.resolve("nullid.json").apply {
             writeText(
                 """

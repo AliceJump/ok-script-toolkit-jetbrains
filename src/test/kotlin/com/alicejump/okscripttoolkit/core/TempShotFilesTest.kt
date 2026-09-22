@@ -1,5 +1,6 @@
 package com.alicejump.okscripttoolkit.core
 
+import com.alicejump.okscripttoolkit.TestTmp
 import java.awt.image.BufferedImage
 import java.io.File
 import kotlin.test.Test
@@ -10,7 +11,7 @@ import kotlin.test.assertTrue
 class TempShotFilesTest {
 
     private fun newStore(): TempShotFiles =
-        TempShotFiles(kotlin.io.path.createTempDirectory("ok-temp-shots").toFile())
+        TempShotFiles(TestTmp.create("ok-temp-shots"))
 
     private fun image(width: Int = 8, height: Int = 8): BufferedImage =
         BufferedImage(width, height, BufferedImage.TYPE_INT_ARGB)
@@ -71,7 +72,7 @@ class TempShotFilesTest {
 
     @Test
     fun `unrelated files in the directory are ignored`() {
-        val dir = kotlin.io.path.createTempDirectory("ok-temp-shots").toFile()
+        val dir = TestTmp.create("ok-temp-shots")
         val store = TempShotFiles(dir)
         File(dir, "screenshot_20250101_000000.png").writeBytes(byteArrayOf())
         File(dir, "notes.txt").writeBytes(byteArrayOf())

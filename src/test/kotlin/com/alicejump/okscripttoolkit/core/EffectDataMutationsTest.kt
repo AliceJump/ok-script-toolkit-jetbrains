@@ -1,7 +1,6 @@
 package com.alicejump.okscripttoolkit.core
 
-import java.io.File
-import kotlin.io.path.createTempDirectory
+import com.alicejump.okscripttoolkit.TestTmp
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -42,7 +41,7 @@ class EffectDataMutationsTest {
         """.trimIndent()
 
     private fun writeFixture(): java.io.File {
-        val dir = createTempDirectory("ok-effects-mutation").toFile()
+        val dir = TestTmp.create("ok-effects-mutation")
         val file = dir.resolve("effects.py")
         file.writeText(fixture, Charsets.UTF_8)
         return file
@@ -171,8 +170,9 @@ class EffectDataMutationsTest {
 
     @Test
     fun `atomicWriteText replaces the target, keeps a backup, and stays out of the source tree`() {
-        val dir = createTempDirectory("ok-atomic-write").toFile()
+        val dir = TestTmp.create("ok-atomic-write")
         val file = dir.resolve("sample.txt").apply { writeText("old", Charsets.UTF_8) }
+        val backupsBefore = backupCount()
         EffectDataMutations.atomicWriteText(file.absolutePath, "new")
         assertEquals("new", file.readText(Charsets.UTF_8))
         assertTrue(dir.resolve("sample.txt.ok-script-toolkit.tmp").exists().not(), "临时文件应已清理")
@@ -182,12 +182,34 @@ class EffectDataMutationsTest {
             dir.listFiles().orEmpty().none { it.name.endsWith(".bak") },
             "备份必须移出源码目录；实际残留：${dir.listFiles().orEmpty().map { it.name }}",
         )
-        val backups = File(System.getProperty("java.io.tmpdir"))
-            .listFiles { f -> f.name.startsWith(AtomicWritePaths.BACKUP_PREFIX) }
-            .orEmpty()
         assertTrue(
-            backups.isNotEmpty(),
-            "备份应写到系统临时目录（前缀 ${AtomicWritePaths.BACKUP_PREFIX}），否则回滚能力就丢了",
+            backupCount() > backupsBefore,
+            "备份应写到备份根目录（前缀 ${AtomicWritePaths.BACKUP_PREFIX}），否则回滚能力就丢了",
         )
     }
+
+    /**
+     * 备份必须落在**统一测试临时根**里，而不是系统临时目录根部。
+     *
+     * 回归背景（2026-09-22）：备份原先直接散落到系统临时目录根部，且从不清理 ——
+     * 一天半就积了 1194 个 `.bak`，既看不清也没法"跑完一起删"。
+     */
+    @Test
+    fun `backups land inside the unified test temp root`() {
+        val file = TestTmp.create("ok-backup-root").resolve("rootcheck.json")
+            .apply { writeText("{}", Charsets.UTF_8) }
+        EffectDataMutations.atomicWriteText(file.absolutePath, "{}")
+
+        val root = TestTmp.base.canonicalFile
+        val backupRoot = AtomicWritePaths.backupRoot.canonicalFile
+        assertTrue(
+            backupRoot.toPath().startsWith(root.toPath()),
+            "备份根应位于统一测试临时根之内，实际：$backupRoot（统一根：$root）",
+        )
+    }
+
+    private fun backupCount(): Int = AtomicWritePaths.backupRoot
+        .listFiles { f -> f.name.startsWith(AtomicWritePaths.BACKUP_PREFIX) }
+        .orEmpty()
+        .size
 }

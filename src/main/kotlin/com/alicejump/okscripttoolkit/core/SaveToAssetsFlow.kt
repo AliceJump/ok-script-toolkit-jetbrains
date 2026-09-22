@@ -1,43 +1,88 @@
 package com.alicejump.okscripttoolkit.core
 
+import java.io.File
+import java.io.IOException
+import java.nio.file.Path
 import java.nio.file.Paths
 
 /**
- * 「导出到 assets」这一步的**纯逻辑**：目标列表怎么排、枚举路径要不要问。
+ * 「导出到 assets」这一步的**纯逻辑**：目标列表怎么排、枚举的路径与类名怎么给入口。
  *
  * 与 VS Code 侧 `src/saveToAssetsPure.ts` 一一对应。
  *
  * 抽成纯对象的理由与那边一致 —— 这是**看起来像 UI、其实是数据约定**的东西，
- * 两条不变量改错都很难发现：
+ * 几条不变量改错都很难发现：
  *
- * 1. **什么时候可以不问用户** —— 已经有生效的枚举路径时再问一遍是纯噪音；
- * 2. **不问的时候必须留一个改的口子** —— 跳过路径弹框之后，目标列表里那一项就是
- *    用户**顺手**改路径的唯一入口（设置界面里也有 `labelEnumPath`，但要自己知道有它、
- *    还要找到它）。少了这一项，"不问"就从"省一步"变成"绕远路"。
+ * 1. **保存目标永远在，且顺序不变** —— 它们是这个对话框存在的理由。
+ * 2. **「枚举路径」「枚举类名」两项永远在** —— 用户要能在**点保存的这一步**就把这两项
+ *    设好，不必先去设置界面找（设置界面里确实有，但要先知道有它、还要找到它）。
+ *    点的是哪一类用**下标区间**判定，不比较文案：文案是本地化的，比较文案会在换语言时
+ *    静默失效。
+ * 3. **首次仍然会先问一次路径**（见 [needsEnumPathPrompt]）—— "不问"会让从没配过的
+ *    用户**静默拿不到枚举文件**。这两件事（问一次 + 也有两项）并存是**刻意的**：
+ *    问一次保证不会漏，两项保证之后随时能改。
  *
  * 而 `handleSaveToAssets` 依赖 `Project` / `ChooseDialog` / `Messages`，
  * 普通 JUnit 里构造不出来，所以决策下沉到这里。
  *
  * ⚠️ 这里"有值"的**来源**后来变了：早先只可能来自项目约定文件，现在多了一层
- * **个人偏好**（设置界面里的 `labelEnumPath`，「修改路径…」也会写它）——
- * 于是"填过一次就记住"在两端都成立。判定逻辑不变（非空即不问）。
+ * **个人偏好**（设置界面里的 `labelEnumPath` / `labelEnumName`，对话框里的两项也会写它）
+ * —— 于是"填过一次就记住"在两端都成立。
  */
 object SaveToAssetsFlow {
 
+    /** 候选列表里每一项的角色。 */
+    enum class Choice { TARGET, ENUM_PATH, ENUM_NAME }
+
     /**
-     * 构造导出目标的候选列表。
+     * 候选列表 + 每项的角色。
      *
-     * **不变量**：末尾的「改路径」项**当且仅当**会跳过路径弹框时出现。
-     * 少了它 → 用户再也改不了枚举路径；多了它 → 变成"既问了又给入口"，
-     * 用户看到两个都能改路径的地方。
+     * 角色用**下标区间**判定：前 [targetCount] 个是保存目标，紧接一个路径项、一个类名项。
+     * 不比较文案 —— 文案是本地化的，比较文案会在换语言时静默失效。
+     */
+    data class Options(val labels: List<String>, val targetCount: Int) {
+        fun roleOf(index: Int): Choice = when {
+            index < targetCount -> Choice.TARGET
+            index == targetCount -> Choice.ENUM_PATH
+            else -> Choice.ENUM_NAME
+        }
+    }
+
+    /**
+     * 构造导出目标的候选列表：**保存目标 → 枚举路径 → 枚举类名**。
+     *
+     * 目标在前是因为"保存"才是这一步的主意图；两项枚举设置放末尾，扫一眼就知道有、
+     * 又不会挡在目标前面。
      *
      * @param targets 保存目标（`assets` / `ok_tasks/assets`），顺序即展示顺序
-     * @param declaredEnumPath 项目约定文件里声明的枚举**文件路径**；`null` = 没声明
-     * @param changePathLabel 「修改 LabelEnum.py 路径…」的文案（本对象不依赖语言包，由调用方传入）
-     * @return 候选列表；**前 [targets].size 个是目标**，之后（如果有）是「改路径」项
+     * @param enumPathChoice 「枚举文件路径」那一行的完整文案（含当前值，见 [choiceLine]）
+     * @param enumNameChoice 「枚举类名」那一行的完整文案
      */
-    fun options(targets: List<String>, declaredEnumPath: String?, changePathLabel: String): List<String> =
-        if (needsEnumPathPrompt(declaredEnumPath)) targets else targets + changePathLabel
+    fun options(targets: List<String>, enumPathChoice: String, enumNameChoice: String): Options =
+        Options(targets + enumPathChoice + enumNameChoice, targets.size)
+
+    /**
+     * 把「标签 + 当前值」拼成候选列表里那一行。
+     *
+     * `value` 为空时用 `empty` 兜底 —— **必须让用户看到"这里能点"**，否则他以为没有这个入口
+     * （那正是"设置藏在设置界面里、找不到"的同一个问题）。
+     * 冒号写在 [label] 里（随语言包走），所以这里不做任何标点拼接 ——
+     * 中文用「：」、西文用「: 」，硬编码任何一个都会在另一种语言下显得别扭。
+     */
+    fun choiceLine(label: String, value: String?, empty: String): String =
+        label + (value?.takeIf { it.isNotBlank() } ?: empty)
+
+    /**
+     * 首次导出时给输入框预填的**推导值**：`<目标目录>/LabelEnum.py`（相对项目根的写法）。
+     *
+     * 为什么不预填绝对路径：那个输入框的提示语写的是"相对于项目根目录"，预填绝对路径
+     * 与提示语自相矛盾。而且存进设置前也要转回相对，来回转换没有意义。
+     * 与 VS Code 侧 `derivedEnumPath()` 同值。
+     */
+    fun derivedEnumPath(targetLabel: String): String {
+        val dir = targetLabel.replace('\\', '/').trim('/')
+        return if (dir.isEmpty()) "LabelEnum.py" else "$dir/LabelEnum.py"
+    }
 
     /**
      * 是否需要**先问一次**枚举路径。
@@ -46,7 +91,7 @@ object SaveToAssetsFlow {
      *   而且那个值是用户自己定的、或团队约定好的，本来就不该反复确认。
      * - 用户在「修改路径」里**显式清空**了它（[decided]）→ **不问**。那表达的是
      *   "回到项目约定"；再问一遍会变成"清空了还被追着问"。
-     * - 其余（从没定过）→ **必须问**：此时默认值是"`<目标目录>/LabelEnum.py"`
+     * - 其余（从没定过）→ **必须问**：此时默认值是"`<目标目录>/LabelEnum.py`"
      *   （一个**推导**出来的值，不是谁设过的值），跳过它用户就没机会改成别的路径。
      */
     fun needsEnumPathPrompt(enumPath: String?, decided: Boolean = false): Boolean = !decided && enumPath == null
@@ -78,16 +123,68 @@ object SaveToAssetsFlow {
      *
      * 相对路径按 [projectDir] 解析；已经是绝对路径的原样返回 —— 否则用户从别处
      * 复制来一个绝对路径会被拼成 `<项目根>/D:/other/x.py`，报一个看不懂的错。
+     *
+     * ⚠️ 消费端（[TemplateAssetDataService.saveToAssets]、`confirmLabelEnumRename`）
+     * 要的都是**绝对路径**，所以对话框拿到用户输入后必须先归一化（补 `.py`）再走这里，
+     * 不能把裸输入直接传下去 —— 裸输入既可能没有扩展名、又可能是相对写法。
      */
     fun toAbsolute(projectDir: String, value: String): String {
         val p = Paths.get(value)
         return if (p.isAbsolute) p.toString() else Paths.get(projectDir, value).toString()
     }
+}
 
-    /**
-     * 用户选中的下标是不是「改路径」那一项。
-     *
-     * 用**下标区间**判断（而不是比较文案）：文案是本地化的，比较文案会在换语言时静默失效。
-     */
-    fun isChangePathChoice(index: Int, targetCount: Int): Boolean = index >= targetCount
+/**
+ * `candidate` 解析后是否仍位于 `rootDir` 内（Windows 跨盘符也会被拒绝）。
+ *
+ * 两道关：
+ * 1. **词法** —— 纯字符串折叠 `..`，不碰文件系统。越界直接否。
+ * 2. **符号链接** —— 把两边的**最近现存祖先**解析成真实路径再比一次。只做词法会漏掉
+ *    「项目内的父目录是指向项目外的符号链接」这条绕路，`writeFileSync` 照样写出去。
+ *
+ * 相对路径按 [rootDir] 解析，而不是按进程当前目录 —— 消费点传的都是绝对路径，
+ * 但那条隐式规则（`Paths.get` 只看 CWD）在这里会静默指到别处。
+ *
+ * 与 VS Code 侧 `saveToAssetsPure.isPathInsideRoot()` 一一对应，改一边记得改另一边。
+ */
+internal fun isPathInsideRoot(rootDir: String, candidate: String): Boolean {
+    val root = File(rootDir)
+    val raw = File(candidate)
+    val target = if (raw.isAbsolute) raw else File(root, candidate)
+
+    val lexicalRoot = root.absoluteFile.toPath().normalize()
+    if (!target.absoluteFile.toPath().normalize().startsWith(lexicalRoot)) return false
+
+    // 解析不了（根不存在等罕见情况）→ 保留词法结论，不因为一次 IO 异常就放行或误拦
+    val realRoot = realPathOf(root) ?: return true
+    val realTarget = realPathOf(target) ?: return true
+    return realTarget.startsWith(realRoot)
+}
+
+/**
+ * [file] 的真实路径：从它自己向上找到**第一个存在**的位置解析符号链接，再把中间缺失的段接回去。
+ *
+ * 为什么不直接用 `File.canonicalPath`：对**不存在**的路径它**不解析符号链接**
+ * （Windows 上实测：`link/x.py` 会原样返回，于是符号链接逃逸被放行）—— 而枚举文件恰恰
+ * 还没生成，正是要挡的情况。为什么不只解 `parentFile`：[parentFile] 自己也常常不存在
+ * （`a/b/c.py` 这种多级新目录）。
+ */
+private fun realPathOf(file: File): Path? {
+    val missing = ArrayDeque<String>()
+    var current: File? = file
+    while (current != null) {
+        val real: Path? = try {
+            current.toPath().toRealPath()
+        } catch (_: IOException) {
+            null
+        }
+        if (real != null) {
+            var resolved: Path = real
+            for (segment in missing) resolved = resolved.resolve(segment)
+            return resolved
+        }
+        current.name?.let { missing.addFirst(it) }
+        current = current.parentFile
+    }
+    return null
 }
