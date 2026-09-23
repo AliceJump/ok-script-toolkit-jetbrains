@@ -3,6 +3,7 @@ package com.alicejump.okscripttoolkit.tasklauncher
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
 import com.alicejump.okscripttoolkit.core.ProjectDirResolution
+import com.alicejump.okscripttoolkit.core.RunDir
 import com.alicejump.okscripttoolkit.toolbox.ToolboxService
 import com.alicejump.okscripttoolkit.ui.ToolbarAction
 import com.alicejump.okscripttoolkit.ui.openCharacterManager
@@ -35,7 +36,6 @@ import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.Insets
 import java.awt.Color
-import java.io.File
 import java.util.concurrent.CompletableFuture
 import java.nio.file.Files
 import java.nio.file.Paths
@@ -1839,7 +1839,8 @@ class TaskLauncherPanel(private val project: Project) {
         env["OK_TOOLKIT_TRIGGERS"] = objectMapper.writeValueAsString(enabledTriggers.toList())
         // 配置沙箱：执行器把 ok 框架的配置/截图读写全部改道到这里，绝不碰项目 configs/。
         // IntelliJ 侧数据文件都在 .idea 下，故沙箱与之并列（VS Code 版对应 .vscode）。
-        env["OK_TOOLKIT_RUN_DIR"] = File(projectDir, ".idea/ok-script-toolkit").path
+        // 路径与探针共用 RunDir，避免两处各写一份字面量后静默错位。
+        env[RunDir.ENV] = RunDir.forProject(projectDir)
         val overrides = allParamOverrides()
         if (overrides.isNotEmpty()) {
             env["OK_LANG_HINTS_INJECT"] = objectMapper.writeValueAsString(overrides)

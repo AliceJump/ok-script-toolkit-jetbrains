@@ -2,6 +2,7 @@ package com.alicejump.okscripttoolkit.tasklauncher
 
 import com.alicejump.okscripttoolkit.core.PythonScriptLocator
 import com.alicejump.okscripttoolkit.core.PythonScriptRunner
+import com.alicejump.okscripttoolkit.core.RunDir
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -207,6 +208,10 @@ class TaskLauncherService(private val project: Project) {
                 args = listOf(projectDir, locale, poDirectory),
                 workingDir = File(projectDir),
                 timeoutMs = 120000,
+                // 探针要用它算 multiAccount.storePath（账号覆盖文件的落点）。不传的话
+                // 探针会退回 VS Code 的历史默认值 `.vscode/...`，JetBrains 侧就会拿到
+                // 一个既不存在也永不被读写的路径。见 RunDir。
+                env = mapOf(RunDir.ENV to RunDir.forProject(projectDir)),
             )
             if (result.exitCode != 0) {
                 return SchemaProbeResult(ok = false, error = result.stderr.ifBlank { "Script failed with exit code ${result.exitCode}" })
