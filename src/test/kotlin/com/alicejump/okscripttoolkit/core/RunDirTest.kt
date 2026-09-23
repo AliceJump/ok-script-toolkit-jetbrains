@@ -1,6 +1,7 @@
 package com.alicejump.okscripttoolkit.core
 
 import com.alicejump.okscripttoolkit.TestTmp
+import java.io.File
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -22,12 +23,16 @@ import kotlin.test.assertTrue
  * 断言对象取自 **classpath 上的打包脚本**（`build.gradle.kts` 的 `copyPythonScripts`
  * 从父仓 `../python` 同步进来），因此校验的是**真正会随插件发布的那份**。
  *
- * ⚠️ `jetbrains/` 是独立公开仓库，其 CI 只检出自己，`../python` 不可见 ⇒ classpath 上
- * 没有脚本。此时用 `assumeTrue` **跳过**（而不是 `return`，也不是让断言恒真）。
- * 父仓 CI 带 submodules 检出，这些断言在那里完整跑。判据与生产代码同源
- * （`PythonScriptLocator.BUNDLED_SCRIPTS.first()`），见 [PythonScriptLocatorTest]。
+ * ⚠️ `jetbrains/` 是独立公开仓库，其 CI 只检出自己，`../python` 不可见。只有这种没有
+ * 脚本源的情况才用 `assumeTrue` **跳过**（而不是 `return`，也不是让断言恒真）。父仓 CI
+ * 带 submodules 检出后，classpath 上缺脚本会直接失败，确保 `copyPythonScripts` 的打包回归
+ * 不会掩盖跨语言断言。判据与生产代码同源（`PythonScriptLocator.BUNDLED_SCRIPTS.first()`），
+ * 见 [PythonScriptLocatorTest]。
  */
 class RunDirTest {
+
+    private val parentPythonSourcePresent: Boolean
+        get() = File(System.getProperty("user.dir"), "../python").toPath().normalize().toFile().isDirectory
 
     private val bundledScriptsPresent: Boolean
         get() = PythonScriptLocator::class.java.classLoader
@@ -35,8 +40,13 @@ class RunDirTest {
 
     private fun requireBundledScripts() {
         assumeTrue(
+            parentPythonSourcePresent,
+            "父仓的 python/ 源目录不存在 —— 只检出了 jetbrains 子仓库，跳过跨语言断言。",
+        )
+        assertTrue(
             bundledScriptsPresent,
-            "classpath 上没有 python/*.py —— 只检出了 jetbrains 子仓库，本断言无可断言对象，跳过。",
+            "父仓的 python/ 源目录存在，但 classpath 上没有 python/*.py —— " +
+                "copyPythonScripts 未将脚本打包进测试资源。",
         )
     }
 
