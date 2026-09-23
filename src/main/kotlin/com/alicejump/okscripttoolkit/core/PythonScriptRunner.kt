@@ -26,9 +26,10 @@ class PythonScriptRunner(private val project: Project) {
         args: List<String> = emptyList(),
         workingDir: File,
         timeoutMs: Long = 15000,
+        env: Map<String, String> = emptyMap(),
     ): CompletableFuture<ScriptProcessOutput> {
         return CompletableFuture.supplyAsync {
-            runSync(pythonPath, scriptPath, args, workingDir, timeoutMs)
+            runSync(pythonPath, scriptPath, args, workingDir, timeoutMs, env)
         }
     }
 
@@ -36,6 +37,13 @@ class PythonScriptRunner(private val project: Project) {
      * 同步运行 Python 脚本。
      * 注意：必须先 waitFor(timeout) 再收集输出（读取放在后台线程），否则进程不退出时
      * readText() 会无限阻塞，timeout 形同虚设（曾导致任务 schema 探测卡死）。
+     *
+     * [env] 是**追加**到继承环境之上的宿主变量（如 `OK_TOOLKIT_RUN_DIR`），不会清空
+     * 父进程环境 —— Python 仍需要 PATH 等基础变量才能启动。
+     *
+     * ⚠️ 脚本侧读取方式**不统一**：`run_executor.py` / `probe_task_schemas.py` 读环境变量
+     * `OK_TOOLKIT_RUN_DIR`；`account_store.py` 走 `--run-dir` 命令行参数。传错方式不会报错，
+     * 只会悄悄读写项目 `configs/`。
      */
     fun runSync(
         pythonPath: String,
@@ -43,6 +51,7 @@ class PythonScriptRunner(private val project: Project) {
         args: List<String> = emptyList(),
         workingDir: File,
         timeoutMs: Long = 15000,
+        env: Map<String, String> = emptyMap(),
     ): ScriptProcessOutput {
         val command = mutableListOf(pythonPath, scriptPath)
         command.addAll(args)
@@ -53,6 +62,7 @@ class PythonScriptRunner(private val project: Project) {
 
         processBuilder.environment()["PYTHONIOENCODING"] = "utf-8"
         processBuilder.environment()["PYTHONUTF8"] = "1"
+        env.forEach { (key, value) -> processBuilder.environment()[key] = value }
 
         LOG.info("Running Python script: ${command.joinToString(" ")}")
 
