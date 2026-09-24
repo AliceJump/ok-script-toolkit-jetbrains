@@ -162,6 +162,25 @@ class TaskLauncherPanel(private val project: Project) {
     private val currentTaskChip = JBLabel()
     private var lastRunnerStatus = ""
 
+    // ── 运行中心（#9 rc-queue / gpop 的 Swing 等价物）────────────────
+    // ⚠️ 必须声明在 init 块之前：Kotlin 按文本顺序执行初始化器，init → initUI()
+    // → showDetailPlaceholder() → renderRunCenter() 会读下面这些字段；
+    // 声明在 init 之后 = 构造期读 JVM 默认值（NPE），且初始化器随后把
+    // showDetailPlaceholder() 设的 runCenterVisible=true 覆盖回 false。
+    /** 详情区当前渲染的是运行中心（无选中任务）——syncRunnerState 时跟随刷新 */
+    private var runCenterVisible = false
+
+    /** 探针采集到的全局配置组（运行中心「全局配置」区数据源；applyProbeResult 更新） */
+    private var globalConfigGroups: List<TaskLauncherService.GlobalConfigGroup> = emptyList()
+
+    /** 悬停弹层抑制截止时间：点选/切换后 1.2s 内不弹（对齐主仓库约定） */
+    private var hoverSuppressUntil = 0L
+
+    private val hoverPopupDelayMs = 800
+
+    /** 最近一次物化的新增键数（供 applyProbeResult 的状态提示取用） */
+    private var lastMaterializedCount = 0
+
     private val paramPanel = JPanel(GridBagLayout())
     private val paramFields = mutableMapOf<String, JComponent>()
 
@@ -532,17 +551,9 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     // ── 运行中心（#9 rc-queue / gpop 的 Swing 等价物）────────────────
-
-    /** 详情区当前渲染的是运行中心（无选中任务）——syncRunnerState 时跟随刷新 */
-    private var runCenterVisible = false
-
-    /** 探针采集到的全局配置组（运行中心「全局配置」区数据源；applyProbeResult 更新） */
-    private var globalConfigGroups: List<TaskLauncherService.GlobalConfigGroup> = emptyList()
-
-    /** 悬停弹层抑制截止时间：点选/切换后 1.2s 内不弹（对齐主仓库约定） */
-    private var hoverSuppressUntil = 0L
-
-    private val hoverPopupDelayMs = 800
+    // 相关状态字段（runCenterVisible / globalConfigGroups / hoverSuppressUntil /
+    // hoverPopupDelayMs / lastMaterializedCount）声明在 init 块之前的字段区 ——
+    // 构造顺序约束，见那里的说明。
 
     /**
      * 运行中心：执行器此刻在跑什么 / 排了什么 / 轮询什么 / 全局配置有哪些。
@@ -770,18 +781,24 @@ class TaskLauncherPanel(private val project: Project) {
         if (group.fields.size > 12) {
             content.add(mutedLabel("… +${group.fields.size - 12}"), gbc)
         }
-        JBPopupFactory.getInstance()
-            .createComponentPopupBuilder(content, anchorComponent)
-            .setTitle(group.displayName ?: group.name)
-            .setRequestFocus(false)
-            .setResizable(false)
-            .setMovable(false)
-            .setCancelOnClickOutside(true)
-            .createPopup()
-            .show(RelativePoint(anchorComponent, java.awt.Point(anchorComponent.width / 2, anchorComponent.height)))
+        showHoverPopup {
+            JBPopupFactory.getInstance()
+                .createComponentPopupBuilder(content, anchorComponent)
+                .setTitle(group.displayName ?: group.name)
+                .setRequestFocus(false)
+                .setResizable(false)
+                .setMovable(false)
+                .setCancelOnClickOutside(true)
+                .createPopup()
+                .also { it.show(RelativePoint(anchorComponent, java.awt.Point(anchorComponent.width / 2, anchorComponent.height))) }
+        }
     }
 
-    /** 任务卡悬停弹出（#9 任务卡 hover 概览）：hover 800ms 弹只读摘要 */
+    /** 任务卡悬停弹出（#9 任务卡 hover 概览）：hover 800ms 弹只读摘要。
+     *  弹层单实例：新弹层显示前先 cancel 旧的，避免多行间停留时叠加；
+     *  mouseExited 停 timer 并重置 hoverRow —— 鼠标离开表格后不再弹出。 */
+    private var activeHoverPopup: com.intellij.openapi.ui.popup.JBPopup? = null
+
     private fun installTaskHoverPopup() {
         var hoverRow = -1
         var timer: Timer? = null
@@ -794,7 +811,7 @@ class TaskLauncherPanel(private val project: Project) {
                 if (row < 0 || row >= tasks.size) return
                 if (System.currentTimeMillis() < hoverSuppressUntil) return
                 val task = tasks[row]
-                timer = Timer(hoverPopupDelayMs) { showTaskSummaryPopup(task) }.apply {
+                timer = Timer(hoverPopupDelayMs) { showTaskSummaryPopup(task, row) }.apply {
                     isRepeats = false
                     start()
                 }
@@ -806,11 +823,23 @@ class TaskLauncherPanel(private val project: Project) {
                 hoverSuppressUntil = System.currentTimeMillis() + 1200
                 timer?.stop()
             }
+
+            override fun mouseExited(e: java.awt.event.MouseEvent) {
+                timer?.stop()
+                hoverRow = -1
+            }
         })
     }
 
-    /** 任务摘要弹层：kind / 参数改动量 / schema 错误（只读，无交互按钮） */
-    private fun showTaskSummaryPopup(task: TaskLauncherService.TaskInfo) {
+    /** 显示悬停弹层（单实例互斥：先取消上一个） */
+    private fun showHoverPopup(builder: () -> com.intellij.openapi.ui.popup.JBPopup) {
+        activeHoverPopup?.takeIf { !it.isDisposed }?.cancel()
+        activeHoverPopup = builder()
+    }
+
+    /** 任务摘要弹层：kind / 参数改动量 / schema 错误（只读，无交互按钮）。
+     *  [row] 用于把弹层锚在悬停行上，而不是固定在表格左上角。 */
+    private fun showTaskSummaryPopup(task: TaskLauncherService.TaskInfo, row: Int) {
         val key = taskKeyOf(task)
         val schema = schemas[key]
         val content = JPanel(GridBagLayout())
@@ -834,7 +863,7 @@ class TaskLauncherPanel(private val project: Project) {
         if (schema == null) {
             content.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.schemaNotProbed")), gbc)
         } else if (schema.broken) {
-            val error = JBLabel(OkScriptToolkitBundle.message("taskLauncher.schemaBroken", schema.error ?: ""))
+            val error = JBLabel(OkScriptToolkitBundle.message("taskLauncher.schemaBrokenDetail", schema.error ?: ""))
             error.foreground = TaskLauncherTheme.ERR
             content.add(error, gbc)
         } else {
@@ -847,15 +876,21 @@ class TaskLauncherPanel(private val project: Project) {
                 gbc,
             )
         }
-        JBPopupFactory.getInstance()
-            .createComponentPopupBuilder(content, taskTable)
-            .setTitle(task.displayName)
-            .setRequestFocus(false)
-            .setResizable(false)
-            .setMovable(false)
-            .setCancelOnClickOutside(true)
-            .createPopup()
-            .show(RelativePoint(taskTable, java.awt.Point(taskTable.width / 4, taskTable.rowHeight * 2)))
+        showHoverPopup {
+            JBPopupFactory.getInstance()
+                .createComponentPopupBuilder(content, taskTable)
+                .setTitle(task.displayName)
+                .setRequestFocus(false)
+                .setResizable(false)
+                .setMovable(false)
+                .setCancelOnClickOutside(true)
+                .createPopup()
+                .also { popup ->
+                    val anchorRow = if (row in 0 until taskTable.rowCount) row else 1
+                    val rect = taskTable.getCellRect(anchorRow, 1, true)
+                    popup.show(RelativePoint(taskTable, java.awt.Point(rect.x, rect.y + rect.height)))
+                }
+        }
     }
 
     /** 字段值截断显示（弹层摘要用；不解析语义，只转文本） */
@@ -1196,9 +1231,6 @@ class TaskLauncherPanel(private val project: Project) {
             )
         }
     }
-
-    /** 最近一次物化的新增键数（供 applyProbeResult 的状态提示取用） */
-    private var lastMaterializedCount = 0
 
     /**
      * 物化全局配置快照并落盘（#7 配置接管）。

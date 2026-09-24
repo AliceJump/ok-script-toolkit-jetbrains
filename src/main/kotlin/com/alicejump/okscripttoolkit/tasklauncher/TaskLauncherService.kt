@@ -306,36 +306,51 @@ class TaskLauncherService(private val project: Project) {
         return schemas
     }
 
-    /** 解析探针输出的 globalConfigGroups（缺键 / 非数组时静默为空列表，不影响任务 schema） */
+    /**
+     * 解析探针输出的 globalConfigGroups（缺键 / 非数组时静默为空列表，不影响任务 schema）。
+     *
+     * 单组 / 单字段解析失败只跳过该部分 —— 异常外抛会让整个探针 ok=false、
+     * 缓存读取失败，一处畸形数据不应该把任务列表也带走。
+     */
     private fun parseGlobalConfigGroups(parsed: JsonNode): List<GlobalConfigGroup> {
         val groups = mutableListOf<GlobalConfigGroup>()
         parsed.get("globalConfigGroups")?.takeIf { it.isArray }?.forEach { groupNode ->
+            val name = groupNode.get("name")?.asText(null) ?: return@forEach
             val fields = mutableListOf<TaskParamField>()
-            groupNode.get("fields")?.forEach { fieldNode ->
-                fields.add(
-                    TaskParamField(
-                        key = fieldNode.get("key").asText(),
-                        displayKey = fieldNode.get("displayKey")?.asText(null),
-                        default = fieldNode.get("default")?.let { objectMapper.convertValue(it, Any::class.java) },
-                        value = fieldNode.get("value")?.let { objectMapper.convertValue(it, Any::class.java) },
-                        type = fieldNode.get("type")?.takeIf { !it.isNull }?.let {
-                            @Suppress("UNCHECKED_CAST")
-                            objectMapper.convertValue(it, Map::class.java) as? Map<String, Any>
-                        },
-                        desc = fieldNode.get("desc")?.asText(null),
-                        displayDesc = fieldNode.get("displayDesc")?.asText(null),
+            groupNode.get("fields")?.takeIf { it.isArray }?.forEach { fieldNode ->
+                try {
+                    val key = fieldNode.get("key")?.asText(null) ?: return@forEach
+                    fields.add(
+                        TaskParamField(
+                            key = key,
+                            displayKey = fieldNode.get("displayKey")?.asText(null),
+                            default = fieldNode.get("default")?.let { objectMapper.convertValue(it, Any::class.java) },
+                            value = fieldNode.get("value")?.let { objectMapper.convertValue(it, Any::class.java) },
+                            type = fieldNode.get("type")?.takeIf { !it.isNull }?.let {
+                                @Suppress("UNCHECKED_CAST")
+                                objectMapper.convertValue(it, Map::class.java) as? Map<String, Any>
+                            },
+                            desc = fieldNode.get("desc")?.asText(null),
+                            displayDesc = fieldNode.get("displayDesc")?.asText(null),
+                        ),
+                    )
+                } catch (e: Exception) {
+                    LOG.warn("Skipping malformed global config field", e)
+                }
+            }
+            try {
+                groups.add(
+                    GlobalConfigGroup(
+                        name = name,
+                        displayName = groupNode.get("displayName")?.asText(null),
+                        description = groupNode.get("description")?.asText(null),
+                        fields = fields,
+                        source = groupNode.get("source")?.asText(null),
                     ),
                 )
+            } catch (e: Exception) {
+                LOG.warn("Skipping malformed global config group '$name'", e)
             }
-            groups.add(
-                GlobalConfigGroup(
-                    name = groupNode.get("name")?.asText(null) ?: return@forEach,
-                    displayName = groupNode.get("displayName")?.asText(null),
-                    description = groupNode.get("description")?.asText(null),
-                    fields = fields,
-                    source = groupNode.get("source")?.asText(null),
-                ),
-            )
         }
         return groups
     }

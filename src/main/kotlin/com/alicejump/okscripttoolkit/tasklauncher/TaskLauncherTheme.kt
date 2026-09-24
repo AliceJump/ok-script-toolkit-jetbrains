@@ -59,19 +59,12 @@ internal object TaskLauncherTheme {
     /** --bg-row-hover：hover 增强色 */
     fun rowHoverBackground(): java.awt.Color = UIUtil.getListSelectionBackground(false)
 
-    // ── tone → 色（对齐 TaskRowState 的 tone 语义） ────────────────────
-
-    const val TONE_NEUTRAL = 0
-    const val TONE_GOOD = 1
-    const val TONE_WARN = 2
-    const val TONE_BAD = 3
-    const val TONE_TRIGGER = 4
+    // ── tone → 色（tone 语义的唯一权威在 TaskRowState.TONE_*，这里不重复定义） ──
 
     fun colorForTone(tone: Int): JBColor = when (tone) {
-        TONE_GOOD -> OK
-        TONE_WARN -> WARN
-        TONE_BAD -> ERR
-        TONE_TRIGGER -> TRIGGER
+        TaskRowState.TONE_GOOD -> OK
+        TaskRowState.TONE_WARN -> WARN
+        TaskRowState.TONE_BAD -> ERR
         // 中性 tone = 前景色。注意 JBColor.foreground() 在部分平台版本里声明返回 Color
         // 而不是 JBColor，这里用双值构造保住 JBColor 类型（styleChip 需要）。
         else -> JBColor(UIUtil.getLabelForeground(), UIUtil.getLabelForeground())
