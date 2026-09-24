@@ -79,6 +79,21 @@ class TaskLauncherService(private val project: Project) {
         val locale: String? = null,
     )
 
+    /**
+     * 全局配置组（框架 GlobalConfig 与项目自建 store 共用同一 payload 形状，
+     * fields 与任务字段同构，[TaskParamField] 直接复用）。
+     * 对应探针 globalConfigGroups 输出，见 python/probe_task_schemas.py
+     * collect_global_config_groups / collect_project_store_groups。
+     */
+    data class GlobalConfigGroup(
+        val name: String,
+        val displayName: String? = null,
+        val description: String? = null,
+        val fields: List<TaskParamField> = emptyList(),
+        /** framework（框架 GlobalConfig）| project_store（项目自建聚合 store） */
+        val source: String? = null,
+    )
+
     data class SchemaProbeResult(
         val ok: Boolean,
         val error: String? = null,
@@ -87,6 +102,8 @@ class TaskLauncherService(private val project: Project) {
         val projectDir: String? = null,
         val locale: String? = null,
         val configModule: String? = null,
+        /** 全局配置组快照源数据（#7 配置接管）；采集失败为空列表不影响任务 schema */
+        val globalConfigGroups: List<GlobalConfigGroup> = emptyList(),
     )
 
     data class TaskConfig(
@@ -102,6 +119,12 @@ class TaskLauncherService(private val project: Project) {
             val tasks: Map<String, TaskConfig> = emptyMap(),
             /** 已勾选「启用」的触发任务 key（module::Class），重开工具窗 / IDE 自动入列 */
             val enabledTriggers: List<String> = emptyList(),
+            /**
+             * 全局配置快照：{组名: {配置键: 值}}（#7 配置接管）。
+             * 执行器启动经 OK_TOOLKIT_GCONFIG 全量注入、运行中经 gparams 命令推送；
+             * 物化规则见 [GlobalSnapshotRules]（首建继承当前值、重探针新键取默认、孤儿键保留）。
+             */
+            val globalConfigs: Map<String, Map<String, Any?>> = emptyMap(),
         )
     }
 
@@ -233,6 +256,7 @@ class TaskLauncherService(private val project: Project) {
                 projectDir = projectDir,
                 locale = locale,
                 configModule = configModule,
+                globalConfigGroups = parseGlobalConfigGroups(parsed),
             )
         } catch (e: Exception) {
             LOG.error("Failed to probe task schemas", e)
@@ -280,6 +304,40 @@ class TaskLauncherService(private val project: Project) {
             )
         }
         return schemas
+    }
+
+    /** 解析探针输出的 globalConfigGroups（缺键 / 非数组时静默为空列表，不影响任务 schema） */
+    private fun parseGlobalConfigGroups(parsed: JsonNode): List<GlobalConfigGroup> {
+        val groups = mutableListOf<GlobalConfigGroup>()
+        parsed.get("globalConfigGroups")?.takeIf { it.isArray }?.forEach { groupNode ->
+            val fields = mutableListOf<TaskParamField>()
+            groupNode.get("fields")?.forEach { fieldNode ->
+                fields.add(
+                    TaskParamField(
+                        key = fieldNode.get("key").asText(),
+                        displayKey = fieldNode.get("displayKey")?.asText(null),
+                        default = fieldNode.get("default")?.let { objectMapper.convertValue(it, Any::class.java) },
+                        value = fieldNode.get("value")?.let { objectMapper.convertValue(it, Any::class.java) },
+                        type = fieldNode.get("type")?.takeIf { !it.isNull }?.let {
+                            @Suppress("UNCHECKED_CAST")
+                            objectMapper.convertValue(it, Map::class.java) as? Map<String, Any>
+                        },
+                        desc = fieldNode.get("desc")?.asText(null),
+                        displayDesc = fieldNode.get("displayDesc")?.asText(null),
+                    ),
+                )
+            }
+            groups.add(
+                GlobalConfigGroup(
+                    name = groupNode.get("name")?.asText(null) ?: return@forEach,
+                    displayName = groupNode.get("displayName")?.asText(null),
+                    description = groupNode.get("description")?.asText(null),
+                    fields = fields,
+                    source = groupNode.get("source")?.asText(null),
+                ),
+            )
+        }
+        return groups
     }
 
     // ── Run command builder ───────────────────────────────────────────
@@ -367,6 +425,7 @@ class TaskLauncherService(private val project: Project) {
                     ?.takeIf { it.isArray }
                     ?.mapNotNull { it.asText(null) }
                     ?: emptyList(),
+                globalConfigs = parseGlobalConfigsNode(projectNode.get("globalConfigs")),
             )
         }
         return TaskConfigStore(projects = projects)
@@ -412,6 +471,35 @@ class TaskLauncherService(private val project: Project) {
         }
     }
 
+    // ── 全局配置快照（#7 配置接管） ───────────────────────────────────
+
+    /** 当前项目的全局配置快照：{组名: {配置键: 值}} */
+    fun loadGlobalConfigs(): Map<String, Map<String, Any?>> =
+        loadTaskConfigs().projects[getWorkspaceRoot()]?.globalConfigs ?: emptyMap()
+
+    /** 整体替换当前项目的全局配置快照（tasks 与 enabledTriggers 不受影响） */
+    fun saveGlobalConfigs(snapshots: Map<String, Map<String, Any?>>) {
+        synchronized(storeLock) {
+            val root = getWorkspaceRoot()
+            val updated = TaskConfigMerge.withGlobalConfigs(loadTaskConfigsLocked(), root, snapshots)
+            saveTaskConfigs(updated)
+            configStoreCache = updated
+        }
+    }
+
+    /** 解析 tasks.json 里的 globalConfigs：{组名: {键: 值}}。值保留原始 JSON 类型。 */
+    private fun parseGlobalConfigsNode(node: JsonNode?): Map<String, Map<String, Any?>> {
+        if (node == null || !node.isObject) return emptyMap()
+        val groups = linkedMapOf<String, Map<String, Any?>>()
+        node.forEachField { groupName, groupNode ->
+            if (!groupNode.isObject) return@forEachField
+            @Suppress("UNCHECKED_CAST")
+            val values = objectMapper.convertValue(groupNode, Map::class.java) as? Map<String, Any?>
+            if (values != null) groups[groupName] = values
+        }
+        return groups
+    }
+
     // ── Schema cache ──────────────────────────────────────────────────
 
     fun loadSchemaCache(projectDir: String, locale: String): SchemaProbeResult {
@@ -443,6 +531,8 @@ class TaskLauncherService(private val project: Project) {
             projectDir = node.get("projectDir")?.asText(null),
             locale = node.get("locale")?.asText(null),
             configModule = node.get("configModule")?.asText(null),
+            // 缓存里旧版本没有该键 → 空列表（物化规则对空输入零操作，安全）
+            globalConfigGroups = parseGlobalConfigGroups(node),
         )
     }
 

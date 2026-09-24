@@ -18,8 +18,10 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
+import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.UIUtil
@@ -71,10 +73,10 @@ class TaskLauncherPanel(private val project: Project) {
         /** Jackson 的 ObjectMapper 线程安全且构造昂贵；本文件原先在 6 处各 new 一个，这里收敛成一个 */
         private val objectMapper = ObjectMapper()
         private const val DEFAULT_PYTHON_PATH = "python"
-        private val OK_BORDER = JBColor(Color(40, 120, 40), Color(76, 175, 80))
+        private val OK_BORDER = TaskLauncherTheme.BORDER_OK
+        private val BAD_BORDER = TaskLauncherTheme.BORDER_ERR
         private const val LF_CHAR: Char = 0x0A.toChar()
         private const val OK_JSON_FIELD = "ok-script.jsonField"
-        private val BAD_BORDER = JBColor(Color(180, 40, 40), Color(239, 83, 80))
 
         /** 左侧列表里参数标签列的最小宽度：所有行的标签右对齐在同一条竖线上 */
         private const val LABEL_COLUMN_WIDTH = 88
@@ -86,17 +88,14 @@ class TaskLauncherPanel(private val project: Project) {
         private const val ACTION_COLUMN = 0
 
         // 状态语义色（亮 / 暗主题各一套）；色调编号见 TaskRowState.TONE_*
-        private val COLOR_GOOD = JBColor(Color(0x36, 0x9B, 0x47), Color(0x5F, 0xAD, 0x65))
-        private val COLOR_WARN = JBColor(Color(0xB8, 0x77, 0x00), Color(0xE8, 0xA3, 0x3D))
-        private val COLOR_BAD = JBColor(Color(0xDB, 0x3B, 0x4B), Color(0xF2, 0x6D, 0x6D))
-        private val COLOR_TRIGGER = JBColor(Color(0x7A, 0x5A, 0xF8), Color(0x9B, 0x8A, 0xFB))
+        // 语义色统一收敛到 TaskLauncherTheme（对应 VS Code 侧 tokens.css 的 token 单点）；
+        // 这里保留原名作别名，包内既有引用零改动。tasklauncher 包内禁止再写 Color(0x…) 字面量。
+        private val COLOR_GOOD = TaskLauncherTheme.OK
+        private val COLOR_WARN = TaskLauncherTheme.WARN
+        private val COLOR_BAD = TaskLauncherTheme.ERR
+        private val COLOR_TRIGGER = TaskLauncherTheme.TRIGGER
 
-        private fun colorForTone(tone: Int): JBColor = when (tone) {
-            TaskRowState.TONE_GOOD -> COLOR_GOOD
-            TaskRowState.TONE_WARN -> COLOR_WARN
-            TaskRowState.TONE_BAD -> COLOR_BAD
-            else -> JBColor.GRAY
-        }
+        private fun colorForTone(tone: Int): JBColor = TaskLauncherTheme.colorForTone(tone)
     }
 
     val mainPanel: JPanel
@@ -155,6 +154,13 @@ class TaskLauncherPanel(private val project: Project) {
     private lateinit var actionToolbar: com.intellij.openapi.actionSystem.ActionToolbar
     private val statusLabel = JBLabel()
     private val progressBar = JProgressBar()
+
+    // ── 健康度条（#9 rc-health 的 Swing 等价物）──────────────────────
+    // 健康点 = 状态色的最小可视化单元，与状态文字同源同色；当前任务 chip 揭示
+    // 「此刻在跑什么」，触发/一次性用不同描边色（复用 detailKindChip 的色语义）。
+    private val healthDot = TaskLauncherTheme.HealthDot()
+    private val currentTaskChip = JBLabel()
+    private var lastRunnerStatus = ""
 
     private val paramPanel = JPanel(GridBagLayout())
     private val paramFields = mutableMapOf<String, JComponent>()
@@ -241,10 +247,49 @@ class TaskLauncherPanel(private val project: Project) {
         // 控制命令失败时把错误拼在状态前（run_executor.py 在命令失败后不推状态，
         // 错误会一直保留到下一条状态快照到达）
         statusLabel.text = state.controlError?.let { "$it — $statusText" } ?: statusText
+        syncHealthBar(state)
         syncTriggerCheckboxes(state)
         renderTaskStatuses(state)
         // 状态 chip 与「启用/停用轮询」按钮文案跟着执行器状态走
         renderDetailHeader(detailTask, state)
+        // 运行中心在详情区挂着时跟随状态刷新（无选中任务 = 运行中心可见）
+        if (detailTask == null && runCenterVisible) {
+            renderRunCenter(state)
+        }
+    }
+
+    /** 健康点取色 + 当前任务 chip（#9 rc-health）：与状态文字同源，一次状态一条视觉线 */
+    private fun syncHealthBar(state: TaskRunnerService.ExecutorState) {
+        healthDot.color = when {
+            state.controlError != null -> TaskLauncherTheme.ERR
+            state.status == "running" && state.paused -> TaskLauncherTheme.PAUSE
+            state.status == "running" || state.status == "connecting" -> TaskLauncherTheme.RUN
+            state.finishMessage != null -> TaskLauncherTheme.OK
+            else -> UIUtil.getLabelDisabledForeground()
+        }
+        val running = state.status == "running" && state.current.isNotEmpty()
+        if (running) {
+            val isTrigger = state.currentIsTrigger
+            TaskLauncherTheme.styleChip(
+                currentTaskChip,
+                if (isTrigger) TaskLauncherTheme.TRIGGER else TaskLauncherTheme.ONETIME,
+                displayNameOf(state.current),
+            )
+            currentTaskChip.isVisible = true
+            currentTaskChip.toolTipText = state.current
+        } else {
+            currentTaskChip.isVisible = false
+            currentTaskChip.toolTipText = null
+        }
+        lastRunnerStatus = state.status
+    }
+
+    /** 任务 key（module::Class）→ 显示名；未知任务退回 key 本身 */
+    private fun displayNameOf(taskKey: String): String {
+        schemas[taskKey]?.displayName?.let { return it }
+        val cls = taskKey.substringAfter("::", taskKey)
+        return tasks.firstOrNull { it.module == taskKey.substringBefore("::") && it.className == cls }
+            ?.displayName ?: taskKey
     }
 
     /**
@@ -295,6 +340,7 @@ class TaskLauncherPanel(private val project: Project) {
         }
         installTableRenderers()
         installActionColumnClick()
+        installTaskHoverPopup()
 
         val tableScrollPane = JBScrollPane(taskTable)
         tableScrollPane.border = BorderFactory.createEmptyBorder()
@@ -310,9 +356,18 @@ class TaskLauncherPanel(private val project: Project) {
         splitPane.firstComponent = tableScrollPane
         splitPane.secondComponent = detailPane
 
+        // 健康度条：[健康点] [状态文字] [当前任务 chip] …… [进度条] [查看日志]
+        // 健康点与状态文字同源同色（syncRunnerState 统一驱动）
+        val healthRow = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
+        healthRow.isOpaque = false
+        healthRow.add(healthDot)
+        healthRow.add(statusLabel)
+        healthRow.add(currentTaskChip)
+        currentTaskChip.isVisible = false
+
         val statusBar = JPanel(BorderLayout(8, 0))
         statusBar.border = BorderFactory.createEmptyBorder(2, 4, 2, 4)
-        statusBar.add(statusLabel, BorderLayout.CENTER)
+        statusBar.add(healthRow, BorderLayout.CENTER)
         progressBar.preferredSize = Dimension(120, 20)
         progressBar.isVisible = false
         viewLogButton.toolTipText = OkScriptToolkitBundle.message("taskLauncher.viewLogHint")
@@ -465,19 +520,349 @@ class TaskLauncherPanel(private val project: Project) {
         )
     }
 
-    /** 未选中任务时的占位提示（右栏不该是空白） */
+    /** 未选中任务时渲染运行中心（#9 rc-queue 的 Swing 等价物；右栏不该是空白占位文字） */
     private fun showDetailPlaceholder() {
         paramPanel.removeAll()
         paramFields.clear()
         visibilityRefresher = null
         currentRenderer = null
+        runCenterVisible = true
+        renderRunCenter(taskRunner.currentState())
+        renderDetailHeader(null)
+    }
+
+    // ── 运行中心（#9 rc-queue / gpop 的 Swing 等价物）────────────────
+
+    /** 详情区当前渲染的是运行中心（无选中任务）——syncRunnerState 时跟随刷新 */
+    private var runCenterVisible = false
+
+    /** 探针采集到的全局配置组（运行中心「全局配置」区数据源；applyProbeResult 更新） */
+    private var globalConfigGroups: List<TaskLauncherService.GlobalConfigGroup> = emptyList()
+
+    /** 悬停弹层抑制截止时间：点选/切换后 1.2s 内不弹（对齐主仓库约定） */
+    private var hoverSuppressUntil = 0L
+
+    private val hoverPopupDelayMs = 800
+
+    /**
+     * 运行中心：执行器此刻在跑什么 / 排了什么 / 轮询什么 / 全局配置有哪些。
+     * 只读视图 —— 所有的动作（启动/停止/勾选）都在工具栏与任务行上，这里不给第二条入口。
+     */
+    private fun renderRunCenter(state: TaskRunnerService.ExecutorState) {
+        paramPanel.removeAll()
+        val gbc = GridBagConstraints().apply {
+            gridx = 0
+            gridy = 0
+            weightx = 1.0
+            fill = GridBagConstraints.HORIZONTAL
+            anchor = GridBagConstraints.NORTH
+            insets = Insets(8, 12, 0, 12)
+        }
+
+        // 标题行：运行中心 + 健康点（与 statusBar 同源同色，一次状态一条视觉线）
+        val titleRow = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
+        titleRow.isOpaque = false
+        val dot = TaskLauncherTheme.HealthDot()
+        dot.color = healthDot.color
+        val titleLabel = JBLabel(OkScriptToolkitBundle.message("taskLauncher.runCenter.title"))
+        titleLabel.font = titleLabel.font.deriveFont(Font.BOLD)
+        titleRow.add(dot)
+        titleRow.add(titleLabel)
+        paramPanel.add(titleRow, gbc)
+
+        // 当前任务区
+        gbc.gridy++
         paramPanel.add(
-            JBLabel(OkScriptToolkitBundle.message("taskLauncher.detailPlaceholder")),
-            GridBagConstraints().apply { insets = Insets(28, 12, 12, 12) },
+            sectionCard(OkScriptToolkitBundle.message("taskLauncher.runCenter.current")) { panel ->
+                if (state.current.isEmpty()) {
+                    panel.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.runCenter.idle")))
+                } else {
+                    val chip = JBLabel()
+                    TaskLauncherTheme.styleChip(
+                        chip,
+                        if (state.currentIsTrigger) TaskLauncherTheme.TRIGGER else TaskLauncherTheme.ONETIME,
+                        displayNameOf(state.current),
+                    )
+                    chip.toolTipText = state.current
+                    panel.add(chip)
+                }
+            },
+            gbc,
         )
+
+        // 一次性队列区：逐行列出，点击选中左侧对应任务行
+        gbc.gridy++
+        paramPanel.add(
+            sectionCard(OkScriptToolkitBundle.message("taskLauncher.runCenter.queue")) { panel ->
+                if (state.onetimeQueue.isEmpty()) {
+                    panel.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.runCenter.queueEmpty")))
+                } else {
+                    for (key in state.onetimeQueue) panel.add(runCenterRow(key))
+                }
+            },
+            gbc,
+        )
+
+        // 触发轮询区
+        gbc.gridy++
+        paramPanel.add(
+            sectionCard(OkScriptToolkitBundle.message("taskLauncher.runCenter.triggers")) { panel ->
+                if (state.enabledTriggers.isEmpty()) {
+                    panel.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.runCenter.queueEmpty")))
+                } else {
+                    for (key in state.enabledTriggers) panel.add(runCenterRow(key))
+                }
+            },
+            gbc,
+        )
+
+        // 全局配置区（#7）：组行 hover 弹只读字段摘要
+        if (globalConfigGroups.isNotEmpty()) {
+            gbc.gridy++
+            paramPanel.add(
+                sectionCard(OkScriptToolkitBundle.message("taskLauncher.gconfigSection")) { panel ->
+                    for (group in globalConfigGroups) panel.add(globalGroupRow(group))
+                },
+                gbc,
+            )
+        }
+
+        // 底部弹簧：内容顶对齐
+        gbc.gridy++
+        gbc.weighty = 1.0
+        gbc.fill = GridBagConstraints.BOTH
+        gbc.insets = Insets(0, 0, 0, 0)
+        paramPanel.add(JPanel().apply { isOpaque = false }, gbc)
+
         paramPanel.revalidate()
         paramPanel.repaint()
-        renderDetailHeader(null)
+    }
+
+    /**
+     * 运行中心区段：组头（弱化小标题）+ 内容体。行级面语义，不做描边方块墙。
+     * 参数名不能叫 fill —— 会遮蔽 apply{} 里 GridBagConstraints.fill（Kotlin 局部
+     * 作用域优先于隐式 receiver 成员，赋值会命中参数而不是字段）。
+     */
+    private fun sectionCard(title: String, build: (JPanel) -> Unit): JPanel {
+        val section = JPanel(BorderLayout(0, 2))
+        section.isOpaque = false
+        section.add(mutedLabel(title), BorderLayout.NORTH)
+        val body = JPanel(GridBagLayout())
+        body.isOpaque = false
+        val gbc = GridBagConstraints().apply {
+            gridx = 0
+            gridy = 0
+            weightx = 1.0
+            fill = GridBagConstraints.HORIZONTAL
+            anchor = GridBagConstraints.WEST
+        }
+        val receiver = JPanel(BorderLayout())
+        receiver.isOpaque = false
+        build(receiver)
+        body.add(receiver, gbc)
+        section.add(body, BorderLayout.CENTER)
+        return section
+    }
+
+    /** 弱化文字（--text-muted 语义：只用于辅助信息，不用于正文） */
+    private fun mutedLabel(text: String): JBLabel {
+        val label = JBLabel(text)
+        label.foreground = UIUtil.getLabelDisabledForeground()
+        return label
+    }
+
+    /**
+     * 行级可点击区（#10 两层语义之二）：默认 stripe 浅底、无描边，hover 增强，
+     * 点击选中左侧任务行。**hover 不承担「让用户发现可点击」的职责** ——
+     * 默认底色即与周围内容有色差。
+     */
+    private fun runCenterRow(taskKey: String): JPanel {
+        val row = JPanel(FlowLayout(FlowLayout.LEFT, 6, 1))
+        row.isOpaque = true
+        row.background = TaskLauncherTheme.rowBackground()
+        row.border = BorderFactory.createEmptyBorder(1, 6, 1, 6)
+        row.add(JBLabel(displayNameOf(taskKey)))
+        row.toolTipText = taskKey
+        row.addMouseListener(rowClickAdapter(row) { selectTaskRow(taskKey) })
+        return row
+    }
+
+    /** 全局配置组行（#7/#9 gpop）：组名 + source 标注 + 字段数，hover 弹只读摘要 */
+    private fun globalGroupRow(group: TaskLauncherService.GlobalConfigGroup): JPanel {
+        val row = JPanel(FlowLayout(FlowLayout.LEFT, 6, 1))
+        row.isOpaque = true
+        row.background = TaskLauncherTheme.rowBackground()
+        row.border = BorderFactory.createEmptyBorder(1, 6, 1, 6)
+        row.add(JBLabel(group.displayName ?: group.name))
+        if (group.source == "project_store") {
+            row.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.gconfigSourceProject")))
+        }
+        row.add(mutedLabel(group.fields.size.toString()))
+        row.toolTipText = group.description
+        val adapter = object : java.awt.event.MouseAdapter() {
+            private var timer: Timer? = null
+
+            override fun mouseEntered(e: java.awt.event.MouseEvent) {
+                row.background = TaskLauncherTheme.rowHoverBackground()
+                if (System.currentTimeMillis() < hoverSuppressUntil) return
+                timer?.stop()
+                timer = Timer(hoverPopupDelayMs) { showGroupSummaryPopup(row, group) }.apply {
+                    isRepeats = false
+                    start()
+                }
+            }
+
+            override fun mouseExited(e: java.awt.event.MouseEvent) {
+                row.background = TaskLauncherTheme.rowBackground()
+                timer?.stop()
+            }
+
+            override fun mouseClicked(e: java.awt.event.MouseEvent) {
+                // 弹出层只读、无交互按钮（用户硬规则）：点击只做抑制，不给第二条入口
+                hoverSuppressUntil = System.currentTimeMillis() + 1200
+                timer?.stop()
+            }
+        }
+        row.addMouseListener(adapter)
+        return row
+    }
+
+    /** 行级区共用的 hover 背景/点击抑制适配器（点击回调由各行走） */
+    private fun rowClickAdapter(row: JPanel, onClick: () -> Unit): java.awt.event.MouseAdapter =
+        object : java.awt.event.MouseAdapter() {
+            override fun mouseEntered(e: java.awt.event.MouseEvent) {
+                row.background = TaskLauncherTheme.rowHoverBackground()
+            }
+
+            override fun mouseExited(e: java.awt.event.MouseEvent) {
+                row.background = TaskLauncherTheme.rowBackground()
+            }
+
+            override fun mouseClicked(e: java.awt.event.MouseEvent) {
+                hoverSuppressUntil = System.currentTimeMillis() + 1200
+                onClick()
+            }
+        }
+
+    /** 选中左侧任务表中的行（触发 selection listener → loadTaskParams） */
+    private fun selectTaskRow(taskKey: String) {
+        val index = tasks.indexOfFirst { taskKeyOf(it) == taskKey }
+        if (index >= 0 && index < taskTable.rowCount) {
+            taskTable.setRowSelectionInterval(index, index)
+        }
+    }
+
+    /** 全局配置组摘要弹层：只读、无交互按钮（用户硬规则），最多列 12 个字段。
+     *  参数名不能叫 anchor —— 会遮蔽 apply{} 里 GridBagConstraints.anchor。 */
+    private fun showGroupSummaryPopup(anchorComponent: JComponent, group: TaskLauncherService.GlobalConfigGroup) {
+        val content = JPanel(GridBagLayout())
+        content.isOpaque = false
+        val gbc = GridBagConstraints().apply {
+            gridx = 0
+            gridy = 0
+            anchor = GridBagConstraints.WEST
+            insets = Insets(2, 10, 2, 10)
+        }
+        for (field in group.fields.take(12)) {
+            content.add(JBLabel("${field.displayKey ?: field.key} = ${formatFieldValue(field)}"), gbc)
+            gbc.gridy++
+        }
+        if (group.fields.size > 12) {
+            content.add(mutedLabel("… +${group.fields.size - 12}"), gbc)
+        }
+        JBPopupFactory.getInstance()
+            .createComponentPopupBuilder(content, anchorComponent)
+            .setTitle(group.displayName ?: group.name)
+            .setRequestFocus(false)
+            .setResizable(false)
+            .setMovable(false)
+            .setCancelOnClickOutside(true)
+            .createPopup()
+            .show(RelativePoint(anchorComponent, java.awt.Point(anchorComponent.width / 2, anchorComponent.height)))
+    }
+
+    /** 任务卡悬停弹出（#9 任务卡 hover 概览）：hover 800ms 弹只读摘要 */
+    private fun installTaskHoverPopup() {
+        var hoverRow = -1
+        var timer: Timer? = null
+        taskTable.addMouseMotionListener(object : java.awt.event.MouseMotionAdapter() {
+            override fun mouseMoved(e: java.awt.event.MouseEvent) {
+                val row = taskTable.rowAtPoint(e.point)
+                if (row == hoverRow) return
+                hoverRow = row
+                timer?.stop()
+                if (row < 0 || row >= tasks.size) return
+                if (System.currentTimeMillis() < hoverSuppressUntil) return
+                val task = tasks[row]
+                timer = Timer(hoverPopupDelayMs) { showTaskSummaryPopup(task) }.apply {
+                    isRepeats = false
+                    start()
+                }
+            }
+        })
+        // 点击（选中加载参数）后 1.2s 抑制：刚点完立刻悬停不再弹同一张卡
+        taskTable.addMouseListener(object : java.awt.event.MouseAdapter() {
+            override fun mouseClicked(e: java.awt.event.MouseEvent) {
+                hoverSuppressUntil = System.currentTimeMillis() + 1200
+                timer?.stop()
+            }
+        })
+    }
+
+    /** 任务摘要弹层：kind / 参数改动量 / schema 错误（只读，无交互按钮） */
+    private fun showTaskSummaryPopup(task: TaskLauncherService.TaskInfo) {
+        val key = taskKeyOf(task)
+        val schema = schemas[key]
+        val content = JPanel(GridBagLayout())
+        content.isOpaque = false
+        val gbc = GridBagConstraints().apply {
+            gridx = 0
+            gridy = 0
+            anchor = GridBagConstraints.WEST
+            insets = Insets(2, 10, 2, 10)
+        }
+        val kind = taskKindOf(task)
+        content.add(
+            JBLabel(
+                OkScriptToolkitBundle.message(
+                    if (kind == TaskRowState.TRIGGER) "taskLauncher.triggerTask" else "taskLauncher.oneTimeTask",
+                ),
+            ),
+            gbc,
+        )
+        gbc.gridy++
+        if (schema == null) {
+            content.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.schemaNotProbed")), gbc)
+        } else if (schema.broken) {
+            val error = JBLabel(OkScriptToolkitBundle.message("taskLauncher.schemaBroken", schema.error ?: ""))
+            error.foreground = TaskLauncherTheme.ERR
+            content.add(error, gbc)
+        } else {
+            val config = taskService.loadTaskConfigs().projects[taskService.getWorkspaceRoot()]?.tasks?.get(key)
+            val edited = config?.params?.size ?: 0
+            content.add(
+                mutedLabel(
+                    OkScriptToolkitBundle.message("taskLauncher.schemaFieldCount", edited, schema.fields.size),
+                ),
+                gbc,
+            )
+        }
+        JBPopupFactory.getInstance()
+            .createComponentPopupBuilder(content, taskTable)
+            .setTitle(task.displayName)
+            .setRequestFocus(false)
+            .setResizable(false)
+            .setMovable(false)
+            .setCancelOnClickOutside(true)
+            .createPopup()
+            .show(RelativePoint(taskTable, java.awt.Point(taskTable.width / 4, taskTable.rowHeight * 2)))
+    }
+
+    /** 字段值截断显示（弹层摘要用；不解析语义，只转文本） */
+    private fun formatFieldValue(field: TaskLauncherService.TaskParamField): String {
+        val raw = field.value ?: field.default ?: return "—"
+        val text = raw.toString()
+        return if (text.length > 40) text.take(40) + "…" else text
     }
 
     private fun renderDetailHeader(
@@ -744,6 +1129,8 @@ class TaskLauncherPanel(private val project: Project) {
             if (result.configModule != null) {
                 configModule = result.configModule
             }
+            // 运行中心「全局配置」区数据源（#7）
+            globalConfigGroups = result.globalConfigGroups
 
             tasks = result.schemas.map { (key, schema) ->
                 val parts = key.split("::")
@@ -791,6 +1178,13 @@ class TaskLauncherPanel(private val project: Project) {
             restoreSelection(previousSelection)
 
             statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.loaded", tasks.size)
+
+            // #7 配置接管：探针成功后物化全局配置快照（新增键 > 0 时覆盖状态提示）
+            if (result.globalConfigGroups.isNotEmpty() &&
+                materializeGlobalSnapshots(result.globalConfigGroups) > 0
+            ) {
+                statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.gconfigMaterialized", lastMaterializedCount)
+            }
         } else {
             if (!finished) return
             statusLabel.text = "Failed: ${result.error}"
@@ -803,12 +1197,51 @@ class TaskLauncherPanel(private val project: Project) {
         }
     }
 
+    /** 最近一次物化的新增键数（供 applyProbeResult 的状态提示取用） */
+    private var lastMaterializedCount = 0
+
+    /**
+     * 物化全局配置快照并落盘（#7 配置接管）。
+     *
+     * 规则在 [GlobalSnapshotRules]（纯对象）：每组 existing 为空（首建）→ 全部继承
+     * f.value；非空（重探针）→ 已有键保留（孤儿键不删）、新键取 f.default ?: f.value。
+     * 快照有实质变化时落盘，并在执行器运行中把新快照经 gparams 推给它 ——
+     * 否则要重启执行器才生效（对齐 VS Code 侧 consolePanel 的物化+推送时机）。
+     *
+     * @return 新增键数（0 = 快照无变化，不落盘不推送）
+     */
+    private fun materializeGlobalSnapshots(groups: List<TaskLauncherService.GlobalConfigGroup>): Int {
+        val existing = taskService.loadGlobalConfigs()
+        val snapshots = existing.toMutableMap()
+        var added = 0
+        for (group in groups) {
+            val (snap, count) = GlobalSnapshotRules.materialize(existing[group.name].orEmpty(), group.fields)
+            snapshots[group.name] = snap
+            added += count
+        }
+        if (added > 0) {
+            lastMaterializedCount = added
+            taskService.saveGlobalConfigs(snapshots)
+            pushGlobalSnapshot(snapshots)
+        }
+        return added
+    }
+
+    /** 全局配置快照即时推送：执行器运行中才推（gparams 是全量快照，幂等可重放） */
+    private fun pushGlobalSnapshot(snapshots: Map<String, Map<String, Any?>>) {
+        if (!taskRunner.isRunning()) return
+        if (snapshots.isEmpty()) return
+        taskRunner.pushGlobalParams(objectMapper.writeValueAsString(snapshots))
+    }
+
     private fun loadTaskParams(task: TaskLauncherService.TaskInfo) {
         paramPanel.removeAll()
         paramFields.clear()
         visibilityRefresher = null
         // 右栏头部跟着选中项走：名称 / 类型 chip / 状态 chip / 主操作按钮
         renderDetailHeader(task)
+        // 已选中任务 → 详情区不再是运行中心，状态刷新不再驱动它
+        runCenterVisible = false
 
         val taskKey = "${task.module}::${task.className}"
         val schema = schemas[taskKey]
@@ -1844,6 +2277,13 @@ class TaskLauncherPanel(private val project: Project) {
         val overrides = allParamOverrides()
         if (overrides.isNotEmpty()) {
             env["OK_LANG_HINTS_INJECT"] = objectMapper.writeValueAsString(overrides)
+        }
+        // 全局配置快照（#7 配置接管）：非空才注入，执行器侧拿它覆盖框架/项目 store 的
+        // 全局配置。物化语义（首建继承当前值、新键取默认、孤儿键保留）由探针采集后的
+        // GlobalSnapshotRules 负责，这里只管把快照带给执行器。
+        val gconfig = taskService.loadTaskConfigs().projects[taskService.getWorkspaceRoot()]?.globalConfigs
+        if (!gconfig.isNullOrEmpty()) {
+            env["OK_TOOLKIT_GCONFIG"] = objectMapper.writeValueAsString(gconfig)
         }
         warnLegacyPerTaskSettings()
 

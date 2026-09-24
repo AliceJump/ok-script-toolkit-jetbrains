@@ -421,6 +421,12 @@ class TaskRunnerService(private val project: Project) : Disposable {
     fun pushParams(json: String): Boolean = sendCommand("params $json")
 
     /**
+     * 全局配置快照即时推送（#7 配置接管，对齐 VS Code 侧 gparams 命令）。
+     * 推整个快照映射 {组名: {键: 值}}，执行器侧防抖应用；无运行进程返回 false。
+     */
+    fun pushGlobalParams(json: String): Boolean = sendCommand("gparams $json")
+
+    /**
      * 关闭执行器：先请它自己退出，超时再强杀进程树。
      *
      * 三处状态都必须让用户看得见，否则 UI 会停在"执行器还开着"的错误认知上：

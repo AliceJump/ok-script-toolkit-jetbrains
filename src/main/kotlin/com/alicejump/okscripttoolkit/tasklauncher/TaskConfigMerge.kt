@@ -73,4 +73,22 @@ internal object TaskConfigMerge {
         projects[projectRoot] = projectConfig.copy(enabledTriggers = keys)
         return store.copy(projects = projects)
     }
+
+    /**
+     * 替换某个项目根的全局配置快照，**保留**任务参数与勾选集合。
+     *
+     * 三条写入路径（参数 / 勾选 / 全局快照）语义互相独立，各自只换自己的字段 ——
+     * 物化与保存由调用方（[GlobalSnapshotRules] + TaskLauncherService.saveGlobalConfigs）负责。
+     * `snapshots` 允许为空映射（用户清空了全部快照），这不是"无变更"。
+     */
+    fun withGlobalConfigs(
+        store: TaskConfigStore,
+        projectRoot: String,
+        snapshots: Map<String, Map<String, Any?>>,
+    ): TaskConfigStore {
+        val projects = store.projects.toMutableMap()
+        val projectConfig = projects[projectRoot] ?: TaskConfigStore.ProjectConfig()
+        projects[projectRoot] = projectConfig.copy(globalConfigs = snapshots)
+        return store.copy(projects = projects)
+    }
 }

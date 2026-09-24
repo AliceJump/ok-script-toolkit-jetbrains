@@ -198,6 +198,96 @@ class TaskConfigMergeTest {
         assertNull(stored?.params?.get("missing"), "不存在的参数键应返回 null 而不是抛异常")
     }
 
+    // ── withGlobalConfigs（#7 配置接管）───────────────────────────────
+
+    /** 写全局快照时不得碰任务参数与勾选集合 —— 第三条独立写入路径必须同样互不干扰 */
+    @Test
+    fun `writing global configs must not clobber tasks nor triggers`() {
+        val original = storeWith(
+            mapOf(
+                "/proj" to projectOf(
+                    taskEntries = mapOf("m::A" to config("x" to 1)),
+                    enabledTriggers = listOf("m::T1"),
+                ),
+            ),
+        )
+
+        val updated = TaskConfigMerge.withGlobalConfigs(
+            original,
+            "/proj",
+            mapOf("战斗配置" to mapOf("dps" to 99, "auto_battle" to true)),
+        )
+
+        assertEquals(
+            mapOf("dps" to 99, "auto_battle" to true),
+            updated.projects["/proj"]?.globalConfigs?.get("战斗配置"),
+            "全局快照必须被替换为新值",
+        )
+        assertEquals(
+            mapOf("x" to 1),
+            updated.projects["/proj"]?.tasks?.get("m::A")?.params,
+            "写全局快照不得动任务参数",
+        )
+        assertEquals(
+            listOf("m::T1"),
+            updated.projects["/proj"]?.enabledTriggers,
+            "写全局快照不得动勾选集合",
+        )
+    }
+
+    /** 空快照是合法输入（清空全部快照），不得被当成「无变更」丢弃 */
+    @Test
+    fun `clearing global configs is persisted as an empty map`() {
+        val original = storeWith(
+            mapOf(
+                "/proj" to TaskConfigStore.ProjectConfig(
+                    globalConfigs = mapOf("战斗配置" to mapOf("dps" to 99)),
+                ),
+            ),
+        )
+
+        val updated = TaskConfigMerge.withGlobalConfigs(original, "/proj", emptyMap())
+
+        assertEquals(emptyMap(), updated.projects["/proj"]?.globalConfigs, "清空快照必须能落盘")
+    }
+
+    /** 首次写快照：项目根尚不存在时应新建 */
+    @Test
+    fun `writing global configs into an unseen project root creates it`() {
+        val updated = TaskConfigMerge.withGlobalConfigs(
+            storeWith(),
+            "/fresh",
+            mapOf("Notification" to mapOf("enabled" to false)),
+        )
+
+        assertEquals(
+            mapOf("enabled" to false),
+            updated.projects["/fresh"]?.globalConfigs?.get("Notification"),
+        )
+        assertEquals(emptyMap(), updated.projects["/fresh"]?.tasks, "新建项目配置不应凭空造任务")
+        assertEquals(emptyList(), updated.projects["/fresh"]?.enabledTriggers)
+    }
+
+    /** withGlobalConfigs 同样遵守纯函数语义：入参不得被就地修改 */
+    @Test
+    fun `global config merge never mutates its input`() {
+        val original = storeWith(
+            mapOf(
+                "/proj" to TaskConfigStore.ProjectConfig(
+                    globalConfigs = mapOf("A" to mapOf("k" to 1)),
+                ),
+            ),
+        )
+
+        TaskConfigMerge.withGlobalConfigs(original, "/proj", mapOf("A" to mapOf("k" to 2)))
+
+        assertEquals(
+            mapOf("k" to 1),
+            original.projects["/proj"]?.globalConfigs?.get("A"),
+            "入参必须原样不动",
+        )
+    }
+
     /**
      * 破坏性对照：这条锁死「整对象替换会丢勾选」这个事实本身。
      * 若哪天有人把 `copy(tasks = tasks)` 当作正确写法回退，本断言必须仍然成立 ——
