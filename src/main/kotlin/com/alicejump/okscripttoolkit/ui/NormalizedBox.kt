@@ -19,6 +19,9 @@ object NormalizedBox {
     /**
      * 把图像坐标矩形换算成归一化文本；顺序无关（会自行取 min/max），
      * 越界自动 clamp 到 0..1，过小返回空串表示不产出。
+     *
+     * @param separator 数值间分隔符；默认 `","`（紧凑），个人偏好开空格时传 `", "`。
+     *   保持显式参数而不是在对象里读服务 —— 本类是纯函数，测试直接断言输出。
      */
     fun format(
         x1: Double,
@@ -27,6 +30,7 @@ object NormalizedBox {
         y2: Double,
         imageWidth: Int,
         imageHeight: Int,
+        separator: String = ",",
     ): String {
         if (imageWidth <= 0 || imageHeight <= 0) return ""
         val left = minOf(x1, x2)
@@ -39,7 +43,7 @@ object NormalizedBox {
             top / imageHeight,
             right / imageWidth,
             bottom / imageHeight,
-        ).joinToString(",") { formatValue(it) }
+        ).joinToString(separator) { formatValue(it) }
     }
 
     private fun formatValue(value: Double): String =

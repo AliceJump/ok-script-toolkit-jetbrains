@@ -5,6 +5,7 @@ import com.alicejump.okscripttoolkit.core.ScreenshotCapture
 import com.alicejump.okscripttoolkit.core.TempShot
 import com.alicejump.okscripttoolkit.core.TempShotFiles
 import com.alicejump.okscripttoolkit.core.TempScreenshotStore
+import com.alicejump.okscripttoolkit.settings.GlobalPrefs
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
@@ -704,7 +705,7 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
             }
             val a = toImage(start)
             val b = toImage(end)
-            val text = NormalizedBox.format(a.first, a.second, b.first, b.second, img.width, img.height)
+            val text = NormalizedBox.format(a.first, a.second, b.first, b.second, img.width, img.height, separator = coordSeparator())
             if (text.isEmpty()) {
                 // 几乎没拖动 = 点了图片的非交互部分：清除坐标框
                 clearCoordBox()
@@ -724,8 +725,11 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
         private fun coordText(): String {
             val img = current() ?: return ""
             val r = committed ?: return ""
-            return NormalizedBox.format(r.x, r.y, r.x + r.w, r.y + r.h, img.width, img.height)
+            return NormalizedBox.format(r.x, r.y, r.x + r.w, r.y + r.h, img.width, img.height, separator = coordSeparator())
         }
+
+        /** 坐标分隔符偏好（Application 级个人习惯，全局生效） */
+        private fun coordSeparator(): String = GlobalPrefs.getInstance().copyCoordsSeparator()
 
         private fun copyCoordBox() {
             val text = coordText()

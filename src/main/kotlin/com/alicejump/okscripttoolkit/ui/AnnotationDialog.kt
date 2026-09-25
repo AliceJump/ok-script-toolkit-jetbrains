@@ -5,6 +5,7 @@ import com.alicejump.okscripttoolkit.core.CocoAnnotation
 import com.alicejump.okscripttoolkit.core.CocoCategory
 import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
 import com.alicejump.okscripttoolkit.core.TemplateImage
+import com.alicejump.okscripttoolkit.settings.GlobalPrefs
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.Project
@@ -845,6 +846,9 @@ class AnnotationDialog(
             copyCoordBox()
         }
 
+        /** 坐标分隔符偏好（Application 级个人习惯，全局生效） */
+        private fun coordSeparator(): String = GlobalPrefs.getInstance().copyCoordsSeparator()
+
         /** 把坐标框当前的归一化坐标写入剪贴板（创建与每次调整结束都会调用） */
         private fun copyCoordBox() {
             val img = source ?: return
@@ -853,6 +857,7 @@ class AnnotationDialog(
                 box.x.toDouble(), box.y.toDouble(),
                 (box.x + box.w).toDouble(), (box.y + box.h).toDouble(),
                 img.width, img.height,
+                separator = coordSeparator(),
             )
             if (text.isEmpty()) return
             CopyPasteManager.getInstance().setContents(StringSelection(text))
@@ -911,6 +916,7 @@ class AnnotationDialog(
                 box.x.toDouble(), box.y.toDouble(),
                 (box.x + box.w).toDouble(), (box.y + box.h).toDouble(),
                 img.width, img.height,
+                separator = coordSeparator(),
             )
             if (text.isNotEmpty()) {
                 colorLabel.text = "${OkScriptToolkitBundle.message("annotation.coordLabel")} $text"
@@ -923,7 +929,7 @@ class AnnotationDialog(
             val start = drawStart ?: return
             val a = toImageDouble(start)
             val b = toImageDouble(p)
-            val text = NormalizedBox.format(a.first, a.second, b.first, b.second, img.width, img.height)
+            val text = NormalizedBox.format(a.first, a.second, b.first, b.second, img.width, img.height, separator = coordSeparator())
             if (text.isNotEmpty()) {
                 colorLabel.text = "${OkScriptToolkitBundle.message("annotation.coordLabel")} $text"
             }
