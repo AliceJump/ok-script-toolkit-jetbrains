@@ -44,4 +44,16 @@ class NormalizedBoxTest {
         val half = NormalizedBox.format(120.0, 54.0, 600.0, 324.0, 960, 540)
         assertEquals(full, half)
     }
+
+    @Test
+    fun `separator parameter switches between compact and spaced output`() {
+        // 个人偏好：逗号后带空格（GlobalPrefs.copyCoordsSpace = true）→ ", "
+        val spaced = NormalizedBox.format(240.0, 108.0, 1200.0, 648.0, 1920, 1080, separator = ", ")
+        assertEquals("0.1250, 0.1000, 0.6250, 0.6000", spaced)
+        // 默认仍是紧凑格式，老行为不变
+        val compact = NormalizedBox.format(240.0, 108.0, 1200.0, 648.0, 1920, 1080)
+        assertEquals("0.1250,0.1000,0.6250,0.6000", compact)
+        // 两种分隔符只差空格，数值部分一致
+        assertEquals(spaced.replace(" ", ""), compact)
+    }
 }

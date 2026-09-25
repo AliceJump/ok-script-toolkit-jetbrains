@@ -36,6 +36,16 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
     // Screenshot settings
     private val captureMethod = javax.swing.JComboBox(OkScriptToolkitSettings.CAPTURE_METHODS.toTypedArray())
 
+    /**
+     * 复制坐标分隔偏好 —— 唯一写 **Application 级** [GlobalPrefs] 的项：
+     * 这是跟着人走的习惯，不进项目级取值链。
+     */
+    private val copyCoordsSpace = JBCheckBox(OkScriptToolkitBundle.message("settings.copyCoordsSpace"))
+
+    /** 面板载入（reset）时的快照：isModified 对比它而不是活着的 GlobalPrefs，
+     * 避免对话框打开期间别处改了全局值导致比较失真（Configurable 标准范式）。 */
+    private var loadedCopyCoordsSpace = false
+
     init {
         captureMethod.toolTipText = OkScriptToolkitBundle.message("settings.captureMethodTooltip")
     }
@@ -108,6 +118,7 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
             row(OkScriptToolkitBundle.message("settings.captureMethod")) {
                 cell(captureMethod)
             }
+            row { cell(copyCoordsSpace) }
         }
     }.also { reset() }
 
@@ -133,7 +144,8 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
             labelEnumPath.text.trim() != state.labelEnumPath.orEmpty() ||
             labelEnumName.text.trim() != state.labelEnumName.orEmpty() ||
             (captureMethod.selectedItem as? String).orEmpty() !=
-                OkScriptToolkitSettings.normalizeCaptureMethod(state.captureMethod)
+                OkScriptToolkitSettings.normalizeCaptureMethod(state.captureMethod) ||
+            copyCoordsSpace.isSelected != loadedCopyCoordsSpace
     }
 
     override fun apply() {
@@ -230,6 +242,8 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
         settings.state.labelEnumPath = labelEnumPath.text.trim()
         settings.state.labelEnumName = labelEnumName.text.trim()
         settings.state.captureMethod = (captureMethod.selectedItem as? String).orEmpty()
+        GlobalPrefs.getInstance().state.copyCoordsSpace = copyCoordsSpace.isSelected
+        loadedCopyCoordsSpace = copyCoordsSpace.isSelected
     }
 
     override fun reset() {
@@ -254,6 +268,8 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
         labelEnumPath.text = state.labelEnumPath.orEmpty()
         labelEnumName.text = state.labelEnumName.orEmpty()
         captureMethod.selectedItem = OkScriptToolkitSettings.normalizeCaptureMethod(state.captureMethod)
+        copyCoordsSpace.isSelected = GlobalPrefs.getInstance().state.copyCoordsSpace
+        loadedCopyCoordsSpace = copyCoordsSpace.isSelected
     }
 
     private fun splitList(value: String): List<String> = value
