@@ -98,6 +98,11 @@ model, so an ok-script project behaves the same way in either IDE.
 
 ## 构建
 
+建议从父仓 `ok-script-toolkit` 连同子模块一起检出，在 `jetbrains/` 目录构建；
+构建需要父仓的 `python/` 脚本目录位于本目录的上一级。独立检出子仓时，
+先取得父仓的 `python/`，并给 Gradle 传入 `-PpythonScriptsDir=/父仓绝对路径/python`。
+缺少脚本时 `buildPlugin` 会直接报错，避免生成无法运行任务的 ZIP。
+
 使用本目录中自带的 wrapper：
 
 ```bash
