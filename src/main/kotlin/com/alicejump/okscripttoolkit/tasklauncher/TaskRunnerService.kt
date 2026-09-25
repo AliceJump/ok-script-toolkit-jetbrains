@@ -68,6 +68,8 @@ class TaskRunnerService(private val project: Project) : Disposable {
     data class ExecutorState(
         /** idle（未启动）/ connecting（启动中）/ running（已连接并轮询） */
         val status: String = "idle",
+        /** 进程退出码：null = 用户关闭 / 启动失败（无退出信息）；非 0 = 异常退出 */
+        val exitCode: Int? = null,
         val paused: Boolean = false,
         /** 当前正在执行的任务 key（module::Class），空闲为空串 */
         val current: String = "",
@@ -372,14 +374,16 @@ class TaskRunnerService(private val project: Project) : Disposable {
 
             } catch (e: Exception) {
                 LOG.error("Failed to start executor", e)
-                recordAndEmit(OkScriptToolkitBundle.message("taskLauncher.launchFailed", e.message ?: ""))
-                onExecutorExit(null)
+                val message = OkScriptToolkitBundle.message("taskLauncher.launchFailed", e.message ?: "")
+                recordAndEmit(message)
+                // 启动失败≠用户关闭：经 controlError 标记，健康条显红而不是绿色
+                onExecutorExit(null, startupError = message)
             }
         }
         return true
     }
 
-    private fun onExecutorExit(exitCode: Int?) {
+    private fun onExecutorExit(exitCode: Int?, startupError: String? = null) {
         val wasForced = forceKillTask != null
         cancelForceKill()
         process = null
@@ -394,6 +398,9 @@ class TaskRunnerService(private val project: Project) : Disposable {
         }
         snapshot = ExecutorState(
             status = "idle",
+            exitCode = exitCode,
+            // 启动失败时非空：健康条据此显红（正常退出/用户关闭保持绿）
+            controlError = startupError,
             // 保留启用集合，重开工具窗 / 重启执行器时沿用用户勾选
             enabledTriggers = snapshot.enabledTriggers,
             finishMessage = message,
@@ -419,6 +426,12 @@ class TaskRunnerService(private val project: Project) : Disposable {
 
     /** 参数覆盖即时推送（执行器是常驻进程，不推就要重启才生效） */
     fun pushParams(json: String): Boolean = sendCommand("params $json")
+
+    /**
+     * 全局配置快照即时推送（#7 配置接管，对齐 VS Code 侧 gparams 命令）。
+     * 推整个快照映射 {组名: {键: 值}}，执行器侧防抖应用；无运行进程返回 false。
+     */
+    fun pushGlobalParams(json: String): Boolean = sendCommand("gparams $json")
 
     /**
      * 关闭执行器：先请它自己退出，超时再强杀进程树。
@@ -498,7 +511,10 @@ class TaskRunnerService(private val project: Project) : Disposable {
             writer.flush()
             true
         } catch (e: Exception) {
-            LOG.warn("Failed to send control command: $command", e)
+            // 只记命令名不记参数：gparams/params 的 JSON 快照可能含用户配置里的
+            // 敏感值，写进 IDE 日志就是泄露（CWE-532，CodeRabbit Major 意见）
+            val commandName = command.substringBefore(' ')
+            LOG.warn("Failed to send control command: $commandName", e)
             recordAndEmit(OkScriptToolkitBundle.message("toolbox.sendCommandFailed", e.message ?: ""))
             false
         }
