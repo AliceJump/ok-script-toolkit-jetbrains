@@ -14,7 +14,7 @@ import com.alicejump.okscripttoolkit.tasklauncher.TaskLauncherService.TaskParamF
  * 首建（existing 为空）继承 `f.value`：用户当前项目里已经调好的值原样进快照，
  * 不能执行器一启动就把用户配置打回默认。
  *
- * 重探针（existing 非空）新键取 `f.default ?: f.value`：探针新出现的键没有用户
+ * 重探针（existing 非空）新键取 `f.defaultOrValue()`：探针新出现的键没有用户
  * 历史值，用 schema 默认值兜底；default 缺失时退回 value（与 VS Code 侧一致）。
  */
 internal object GlobalSnapshotRules {
@@ -36,7 +36,7 @@ internal object GlobalSnapshotRules {
             snapshot[field.key] = if (isFirst) {
                 field.value
             } else {
-                field.default ?: field.value
+                field.defaultOrValue()
             }
             added++
         }
@@ -44,7 +44,7 @@ internal object GlobalSnapshotRules {
     }
 
     /**
-     * 「恢复默认」：全部键取 `f.default ?: f.value`（不管 existing 里是什么）。
+     * 「恢复默认」：全部键取 `f.defaultOrValue()`（不管 existing 里是什么）。
      * 快照里不在 fields 中的孤儿键原样保留 —— 恢复默认只作用于 schema 已知键。
      */
     fun resetToDefaults(
@@ -53,7 +53,7 @@ internal object GlobalSnapshotRules {
     ): Map<String, Any?> {
         val snapshot = existing.toMutableMap()
         for (field in fields) {
-            snapshot[field.key] = field.default ?: field.value
+            snapshot[field.key] = field.defaultOrValue()
         }
         return snapshot.toMap()
     }

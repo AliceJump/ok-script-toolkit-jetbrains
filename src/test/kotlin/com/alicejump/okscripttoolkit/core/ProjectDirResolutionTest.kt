@@ -19,12 +19,6 @@ class ProjectDirResolutionTest {
 
     private val home = "C:/Users/tester"
 
-    /** 只把给定的几个路径当作真实目录。 */
-    private fun dirs(vararg paths: String): (String) -> Boolean {
-        val set = paths.toSet()
-        return { it in set }
-    }
-
     /** 只把给定的几个目录当作含 config.py。 */
     private fun configs(vararg paths: String): (String) -> Boolean {
         val set = paths.toSet()
@@ -34,9 +28,8 @@ class ProjectDirResolutionTest {
     private fun resolve(
         configured: String = "",
         basePath: String = "",
-        isDirectory: (String) -> Boolean = dirs(),
         hasConfigFile: (String) -> Boolean = configs(),
-    ) = ProjectDirResolution.resolve(configured, basePath, home, isDirectory, hasConfigFile)
+    ) = ProjectDirResolution.resolve(configured, basePath, home, hasConfigFile)
 
     @Test
     fun `configured path wins over the workspace root`() {
@@ -45,10 +38,9 @@ class ProjectDirResolutionTest {
             resolve(
                 configured = "D:/proj/ok-end-field",
                 basePath = "D:/proj",
-                isDirectory = dirs("D:/proj/ok-end-field", "D:/proj"),
                 hasConfigFile = configs("D:/proj/ok-end-field"),
             ),
-            "设置项存在且是目录时必须优先 —— 这正是原来被忽略的那条路径",
+            "显式设置必须优先 —— 这正是原来被忽略的那条路径",
         )
     }
 
@@ -58,7 +50,6 @@ class ProjectDirResolutionTest {
             "$home/proj/ok-end-field",
             resolve(
                 configured = "~/proj/ok-end-field",
-                isDirectory = dirs("$home/proj/ok-end-field"),
             ),
             "`~` 必须展开，否则用户按文档写法填的路径会被判为不存在",
         )
@@ -68,27 +59,26 @@ class ProjectDirResolutionTest {
     fun `trailing separators are trimmed`() {
         assertEquals(
             "D:/proj/ok",
-            resolve(configured = "D:/proj/ok/", isDirectory = dirs("D:/proj/ok")),
+            resolve(configured = "D:/proj/ok/"),
             "结尾的斜杠要去掉：它会被当作路径的一部分传进脚本，也影响缓存键比较",
         )
         assertEquals(
             "D:/proj/ok",
-            resolve(configured = "D:/proj/ok\\", isDirectory = dirs("D:/proj/ok")),
+            resolve(configured = "D:/proj/ok\\"),
             "反斜杠同样要处理（Windows 用户常这么写）",
         )
     }
 
     @Test
-    fun `falls back to the workspace root when the setting is unusable`() {
+    fun `configured path does not fall back when it is unavailable`() {
         assertEquals(
-            "D:/proj/ok-end-field",
+            "D:/nonexistent",
             resolve(
                 configured = "D:/nonexistent",
                 basePath = "D:/proj/ok-end-field",
-                isDirectory = dirs(),
                 hasConfigFile = configs("D:/proj/ok-end-field"),
             ),
-            "设置项指向不存在的目录时不应卡死，要退回工作区根",
+            "显式路径即使不存在也必须保留，让调用方报告错误，不能运行工作区里的另一项目",
         )
         assertEquals(
             "D:/proj/ok-end-field",
@@ -133,14 +123,12 @@ class ProjectDirResolutionTest {
     fun `regression guard - ignoring the setting would resolve to the workspace root`() {
         val configured = "D:/proj/ok-end-field"
         val basePath = "D:/proj"
-        val isDirectory = dirs(configured, basePath)
         val hasConfigFile = configs(configured, basePath)
 
         val onlyBasePath = if (basePath.isNotBlank() && hasConfigFile(basePath)) basePath else ""
         val real = resolve(
             configured = configured,
             basePath = basePath,
-            isDirectory = isDirectory,
             hasConfigFile = hasConfigFile,
         )
 

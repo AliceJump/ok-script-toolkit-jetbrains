@@ -13,6 +13,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - name: Check out shared Python scripts
+        uses: actions/checkout@v4
+        with:
+          repository: AliceJump/ok-script-toolkit
+          path: parent-source
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -20,14 +25,12 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       # ⚠️ 这里**没有也不该有** `verifyPlugin`（Plugin Verifier：真的下载 IDE 去查
       # 废弃 / 实验性 / internal API）：
-      #   1. 本仓库独立 CI **缺 `../python`**（只检出自己），跑它会被 build.gradle.kts 里
-      #      `distributableTasks` 的守卫**直接中止**；
-      #   2. 它慢且要联网，真正的校验放在父仓 `release.yml`（那边 `submodules: recursive`，
-      #      `../python` 存在，条件齐备）。
+      #   1. 它慢且要联网，真正的校验放在父仓 `release.yml`；
+      #   2. 此处只构建可安装的 ZIP，Python 脚本由上一步单独检出并显式传给 Gradle。
       # ⚠️ `verifyPluginStructure` 只查 JAR / plugin.xml 的**结构**，**不查 API 兼容性** ——
       # 别把它当成"API 已经验过了"。
       - name: Test and build plugin
-        run: ./gradlew test buildPlugin verifyPluginStructure verifyPluginConfiguration
+        run: ./gradlew -PpythonScriptsDir=parent-source/python test buildPlugin verifyPluginStructure verifyPluginConfiguration
       - name: Upload plugin archive
         uses: actions/upload-artifact@v4
         with:

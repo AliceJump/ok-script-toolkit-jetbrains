@@ -2,6 +2,7 @@ package com.alicejump.okscripttoolkit.tasklauncher
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
+import com.alicejump.okscripttoolkit.core.AccountStoreService
 import com.alicejump.okscripttoolkit.core.ProjectDirResolution
 import com.alicejump.okscripttoolkit.core.RunDir
 import com.alicejump.okscripttoolkit.toolbox.ToolboxService
@@ -100,6 +101,7 @@ class TaskLauncherPanel(private val project: Project) {
 
     val mainPanel: JPanel
     private val taskService = TaskLauncherService(project)
+    private val accountStoreService = AccountStoreService(project)
     private val toolboxService = ToolboxService.getInstance(project)
 
     /** 每行的任务类型（trigger / onetime），供表格勾选列判断可编辑性 */
@@ -145,6 +147,7 @@ class TaskLauncherPanel(private val project: Project) {
     }
     private val taskTable = JBTable(taskTableModel)
     private val refreshAction = ToolbarAction(AllIcons.Actions.Refresh, OkScriptToolkitBundle.message("taskLauncher.refresh")) { loadTasks() }
+    private val accountEditorAction = ToolbarAction(AllIcons.Actions.Edit, OkScriptToolkitBundle.message("taskLauncher.accounts")) { openAccountEditor() }
     /** 显式启动执行器：勾选触发任务不再隐式拉起，启动行为集中在这里 */
     private val startExecutorAction = ToolbarAction(AllIcons.Actions.Execute, OkScriptToolkitBundle.message("taskLauncher.startExecutor")) { startExecutorManual() }
     private val stopCurrentAction = ToolbarAction(AllIcons.Actions.Suspend, OkScriptToolkitBundle.message("taskLauncher.stopCurrent")) { stopCurrentTask() }
@@ -172,6 +175,8 @@ class TaskLauncherPanel(private val project: Project) {
 
     /** 探针采集到的全局配置组（运行中心「全局配置」区数据源；applyProbeResult 更新） */
     private var globalConfigGroups: List<TaskLauncherService.GlobalConfigGroup> = emptyList()
+    private var multiAccountInfo = TaskLauncherService.MultiAccountInfo()
+    private var accountEditor: AccountEditorDialog? = null
 
     /** 悬停弹层抑制截止时间：点选/切换后 1.2s 内不弹（对齐主仓库约定） */
     private var hoverSuppressUntil = 0L
@@ -325,9 +330,10 @@ class TaskLauncherPanel(private val project: Project) {
         closeExecutorAction.isEnabled2 = false
         pauseAction.isEnabled2 = false
         resumeAction.isEnabled2 = false
+        accountEditorAction.isEnabled2 = false
 
         val actionGroup = com.intellij.openapi.actionSystem.DefaultActionGroup(
-            refreshAction, startExecutorAction, stopCurrentAction, closeExecutorAction, pauseAction, resumeAction,
+            refreshAction, accountEditorAction, startExecutorAction, stopCurrentAction, closeExecutorAction, pauseAction, resumeAction,
         )
         actionToolbar = com.intellij.openapi.actionSystem.ActionManager.getInstance()
             .createActionToolbar("ok-script-tasks", actionGroup, true)
@@ -629,7 +635,7 @@ class TaskLauncherPanel(private val project: Project) {
             gbc,
         )
 
-        // 全局配置区（#7）：组行 hover 弹只读字段摘要
+        // 全局配置区：点击组行编辑快照，hover 显示只读摘要
         if (globalConfigGroups.isNotEmpty()) {
             gbc.gridy++
             paramPanel.add(
@@ -712,7 +718,7 @@ class TaskLauncherPanel(private val project: Project) {
         return row
     }
 
-    /** 全局配置组行（#7/#9 gpop）：组名 + source 标注 + 字段数，hover 弹只读摘要 */
+    /** 全局配置组行：组名 + source 标注 + 字段数，点击编辑、hover 看摘要 */
     private fun globalGroupRow(group: TaskLauncherService.GlobalConfigGroup): JPanel {
         val row = JPanel(FlowLayout(FlowLayout.LEFT, 6, 1))
         row.isOpaque = true
@@ -743,13 +749,61 @@ class TaskLauncherPanel(private val project: Project) {
             }
 
             override fun mouseClicked(e: java.awt.event.MouseEvent) {
-                // 弹出层只读、无交互按钮（用户硬规则）：点击只做抑制，不给第二条入口
                 hoverSuppressUntil = System.currentTimeMillis() + 1200
                 timer?.stop()
+                activeHoverPopup?.cancel()
+                editGlobalConfig(group)
             }
         }
         row.addMouseListener(adapter)
+        row.components.forEach { it.addMouseListener(adapter) }
         return row
+    }
+
+    private fun editGlobalConfig(group: TaskLauncherService.GlobalConfigGroup) {
+        val existing = taskService.loadGlobalConfigs()
+        val edited = GlobalConfigEditor.show(mainPanel, group, existing[group.name].orEmpty()) ?: return
+        if (edited.values == existing[group.name]) return
+        val snapshots = existing.toMutableMap().apply { put(group.name, edited.values) }
+        try {
+            taskService.saveGlobalConfigs(snapshots)
+            pushGlobalSnapshot(snapshots)
+            if (runCenterVisible) renderRunCenter(taskRunner.currentState())
+        } catch (e: Exception) {
+            LOG.warn("Failed to save global configuration", e)
+            JOptionPane.showMessageDialog(
+                mainPanel,
+                OkScriptToolkitBundle.message("taskLauncher.gconfigSaveFailed", e.message ?: ""),
+                group.displayName ?: group.name,
+                JOptionPane.ERROR_MESSAGE,
+            )
+        }
+    }
+
+    private fun openAccountEditor() {
+        val projectDir = checkedProjectPath(statusLabel, "taskLauncher.noProject") ?: return
+        if (!multiAccountInfo.hasStoreModule) {
+            JOptionPane.showMessageDialog(
+                mainPanel,
+                OkScriptToolkitBundle.message("taskLauncher.accountNoEditor"),
+                OkScriptToolkitBundle.message("taskLauncher.accounts"),
+                JOptionPane.WARNING_MESSAGE,
+            )
+            return
+        }
+        accountEditor?.takeIf { it.isOpen() }?.let {
+            it.focus()
+            return
+        }
+        accountEditor = AccountEditorDialog(
+            parent = mainPanel,
+            service = accountStoreService,
+            projectDir = projectDir,
+            info = multiAccountInfo,
+            schemas = schemas,
+            globalGroups = globalConfigGroups,
+            onAccountListSaved = { loadTasks() },
+        ).also { it.open() }
     }
 
     /** 行级区共用的 hover 背景/点击抑制适配器（点击回调由各行走） */
@@ -782,6 +836,7 @@ class TaskLauncherPanel(private val project: Project) {
     private fun showGroupSummaryPopup(anchorComponent: JComponent, group: TaskLauncherService.GlobalConfigGroup) {
         val content = JPanel(GridBagLayout())
         content.isOpaque = false
+        val effective = taskService.loadGlobalConfigs()[group.name].orEmpty()
         val gbc = GridBagConstraints().apply {
             gridx = 0
             gridy = 0
@@ -789,7 +844,8 @@ class TaskLauncherPanel(private val project: Project) {
             insets = Insets(2, 10, 2, 10)
         }
         for (field in group.fields.take(12)) {
-            content.add(JBLabel("${field.displayKey ?: field.key} = ${formatFieldValue(field)}"), gbc)
+            val value = if (effective.containsKey(field.key)) effective[field.key] else field.value ?: field.default
+            content.add(JBLabel("${field.displayKey ?: field.key} = ${formatFieldValue(value)}"), gbc)
             gbc.gridy++
         }
         if (group.fields.size > 12) {
@@ -908,8 +964,8 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     /** 字段值截断显示（弹层摘要用；不解析语义，只转文本） */
-    private fun formatFieldValue(field: TaskLauncherService.TaskParamField): String {
-        val raw = field.value ?: field.default ?: return "—"
+    private fun formatFieldValue(raw: Any?): String {
+        if (raw == null) return "—"
         val text = raw.toString()
         return if (text.length > 40) text.take(40) + "…" else text
     }
@@ -976,7 +1032,13 @@ class TaskLauncherPanel(private val project: Project) {
         overlayCheckBox.toolTipText = OkScriptToolkitBundle.message("toolbox.overlayHint")
         overlayCheckBox.addActionListener {
             if (updatingOverlayCheckbox) return@addActionListener
-            val projectDir = detectProjectPath()
+            val projectDir = checkedProjectPath(toolboxStatusLabel, "toolbox.noProject")
+            if (projectDir == null) {
+                updatingOverlayCheckbox = true
+                overlayCheckBox.isSelected = !overlayCheckBox.isSelected
+                updatingOverlayCheckbox = false
+                return@addActionListener
+            }
             val pythonPath = detectPythonPath()
             toolboxService.setOverlayEnabled(projectDir, pythonPath, overlayCheckBox.isSelected)
         }
@@ -1018,11 +1080,7 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     private fun connectGame() {
-        val projectDir = detectProjectPath()
-        if (projectDir.isBlank()) {
-            toolboxStatusLabel.text = OkScriptToolkitBundle.message("toolbox.noProject")
-            return
-        }
+        val projectDir = checkedProjectPath(toolboxStatusLabel, "toolbox.noProject") ?: return
         connectGameButton.isEnabled = false
         toolboxService.connectGame(projectDir, detectPythonPath()).whenComplete { _, _ ->
             SwingUtilities.invokeLater { connectGameButton.isEnabled = true }
@@ -1030,8 +1088,7 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     private fun disconnectGame() {
-        val projectDir = detectProjectPath()
-        if (projectDir.isBlank()) return
+        val projectDir = checkedProjectPath(toolboxStatusLabel, "toolbox.noProject") ?: return
         toolboxService.disconnectGame(projectDir, detectPythonPath())
     }
 
@@ -1050,6 +1107,19 @@ class TaskLauncherPanel(private val project: Project) {
         homeDir = System.getProperty("user.home").orEmpty(),
     )
 
+    private fun checkedProjectPath(messageLabel: JBLabel, missingKey: String): String? {
+        val path = detectProjectPath()
+        if (path.isBlank()) {
+            messageLabel.text = OkScriptToolkitBundle.message(missingKey)
+            return null
+        }
+        if (!ProjectDirResolution.isExistingDirectory(path)) {
+            messageLabel.text = OkScriptToolkitBundle.message("projectDir.invalid", path)
+            return null
+        }
+        return path
+    }
+
     private fun detectPythonPath(): String {
         val settings = OkScriptToolkitSettings.getInstance(project)
         val configured = settings.okScriptPython()
@@ -1066,11 +1136,7 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     private fun loadTasks() {
-        val projectDir = detectProjectPath()
-        if (projectDir.isBlank()) {
-            statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.noProject")
-            return
-        }
+        val projectDir = checkedProjectPath(statusLabel, "taskLauncher.noProject") ?: return
 
         statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.loading")
         progressBar.isIndeterminate = true
@@ -1180,8 +1246,12 @@ class TaskLauncherPanel(private val project: Project) {
             }
             // 运行中心「全局配置」区数据源（#7）
             globalConfigGroups = result.globalConfigGroups
+            multiAccountInfo = result.multiAccount
+            accountEditorAction.isEnabled2 = result.multiAccount.available || result.multiAccount.hasStoreModule
+            actionToolbar.updateActionsAsync()
+            accountEditor?.takeIf { it.isOpen() }?.updateMetadata(result.multiAccount, result.schemas, result.globalConfigGroups)
 
-            tasks = result.schemas.map { (key, schema) ->
+            tasks = result.schemas.filter { (_, schema) -> schema.showInTaskTab }.map { (key, schema) ->
                 val parts = key.split("::")
                 TaskLauncherService.TaskInfo(
                     module = parts.getOrElse(0) { "" },
@@ -1250,7 +1320,7 @@ class TaskLauncherPanel(private val project: Project) {
      * 物化全局配置快照并落盘（#7 配置接管）。
      *
      * 规则在 [GlobalSnapshotRules]（纯对象）：每组 existing 为空（首建）→ 全部继承
-     * f.value；非空（重探针）→ 已有键保留（孤儿键不删）、新键取 f.default ?: f.value。
+     * f.value；非空（重探针）→ 已有键保留（孤儿键不删）、新键取 f.defaultOrValue()。
      * 快照有实质变化时落盘，并在执行器运行中把新快照经 gparams 推给它 ——
      * 否则要重启执行器才生效（对齐 VS Code 侧 consolePanel 的物化+推送时机）。
      *
@@ -1635,6 +1705,8 @@ class TaskLauncherPanel(private val project: Project) {
             val body = JPanel(GridBagLayout())
             val stateKey = "$taskKey::${path.joinToString(">")}"
 
+            val toggle = buildToggle(body, stateKey)
+
             // 组头字段（始终可见）；其 boolean 行内子字段留在组体内
             if (headerField != null && fieldsByKey.containsKey(headerField)) {
                 val field = fieldsByKey.getValue(headerField)
@@ -1661,16 +1733,13 @@ class TaskLauncherPanel(private val project: Project) {
                 headerPanel.isOpaque = false
                 headerPanel.add(fieldLabel, BorderLayout.WEST)
                 headerPanel.add(component, BorderLayout.CENTER)
-                val toggle = buildToggle(body, stateKey)
                 headerPanel.add(toggle, BorderLayout.EAST)
                 val groupPanel = buildGroupPanel(labelOf = null, header = headerPanel, body = body)
                 addToContainer(container, groupPanel)
-                return true
+            } else {
+                val groupPanel = buildGroupPanel(labelOf = label, header = null, body = body, toggle = toggle)
+                addToContainer(container, groupPanel)
             }
-
-            val toggle = buildToggle(body, stateKey)
-            val groupPanel = buildGroupPanel(labelOf = label, header = null, body = body, toggle = toggle)
-            addToContainer(container, groupPanel)
 
             val childKeys = children.distinct().filter { it != headerField }
             for (child in childKeys) {
@@ -2303,12 +2372,8 @@ class TaskLauncherPanel(private val project: Project) {
      * 轮询；一次性任务经 stdin 入队。环境变量里带上启用集合与全量参数覆盖。
      */
     private fun ensureExecutor(): Boolean {
+        val projectDir = checkedProjectPath(statusLabel, "taskLauncher.noProject") ?: return false
         if (taskRunner.isRunning()) return true
-        val projectDir = detectProjectPath()
-        if (projectDir.isBlank()) {
-            statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.noProject")
-            return false
-        }
         val pythonPath = detectPythonPath()
 
         val env = mutableMapOf<String, String>()
@@ -2525,6 +2590,7 @@ class TaskLauncherPanel(private val project: Project) {
         toolboxService.removeStateListener(toolboxStateListener)
         toolboxService.removeStatusListener(toolboxStatusListener)
         taskRunner.removeStateListener(runnerStateListener)
+        accountEditor?.close()
     }
 }
 

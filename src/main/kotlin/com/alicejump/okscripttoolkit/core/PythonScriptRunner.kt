@@ -147,6 +147,7 @@ object PythonScriptLocator {
         "parse_config_tasks.py",
         "probe_task_schemas.py",
         "run_executor.py",
+        "account_store.py",
         "capture_game_window.py",
         "probe_window_config.py",
         "connect_game.py",

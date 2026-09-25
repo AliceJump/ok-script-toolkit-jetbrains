@@ -59,12 +59,16 @@ class TaskLauncherService(private val project: Project) {
         val key: String,
         val displayKey: String? = null,
         val default: Any? = null,
+        /** JSON 中是否显式声明 default；显式 null 与缺键含义不同。 */
+        val hasDefault: Boolean = false,
         val value: Any? = null,
         /** 字段类型描述（schema 原样透传给前端渲染器，不做校验） */
         val type: Map<String, Any>? = null,
         val desc: String? = null,
         val displayDesc: String? = null,
-    )
+    ) {
+        fun defaultOrValue(): Any? = if (hasDefault || default != null) default else value
+    }
 
     data class TaskSchema(
         val fields: List<TaskParamField> = emptyList(),
@@ -73,6 +77,7 @@ class TaskLauncherService(private val project: Project) {
         val displayName: String? = null,
         val description: String? = null,
         val kind: String? = null,
+        val showInTaskTab: Boolean = true,
         val configGroups: Map<String, List<String>>? = null,
         val groupLabels: Map<String, String>? = null,
         val groupSelector: String? = null,
@@ -94,6 +99,22 @@ class TaskLauncherService(private val project: Project) {
         val source: String? = null,
     )
 
+    data class MultiAccountEnabledTask(
+        val storageName: String,
+        val keys: List<String> = emptyList(),
+        val global: Boolean = false,
+    )
+
+    data class MultiAccountInfo(
+        val available: Boolean = false,
+        val hasStoreModule: Boolean = false,
+        val storePath: String? = null,
+        val readable: Boolean? = null,
+        val accountCount: Int? = null,
+        val overrideAccounts: Int? = null,
+        val enabledTasks: Map<String, MultiAccountEnabledTask> = emptyMap(),
+    )
+
     data class SchemaProbeResult(
         val ok: Boolean,
         val error: String? = null,
@@ -104,6 +125,7 @@ class TaskLauncherService(private val project: Project) {
         val configModule: String? = null,
         /** 全局配置组快照源数据（#7 配置接管）；采集失败为空列表不影响任务 schema */
         val globalConfigGroups: List<GlobalConfigGroup> = emptyList(),
+        val multiAccount: MultiAccountInfo = MultiAccountInfo(),
     )
 
     data class TaskConfig(
@@ -257,6 +279,7 @@ class TaskLauncherService(private val project: Project) {
                 locale = locale,
                 configModule = configModule,
                 globalConfigGroups = parseGlobalConfigGroups(parsed),
+                multiAccount = parseMultiAccount(parsed.get("multiAccount")),
             )
         } catch (e: Exception) {
             LOG.error("Failed to probe task schemas", e)
@@ -274,6 +297,7 @@ class TaskLauncherService(private val project: Project) {
                         key = fieldNode.get("key").asText(),
                         displayKey = fieldNode.get("displayKey")?.asText(null),
                         default = fieldNode.get("default")?.let { objectMapper.convertValue(it, Any::class.java) },
+                        hasDefault = fieldNode.has("default"),
                         value = fieldNode.get("value")?.let { objectMapper.convertValue(it, Any::class.java) },
                         type = fieldNode.get("type")?.takeIf { !it.isNull }?.let {
                             @Suppress("UNCHECKED_CAST")
@@ -291,6 +315,7 @@ class TaskLauncherService(private val project: Project) {
                 displayName = schemaNode.get("displayName")?.asText(null),
                 description = schemaNode.get("description")?.asText(null),
                 kind = schemaNode.get("kind")?.asText(null),
+                showInTaskTab = schemaNode.get("showInTaskTab")?.asBoolean() ?: true,
                 configGroups = schemaNode.get("configGroups")?.takeIf { !it.isNull }?.let {
                     @Suppress("UNCHECKED_CAST")
                     objectMapper.convertValue(it, Map::class.java) as? Map<String, List<String>>
@@ -325,6 +350,7 @@ class TaskLauncherService(private val project: Project) {
                             key = key,
                             displayKey = fieldNode.get("displayKey")?.asText(null),
                             default = fieldNode.get("default")?.let { objectMapper.convertValue(it, Any::class.java) },
+                            hasDefault = fieldNode.has("default"),
                             value = fieldNode.get("value")?.let { objectMapper.convertValue(it, Any::class.java) },
                             type = fieldNode.get("type")?.takeIf { !it.isNull }?.let {
                                 @Suppress("UNCHECKED_CAST")
@@ -353,6 +379,31 @@ class TaskLauncherService(private val project: Project) {
             }
         }
         return groups
+    }
+
+    private fun parseMultiAccount(node: JsonNode?): MultiAccountInfo {
+        if (node == null || !node.isObject) return MultiAccountInfo()
+        val enabled = linkedMapOf<String, MultiAccountEnabledTask>()
+        node.get("enabledTasks")?.takeIf { it.isObject }?.forEachField { key, value ->
+            if (!value.isObject) return@forEachField
+            val keys = value.get("keys")?.takeIf { it.isArray }
+                ?.mapNotNull { item -> item.takeIf { it.isTextual }?.asText() }
+                .orEmpty()
+            enabled[key] = MultiAccountEnabledTask(
+                storageName = value.get("storageName")?.asText(null).orEmpty().ifBlank { key.substringAfter("::", key) },
+                keys = keys,
+                global = value.get("global")?.asBoolean() == true,
+            )
+        }
+        return MultiAccountInfo(
+            available = node.get("available")?.asBoolean() == true,
+            hasStoreModule = node.get("hasStoreModule")?.asBoolean() == true,
+            storePath = node.get("storePath")?.asText(null),
+            readable = node.get("readable")?.asBoolean(),
+            accountCount = node.get("accountCount")?.asInt(),
+            overrideAccounts = node.get("overrideAccounts")?.asInt(),
+            enabledTasks = enabled,
+        )
     }
 
     // ── Run command builder ───────────────────────────────────────────
@@ -523,7 +574,12 @@ class TaskLauncherService(private val project: Project) {
         return try {
             // 手动从 JsonNode 解析：SchemaProbeResult 是 Kotlin data class，没有 Jackson 需要的
             // Creator，readValue 会直接抛 "no Creators"（缓存此前从未加载成功过）。
-            val cached = parseSchemaProbeResult(objectMapper.readTree(cacheFile))
+            val cacheNode = objectMapper.readTree(cacheFile)
+            val cached = parseSchemaProbeResult(cacheNode)
+            // 旧缓存缺少可编辑键集，必须重探针，避免账号覆盖误用空 schema。
+            if (cached.multiAccount.available && cacheNode.path("multiAccount").get("enabledTasks") == null) {
+                return SchemaProbeResult(ok = false, error = "Schema cache lacks multi-account keys")
+            }
             val cachedLocale = cached.locale
                 ?: cached.schemas?.values?.firstOrNull()?.locale
             if (cached.projectDir == projectDir && cachedLocale == locale) {
@@ -548,6 +604,7 @@ class TaskLauncherService(private val project: Project) {
             configModule = node.get("configModule")?.asText(null),
             // 缓存里旧版本没有该键 → 空列表（物化规则对空输入零操作，安全）
             globalConfigGroups = parseGlobalConfigGroups(node),
+            multiAccount = parseMultiAccount(node.get("multiAccount")),
         )
     }
 

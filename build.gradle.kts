@@ -13,16 +13,16 @@ repositories {
     }
 }
 
-// 把 Python 脚本打包进插件 resources（python/ 在 ok-script-toolkit/python/，jetbrains 的上一层）
-val pythonDir = project.rootDir.resolve("../python").normalize()
-val distributableTasks = setOf("verifyPlugin", "runPluginVerifier", "publishPlugin", "signPlugin")
+// 默认从父仓 python/ 打包；子仓独立 CI 可用 -PpythonScriptsDir 指向另外检出的父仓。
+val configuredPythonDir = providers.gradleProperty("pythonScriptsDir").orNull
+val pythonDir = configuredPythonDir?.let { configured ->
+    val path = File(configured)
+    (if (path.isAbsolute) path else project.rootDir.resolve(path)).normalize()
+} ?: project.rootDir.resolve("../python").normalize()
+val distributableTasks = setOf("buildPlugin", "verifyPlugin", "runPluginVerifier", "publishPlugin", "signPlugin")
 
-// ../python 不存在 = 只检出了 jetbrains 子仓库（子仓库自己的 CI 就是这样）。
-// 这时普通构建照常走（Copy 空跑，产物里没有 python/，CI 只当冒烟产物用）；
-// 但**发布/验证流水线**（verifyPlugin / runPluginVerifier / publishPlugin / signPlugin）
-// 必须带 Python 脚本，否则打出来的插件跑不了任务，直接报错中止。
-// 注意不要把 buildPlugin 放进这个集合：子仓库独立 CI 会请求 buildPlugin，
-// 放进去会让它必然失败。
+// 打包/验证必须带共享 Python 脚本；否则 ZIP 可生成但任务启动必然失败。
+// 单独运行 test/compileKotlin 时仍可没有父仓目录。
 //
 // 检查必须放在**配置阶段**，不要在任务上挂 onlyIf：
 // 本项目的 Gradle 版本下，copyPythonScripts 上的 onlyIf 会让 configuration cache
@@ -32,12 +32,13 @@ val distributableTasks = setOf("verifyPlugin", "runPluginVerifier", "publishPlug
 // 缺脚本时 Copy 任务本来就只是空跑，不需要 onlyIf 兜底。
 if (!pythonDir.isDirectory) {
     val isDistributable = gradle.startParameter.taskNames.any { requested ->
-        distributableTasks.any { name -> name.contains(requested, ignoreCase = true) }
+        val taskName = requested.substringAfterLast(':')
+        distributableTasks.any { name -> name.equals(taskName, ignoreCase = true) }
     }
     if (isDistributable) {
         throw GradleException("Python scripts not found at ${pythonDir.absolutePath}. Required for distributable builds.")
     }
-    logger.warn("Warning: ../python directory not found, skipping Python script packaging")
+    logger.warn("Warning: ${pythonDir.absolutePath} not found, skipping Python script packaging")
 }
 
 // 用 Sync 而不是 Copy：`Copy` **不会删除源里已移除的文件**，于是从 python/ 删掉的脚本

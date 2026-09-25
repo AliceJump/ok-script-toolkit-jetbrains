@@ -149,6 +149,12 @@ To build the plugin from source instead, see [Build](#build).
 
 ## Build
 
+Build from a checkout of the parent `ok-script-toolkit` repository with this submodule
+initialized. The shared `python/` scripts must be in the parent directory. If this
+repository was checked out on its own, obtain the parent repository's `python/`
+directory and pass `-PpythonScriptsDir=/absolute/path/to/ok-script-toolkit/python`.
+`buildPlugin` fails when those scripts are missing so it cannot produce an unusable ZIP.
+
 Use the bundled wrapper from this directory:
 
 ```bash
