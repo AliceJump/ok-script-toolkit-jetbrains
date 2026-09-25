@@ -1320,7 +1320,7 @@ class TaskLauncherPanel(private val project: Project) {
      * 物化全局配置快照并落盘（#7 配置接管）。
      *
      * 规则在 [GlobalSnapshotRules]（纯对象）：每组 existing 为空（首建）→ 全部继承
-     * f.value；非空（重探针）→ 已有键保留（孤儿键不删）、新键取 f.default ?: f.value。
+     * f.value；非空（重探针）→ 已有键保留（孤儿键不删）、新键取 f.defaultOrValue()。
      * 快照有实质变化时落盘，并在执行器运行中把新快照经 gparams 推给它 ——
      * 否则要重启执行器才生效（对齐 VS Code 侧 consolePanel 的物化+推送时机）。
      *

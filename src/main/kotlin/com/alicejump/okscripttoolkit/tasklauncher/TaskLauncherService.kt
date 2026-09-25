@@ -59,12 +59,16 @@ class TaskLauncherService(private val project: Project) {
         val key: String,
         val displayKey: String? = null,
         val default: Any? = null,
+        /** JSON 中是否显式声明 default；显式 null 与缺键含义不同。 */
+        val hasDefault: Boolean = false,
         val value: Any? = null,
         /** 字段类型描述（schema 原样透传给前端渲染器，不做校验） */
         val type: Map<String, Any>? = null,
         val desc: String? = null,
         val displayDesc: String? = null,
-    )
+    ) {
+        fun defaultOrValue(): Any? = if (hasDefault || default != null) default else value
+    }
 
     data class TaskSchema(
         val fields: List<TaskParamField> = emptyList(),
@@ -293,6 +297,7 @@ class TaskLauncherService(private val project: Project) {
                         key = fieldNode.get("key").asText(),
                         displayKey = fieldNode.get("displayKey")?.asText(null),
                         default = fieldNode.get("default")?.let { objectMapper.convertValue(it, Any::class.java) },
+                        hasDefault = fieldNode.has("default"),
                         value = fieldNode.get("value")?.let { objectMapper.convertValue(it, Any::class.java) },
                         type = fieldNode.get("type")?.takeIf { !it.isNull }?.let {
                             @Suppress("UNCHECKED_CAST")
@@ -345,6 +350,7 @@ class TaskLauncherService(private val project: Project) {
                             key = key,
                             displayKey = fieldNode.get("displayKey")?.asText(null),
                             default = fieldNode.get("default")?.let { objectMapper.convertValue(it, Any::class.java) },
+                            hasDefault = fieldNode.has("default"),
                             value = fieldNode.get("value")?.let { objectMapper.convertValue(it, Any::class.java) },
                             type = fieldNode.get("type")?.takeIf { !it.isNull }?.let {
                                 @Suppress("UNCHECKED_CAST")

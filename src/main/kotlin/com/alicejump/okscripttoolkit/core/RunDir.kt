@@ -7,8 +7,8 @@ import java.io.File
  *
  * 三处必须一致，任何一处写死都会静默错位：
  *  1. 插件侧：启动执行器 / 探测探针时经环境变量传入（[ENV]）；
- *  2. 脚本侧：`run_executor.py` / `account_store.py` / `probe_task_schemas.py`
- *     都读同一个变量名，不设时各自退回自己的历史默认值；
+ *  2. 脚本侧：`run_executor.py` / `probe_task_schemas.py` 读 [ENV]，
+ *     `account_store.py` 读 `--run-dir`；三者都必须收到 [forProject] 的结果；
  *  3. 落点：本插件的任务配置、schema 缓存、账号覆盖都在这个目录下。
  *
  * ⚠️ 两端沙箱目录**不同名**：VS Code 是 `.vscode/ok-script-toolkit`，JetBrains 是

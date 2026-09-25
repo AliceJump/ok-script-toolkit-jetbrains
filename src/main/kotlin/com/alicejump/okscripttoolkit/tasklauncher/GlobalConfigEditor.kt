@@ -33,14 +33,14 @@ internal object GlobalConfigEditor {
         parent: Component,
         group: TaskLauncherService.GlobalConfigGroup,
         existing: Map<String, Any?>,
-        sparse: Boolean = false,
+        accountOverride: Boolean = false,
     ): Result? {
         val controls = group.fields.map { field ->
             val value = if (existing.containsKey(field.key)) existing[field.key] else field.value ?: field.default
             makeControl(field, value)
         }
         // 比较控件的初始读数，而不是 schema 原始值：某些控件会把 null 呈现为
-        // 未勾选或空文本。账号覆盖保存时，这些未触碰控件不能变成新的覆盖键。
+        // 未勾选或空文本。未触碰的字段不能在保存其它字段时被改写。
         val initialValues = controls.associate { control ->
             control.field.key to runCatching { control.read() }.getOrNull()
         }
@@ -63,7 +63,7 @@ internal object GlobalConfigEditor {
             preferredSize = Dimension(640, (controls.size * 42 + 16).coerceIn(120, 480))
             border = null
         }
-        val options = if (sparse) arrayOf(
+        val options = if (accountOverride) arrayOf(
             OkScriptToolkitBundle.message("annotation.save"),
             OkScriptToolkitBundle.message("annotation.cancel"),
         ) else arrayOf(
@@ -90,7 +90,7 @@ internal object GlobalConfigEditor {
                     for (control in controls) {
                         try {
                             val value = control.read()
-                            if (!sparse || value != initialValues[control.field.key]) {
+                            if (value != initialValues[control.field.key]) {
                                 values[control.field.key] = value
                             }
                         } catch (_: IllegalArgumentException) {
@@ -110,14 +110,14 @@ internal object GlobalConfigEditor {
                     return Result(values)
                 }
                 1 -> {
-                    if (sparse) return null
+                    if (accountOverride) return null
                     val values = existing.toMutableMap()
                     for (field in group.fields) {
-                        if (!values.containsKey(field.key)) values[field.key] = field.default ?: field.value
+                        if (!values.containsKey(field.key)) values[field.key] = field.defaultOrValue()
                     }
                     return Result(values)
                 }
-                2 -> if (!sparse) return Result(GlobalSnapshotRules.resetToDefaults(existing, group.fields)) else return null
+                2 -> if (!accountOverride) return Result(GlobalSnapshotRules.resetToDefaults(existing, group.fields)) else return null
                 else -> return null
             }
         }
@@ -126,10 +126,17 @@ internal object GlobalConfigEditor {
     private fun makeControl(field: TaskLauncherService.TaskParamField, value: Any?): FieldControl {
         val typeName = field.type?.get("type")?.toString().orEmpty()
         val options = field.type?.get("options") as? List<*>
-        if (!options.isNullOrEmpty() && (typeName == "drop_down" || value !is List<*>)) {
+        if (!options.isNullOrEmpty() && (typeName == "drop_down" || (typeName.isEmpty() && value !is List<*>))) {
             val combo = JComboBox(options.toTypedArray())
             val index = options.indexOf(value)
-            if (index >= 0) combo.selectedIndex = index
+            if (index >= 0) {
+                combo.selectedIndex = index
+            } else if (value != null) {
+                combo.insertItemAt(value, 0)
+                combo.selectedIndex = 0
+            } else {
+                combo.selectedIndex = -1
+            }
             return FieldControl(field, combo) { combo.selectedItem }
         }
         if (typeName == "bool" || value is Boolean) {

@@ -185,8 +185,8 @@ internal class AccountEditorDialog(
         future.whenComplete { result, failure ->
             SwingUtilities.invokeLater {
                 if (!dialog.isDisplayable) return@invokeLater
-                setBusy(false)
                 if (failure != null) {
+                    setBusy(false)
                     val error = (failure.cause ?: failure).message.orEmpty()
                     status.text = msg("taskLauncher.accountOperationFailed", error)
                     JOptionPane.showMessageDialog(
@@ -197,8 +197,11 @@ internal class AccountEditorDialog(
                     )
                 } else if (result != null) {
                     refreshData(result)
+                    setBusy(false)
                     status.text = msg(successKey)
                     afterSuccess()
+                } else {
+                    setBusy(false)
                 }
             }
         }
@@ -284,9 +287,9 @@ internal class AccountEditorDialog(
         val group = TaskLauncherService.GlobalConfigGroup(
             name = target.storageName,
             displayName = target.label,
-            fields = target.fields.map { it.copy(value = it.default ?: it.value) },
+            fields = target.fields.map { it.copy(value = it.defaultOrValue()) },
         )
-        val edited = GlobalConfigEditor.show(dialog, group, existing, sparse = true) ?: return
+        val edited = GlobalConfigEditor.show(dialog, group, existing, accountOverride = true) ?: return
         if (edited.values == existing) return
         perform(service.setOverride(projectDir, account, target.storageName, edited.values), "taskLauncher.accountSaved")
     }
@@ -310,7 +313,7 @@ internal class AccountEditorDialog(
     }
 
     private fun coerceValue(field: TaskLauncherService.TaskParamField?, value: Any?): Any? {
-        val reference = field?.default ?: field?.value
+        val reference = field?.defaultOrValue()
         if (value !is String) return value
         return when (reference) {
             is Boolean -> when (value.trim().lowercase()) {
