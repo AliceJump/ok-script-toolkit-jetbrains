@@ -3,6 +3,7 @@ package com.alicejump.okscripttoolkit.ui
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.LabelEnumGuard
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
+import com.alicejump.okscripttoolkit.core.ProjectDirResolution
 import com.alicejump.okscripttoolkit.core.SaveToAssetsFlow
 import com.alicejump.okscripttoolkit.core.ScreenshotCapture
 import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
@@ -125,6 +126,13 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         com.intellij.openapi.project.DumbService.getInstance(project).runWhenSmart {
             loadData()
         }
+    }
+
+    private fun projectDirectoryError(projectDir: String): String? = when {
+        projectDir.isBlank() -> OkScriptToolkitBundle.message("taskLauncher.noProject")
+        !ProjectDirResolution.isExistingDirectory(projectDir) ->
+            OkScriptToolkitBundle.message("projectDir.invalid", projectDir)
+        else -> null
     }
 
     private fun initUI() {
@@ -424,12 +432,16 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     private fun handleScreenshot() {
         val templatesDirName = OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory()
         val projectDir = ScreenshotCapture.detectProjectDir(project)
+        val projectRoot = projectDir.ifBlank { project.basePath.orEmpty() }
+        projectDirectoryError(projectRoot)?.let { error ->
+            statusLabel.text = error
+            notify(error, NotificationType.ERROR)
+            return
+        }
 
         statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotProbing")
         val methodOverride = HardForegroundToggle.methodOverride(hardForegroundCheck)
         CompletableFuture.supplyAsync<Pair<Path?, String?>> {
-            val projectRoot = projectDir.ifBlank { project.basePath.orEmpty() }
-                .ifBlank { return@supplyAsync null to "no project dir" }
             val base = Paths.get(projectRoot)
             val outputDir = if (Files.isDirectory(base.resolve(templatesDirName))) {
                 base.resolve(templatesDirName)
@@ -466,7 +478,12 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         val file = outputPath.toFile()
         try {
             val settings = OkScriptToolkitSettings.getInstance(project)
-            val projectDir = settings.okScriptProjectPath().ifBlank { project.basePath ?: "" }
+            val projectDir = ScreenshotCapture.detectProjectDir(project).ifBlank { project.basePath.orEmpty() }
+            projectDirectoryError(projectDir)?.let { error ->
+                statusLabel.text = error
+                notify(error, NotificationType.ERROR)
+                return
+            }
             data.load(projectDir, settings.okTemplatesDirectory())
             val existingImage = data.getImageEntryForFile(file.name)
             if (existingImage != null) {
@@ -627,11 +644,9 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             notify(OkScriptToolkitBundle.message("templateAsset.exportNoAnnotations"), NotificationType.WARNING)
             return
         }
-        val projectDir = OkScriptToolkitSettings.getInstance(project).okScriptProjectPath().ifBlank {
-            project.basePath ?: ""
-        }
-        if (projectDir.isBlank()) {
-            notify(OkScriptToolkitBundle.message("taskLauncher.noProject"), NotificationType.WARNING)
+        val projectDir = ScreenshotCapture.detectProjectDir(project)
+        projectDirectoryError(projectDir)?.let { error ->
+            notify(error, NotificationType.WARNING)
             return
         }
 

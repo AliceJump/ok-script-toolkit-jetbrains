@@ -28,10 +28,10 @@ class ScreenshotCapture(private val project: Project) {
         private val LOG = Logger.getInstance(ScreenshotCapture::class.java)
         private val JSON = ObjectMapper()
 
-        /** ok-script 项目根：设置优先，回退到含 src/config.py / config.py 的工作区。 */
+        /** ok-script 项目根：显式设置优先；仅未设置时检测工作区。 */
         fun detectProjectDir(project: Project): String {
             val settings = OkScriptToolkitSettings.getInstance(project)
-            // 谓词不必在这里写：便捷重载用真实文件系统判定，三个消费点共用同一份
+            // 自动检测谓词不必在这里写：便捷重载统一处理，三个消费点共用同一份
             // （这里 / TaskLauncherToolWindowFactory / ProjectConventionConfig）。
             val dir = ProjectDirResolution.resolve(
                 configured = settings.okScriptProjectPath(),
@@ -585,8 +585,13 @@ class ScreenshotCapture(private val project: Project) {
         onProbed: ((WindowConfig) -> Unit)? = null,
     ): String? {
         val projectDir = detectProjectDir(project)
-        val pythonPath = detectPythonPath(projectDir, project)
-        val probed = probeWindowConfig(projectDir, pythonPath)
+        val projectRoot = projectDir.ifBlank { project.basePath.orEmpty() }
+        if (projectRoot.isBlank()) return OkScriptToolkitBundle0.message("taskLauncher.noProject")
+        if (!ProjectDirResolution.isExistingDirectory(projectRoot)) {
+            return OkScriptToolkitBundle0.message("projectDir.invalid", projectRoot)
+        }
+        val pythonPath = detectPythonPath(projectRoot, project)
+        val probed = probeWindowConfig(projectRoot, pythonPath)
         val usable = probed != null &&
             (!probed.exe.isNullOrEmpty() || !probed.title.isNullOrBlank() || !probed.hwndClass.isNullOrBlank())
 
@@ -609,9 +614,6 @@ class ScreenshotCapture(private val project: Project) {
             if (input == null) return CANCELLED
             titleRegex = input.trim()
         }
-
-        val projectRoot = projectDir.ifBlank { project.basePath ?: "" }
-        if (projectRoot.isBlank()) return OkScriptToolkitBundle0.message("taskLauncher.noProject")
 
         val error = StringBuilder()
         val result = capture(projectRoot, pythonPath, outputPath, config, titleRegex, error, methodOverride)
