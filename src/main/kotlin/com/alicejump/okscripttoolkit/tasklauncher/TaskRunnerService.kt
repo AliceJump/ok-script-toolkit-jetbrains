@@ -511,7 +511,10 @@ class TaskRunnerService(private val project: Project) : Disposable {
             writer.flush()
             true
         } catch (e: Exception) {
-            LOG.warn("Failed to send control command: $command", e)
+            // 只记命令名不记参数：gparams/params 的 JSON 快照可能含用户配置里的
+            // 敏感值，写进 IDE 日志就是泄露（CWE-532，CodeRabbit Major 意见）
+            val commandName = command.substringBefore(' ')
+            LOG.warn("Failed to send control command: $commandName", e)
             recordAndEmit(OkScriptToolkitBundle.message("toolbox.sendCommandFailed", e.message ?: ""))
             false
         }
