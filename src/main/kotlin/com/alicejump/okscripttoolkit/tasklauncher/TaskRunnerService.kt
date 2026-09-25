@@ -68,6 +68,8 @@ class TaskRunnerService(private val project: Project) : Disposable {
     data class ExecutorState(
         /** idle（未启动）/ connecting（启动中）/ running（已连接并轮询） */
         val status: String = "idle",
+        /** 进程退出码：null = 用户关闭 / 启动失败（无退出信息）；非 0 = 异常退出 */
+        val exitCode: Int? = null,
         val paused: Boolean = false,
         /** 当前正在执行的任务 key（module::Class），空闲为空串 */
         val current: String = "",
@@ -394,6 +396,7 @@ class TaskRunnerService(private val project: Project) : Disposable {
         }
         snapshot = ExecutorState(
             status = "idle",
+            exitCode = exitCode,
             // 保留启用集合，重开工具窗 / 重启执行器时沿用用户勾选
             enabledTriggers = snapshot.enabledTriggers,
             finishMessage = message,

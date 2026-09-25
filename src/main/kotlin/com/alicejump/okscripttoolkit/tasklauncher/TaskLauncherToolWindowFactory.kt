@@ -283,7 +283,9 @@ class TaskLauncherPanel(private val project: Project) {
             state.controlError != null -> TaskLauncherTheme.ERR
             state.status == "running" && state.paused -> TaskLauncherTheme.PAUSE
             state.status == "running" || state.status == "connecting" -> TaskLauncherTheme.RUN
-            state.finishMessage != null -> TaskLauncherTheme.OK
+            // 正常结束（退出码 0 或用户关闭无退出码）才是绿色；非 0 退出码 = 异常退出 → 红
+            state.finishMessage != null && (state.exitCode == null || state.exitCode == 0) -> TaskLauncherTheme.OK
+            state.finishMessage != null -> TaskLauncherTheme.ERR
             else -> UIUtil.getLabelDisabledForeground()
         }
         val running = state.status == "running" && state.current.isNotEmpty()
@@ -667,9 +669,21 @@ class TaskLauncherPanel(private val project: Project) {
             fill = GridBagConstraints.HORIZONTAL
             anchor = GridBagConstraints.WEST
         }
-        val receiver = JPanel(BorderLayout())
-        receiver.isOpaque = false
+        // 纵向布局：构建器是无约束 panel.add(...)（队列/触发/配置组都是多行循环加），
+        // 若用 BorderLayout 只会保留最后一行（CodeRabbit Major 意见）。
+        // BoxLayout 下子组件默认水平居中，build 后统一左对齐让其占满宽度。
+        val receiver = JPanel().apply {
+            layout = BoxLayout(this, BoxLayout.Y_AXIS)
+            isOpaque = false
+        }
         build(receiver)
+        for (child in receiver.components) {
+            (child as? javax.swing.JComponent)?.let {
+                // 显式 setter：Component 静态类型上 alignmentX 是只读合成属性
+                it.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT)
+                it.setAlignmentY(java.awt.Component.TOP_ALIGNMENT)
+            }
+        }
         body.add(receiver, gbc)
         section.add(body, BorderLayout.CENTER)
         return section
