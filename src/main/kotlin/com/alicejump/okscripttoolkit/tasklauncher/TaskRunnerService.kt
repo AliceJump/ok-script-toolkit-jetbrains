@@ -374,14 +374,16 @@ class TaskRunnerService(private val project: Project) : Disposable {
 
             } catch (e: Exception) {
                 LOG.error("Failed to start executor", e)
-                recordAndEmit(OkScriptToolkitBundle.message("taskLauncher.launchFailed", e.message ?: ""))
-                onExecutorExit(null)
+                val message = OkScriptToolkitBundle.message("taskLauncher.launchFailed", e.message ?: "")
+                recordAndEmit(message)
+                // 启动失败≠用户关闭：经 controlError 标记，健康条显红而不是绿色
+                onExecutorExit(null, startupError = message)
             }
         }
         return true
     }
 
-    private fun onExecutorExit(exitCode: Int?) {
+    private fun onExecutorExit(exitCode: Int?, startupError: String? = null) {
         val wasForced = forceKillTask != null
         cancelForceKill()
         process = null
@@ -397,6 +399,8 @@ class TaskRunnerService(private val project: Project) : Disposable {
         snapshot = ExecutorState(
             status = "idle",
             exitCode = exitCode,
+            // 启动失败时非空：健康条据此显红（正常退出/用户关闭保持绿）
+            controlError = startupError,
             // 保留启用集合，重开工具窗 / 重启执行器时沿用用户勾选
             enabledTriggers = snapshot.enabledTriggers,
             finishMessage = message,
