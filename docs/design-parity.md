@@ -3,7 +3,8 @@
 > 对应主仓库 PR：#8/#9（运行中心 + 健康度条 + 悬停弹层）、#10（sidebar 规范 + token 化）、
 > #7（配置接管 Phase 1-6）。本文件是 Kotlin/Swing 侧的**等价物规格**：
 > VS Code 侧靠 CSS token 与 webview，Swing 没有 CSS，逐项给出 IntelliJ 平台等价物。
-> 审计结论见父仓 `.workbuddy/design/jetbrains-parity-audit.md`（2026-09-25）。
+> 审计结论原稿在父仓本地工作目录 `.workbuddy/design/jetbrains-parity-audit.md`（2026-09-25；
+> `.workbuddy/` 不入库、仅本机可见，结论已吸收进本文与代码）。
 
 ## 0. 范围
 
