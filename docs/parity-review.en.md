@@ -24,6 +24,12 @@ Next review should override this table and update the status.
 > **2026-09-21 follow-up**: the project-convention-file section had drifted again — it listed
 > only 4 wired fields while all of them are now wired (including the new `config.py` fact
 > layer). That section is rewritten here. Baseline bumped v1.7.1 → v1.8.0.
+>
+> **⚠️ The baseline is frozen at v1.8.0 (2026-09-21)**. Parity work from main-repo
+> v1.9.0 → v1.13.0 (console rework, config takeover Phases 1-6, health bar / run center /
+> hover popups and their Kotlin ports) is recorded in
+> [`design-parity.md`](design-parity.md) and is not folded into this table —
+> read both documents together with the code.
 
 ---
 
@@ -160,6 +166,7 @@ Remaining gaps are two kinds: **one annotation-editor save-semantics difference*
 
 | Item | VSCode (parent) | JetBrains (sub-repo) |
 |---|---|---|
+| Project convention file | `<project>/ok-script-toolkit.json` (**debugged project's** root) | Same — both editions read the same file, read-only |
 | Config sandbox | `<workspace>/.vscode/ok-script-toolkit` | `<project>/.idea/ok-script-toolkit` |
 | Task config / enabled set | `.vscode/ok-script-toolkit-tasks.json` | `.idea/ok-script-toolkit-tasks.json` |
 | Schema cache | `.vscode/ok-script-toolkit-schema.json` | `.idea/ok-script-toolkit-schema.json` |
