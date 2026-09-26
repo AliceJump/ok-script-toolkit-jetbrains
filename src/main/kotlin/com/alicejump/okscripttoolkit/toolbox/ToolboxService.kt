@@ -11,7 +11,9 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import java.io.File
+import java.nio.file.Files
 import java.nio.file.Paths
+import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
@@ -109,7 +111,7 @@ class ToolboxService(private val project: Project) : Disposable {
     @Volatile
     private var executorRunning = false
 
-    /** 连接进行中标记（防重入；UI 据此禁用连接按钮） */
+    /** 连接或断开进行中标记，防止两种操作交错覆盖状态。 */
     private val connecting = AtomicBoolean(false)
 
     // ── State access ──────────────────────────────────────────────────
@@ -150,23 +152,32 @@ class ToolboxService(private val project: Project) : Disposable {
     }
 
     /** 合并写入状态并通知订阅者（调用线程任意；回调统一切到 EDT） */
-    private fun saveState(projectDir: String, patch: (ToolboxState) -> ToolboxState): ToolboxState {
+    private fun saveState(projectDir: String, strict: Boolean = false, patch: (ToolboxState) -> ToolboxState): ToolboxState {
         require(projectDir.isNotBlank()) { "projectDir must not be blank" }
         val next = synchronized(storeLock) {
-            val current = cache[projectDir] ?: readStoreFile()[projectDir] ?: ToolboxState()
+            val current = cache[projectDir] ?: readStoreFile(strict)[projectDir] ?: ToolboxState()
             val updated = patch(current)
-            cache[projectDir] = updated
-            // 合并写回整个 store，避免覆盖其它项目条目；写入失败不影响内存态
-            val store = readStoreFile().toMutableMap()
+            // 合并写回整个 store，避免覆盖其它项目条目；连接操作的写入失败向调用方报告。
+            val store = readStoreFile(strict).toMutableMap()
             store[projectDir] = updated
-            storeFile()?.let { file ->
+            val file = storeFile()
+            if (strict && file == null) throw IllegalStateException("Toolbox state file is unavailable")
+            file?.let {
                 try {
-                    file.parentFile?.mkdirs()
-                    JSON.writerWithDefaultPrettyPrinter().writeValue(file, mapOf("projects" to store))
+                    Files.createDirectories(it.toPath().parent)
+                    val temp = Files.createTempFile(it.toPath().parent, ".ok-toolkit-toolbox-", ".tmp")
+                    try {
+                        JSON.writerWithDefaultPrettyPrinter().writeValue(temp.toFile(), mapOf("projects" to store))
+                        Files.move(temp, it.toPath(), REPLACE_EXISTING)
+                    } finally {
+                        Files.deleteIfExists(temp)
+                    }
                 } catch (e: Exception) {
+                    if (strict) throw e
                     LOG.warn("Failed to save toolbox state", e)
                 }
             }
+            cache[projectDir] = updated
             updated
         }
         SwingUtilities.invokeLater {
@@ -180,12 +191,13 @@ class ToolboxService(private val project: Project) : Disposable {
         return Paths.get(basePath, TOOLBOX_FILE).toFile()
     }
 
-    private fun readStoreFile(): Map<String, ToolboxState> {
+    private fun readStoreFile(strict: Boolean = false): Map<String, ToolboxState> {
         val file = storeFile() ?: return emptyMap()
         if (!file.isFile) return emptyMap()
         return try {
             parseStore(JSON.readTree(file))
         } catch (e: Exception) {
+            if (strict) throw e
             LOG.warn("Failed to read toolbox state, treating as empty", e)
             emptyMap()
         }
@@ -234,7 +246,7 @@ class ToolboxService(private val project: Project) : Disposable {
                     exe = parsed.path("exe").asText(""),
                     connectedAt = System.currentTimeMillis(),
                 )
-                saveState(projectDir) { it.copy(game = game) }
+                saveState(projectDir, strict = true) { it.copy(game = game) }
                 postStatus("")
                 // 调试浮层开启时拉起常驻宿主：无需启动任务即可 Alt+右键框选取坐标
                 if (loadState(projectDir).overlay) {
@@ -253,24 +265,53 @@ class ToolboxService(private val project: Project) : Disposable {
      * 断开连接：清除 devices.json 里的窗口选中，任务进程恢复自动探测。
      * devices.json 缺失等场景按已断开处理。
      */
-    fun disconnectGame(projectDir: String, pythonPath: String) {
-        if (projectDir.isBlank()) return
-        CompletableFuture.runAsync {
+    fun disconnectGame(projectDir: String, pythonPath: String): CompletableFuture<Unit> {
+        if (projectDir.isBlank()) {
+            postStatus(OkScriptToolkitBundle.message("toolbox.noProject"))
+            return CompletableFuture.completedFuture(Unit)
+        }
+        if (!connecting.compareAndSet(false, true)) {
+            return CompletableFuture.completedFuture(Unit)
+        }
+        postStatus(OkScriptToolkitBundle.message("toolbox.disconnecting"))
+        return CompletableFuture.supplyAsync {
             try {
                 val script = Paths.get(PythonScriptLocator.findScriptDir(), "connect_game.py")
-                pythonRunner.runSync(
+                val result = pythonRunner.runSync(
                     pythonPath = pythonPath,
                     scriptPath = script.toString(),
                     args = listOf(projectDir, "--disconnect"),
                     workingDir = File(projectDir),
                     timeoutMs = DISCONNECT_TIMEOUT_MS,
                 )
+                val parsed = pythonRunner.parseJsonFromStdout(result.stdout)
+                    ?.let { runCatching { JSON.readTree(it) }.getOrNull() }
+                if (result.exitCode != 0 ||
+                    parsed?.path("ok")?.asBoolean(false) != true ||
+                    parsed?.path("disconnected")?.asBoolean(false) != true
+                ) {
+                    val error = parsed?.path("error")?.asText(null)
+                        ?: result.stderr.trim().ifEmpty {
+                            if (result.exitCode != 0) {
+                                OkScriptToolkitBundle.message("toolbox.connectExit", result.exitCode)
+                            } else {
+                                OkScriptToolkitBundle.message("toolbox.disconnectNoConfirmation")
+                            }
+                        }
+                    throw IllegalStateException(error)
+                }
+                stopOverlayHost()
+                saveState(projectDir, strict = true) { it.copy(game = null) }
+                postStatus("")
             } catch (e: Exception) {
                 LOG.warn("connect_game.py --disconnect failed", e)
+                postStatus(OkScriptToolkitBundle.message(
+                    "toolbox.disconnectFailed",
+                    e.message ?: OkScriptToolkitBundle.message("toolbox.disconnectNoConfirmation"),
+                ))
+            } finally {
+                connecting.set(false)
             }
-            stopOverlayHost()
-            saveState(projectDir) { it.copy(game = null) }
-            postStatus("")
         }
     }
 

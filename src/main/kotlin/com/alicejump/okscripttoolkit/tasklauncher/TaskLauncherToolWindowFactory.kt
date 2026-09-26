@@ -1082,14 +1082,25 @@ class TaskLauncherPanel(private val project: Project) {
     private fun connectGame() {
         val projectDir = checkedProjectPath(toolboxStatusLabel, "toolbox.noProject") ?: return
         connectGameButton.isEnabled = false
+        disconnectGameButton.isEnabled = false
         toolboxService.connectGame(projectDir, detectPythonPath()).whenComplete { _, _ ->
-            SwingUtilities.invokeLater { connectGameButton.isEnabled = true }
+            SwingUtilities.invokeLater {
+                connectGameButton.isEnabled = true
+                disconnectGameButton.isEnabled = true
+            }
         }
     }
 
     private fun disconnectGame() {
         val projectDir = checkedProjectPath(toolboxStatusLabel, "toolbox.noProject") ?: return
-        toolboxService.disconnectGame(projectDir, detectPythonPath())
+        connectGameButton.isEnabled = false
+        disconnectGameButton.isEnabled = false
+        toolboxService.disconnectGame(projectDir, detectPythonPath()).whenComplete { _, _ ->
+            SwingUtilities.invokeLater {
+                connectGameButton.isEnabled = true
+                disconnectGameButton.isEnabled = true
+            }
+        }
     }
 
     /**

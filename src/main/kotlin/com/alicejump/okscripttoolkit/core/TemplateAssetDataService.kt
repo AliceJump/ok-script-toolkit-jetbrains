@@ -387,14 +387,6 @@ class TemplateAssetDataService(private val project: Project) {
 
         val targetImagesDir = Paths.get(targetFolder, "images")
 
-        // 清空目标目录中的旧图片（重新生成前清理）
-        if (Files.isDirectory(targetImagesDir)) {
-            Files.list(targetImagesDir).use { stream ->
-                stream.forEach { runCatching { Files.deleteIfExists(it) } }
-            }
-        }
-        Files.createDirectories(targetImagesDir)
-
         // 1. 只处理有标注的图片
         val annotatedImages = cocoData.images.filter { img ->
             cocoData.annotations.any { it.imageId == img.id }
@@ -475,6 +467,15 @@ class TemplateAssetDataService(private val project: Project) {
             }
         }
 
+        // 图片与 COCO 写进目标目录内；枚举稍后在其目标目录所在卷单独暂存。
+        val targetDir = Paths.get(targetFolder)
+        Files.createDirectories(targetDir)
+        val stagingRoot = Files.createTempDirectory(targetDir, ".ok-toolkit-export-")
+        val stagedImagesDir = stagingRoot.resolve("images")
+        var enumStagingRoot: Path? = null
+        var preserveStaging = false
+        try {
+        Files.createDirectories(stagedImagesDir)
         // 5. 渲染全部页：白底画布 + 原坐标粘贴（同源图多 bbox 只解码一次）
         val total = pageList.size
         var completed = 0
@@ -506,9 +507,9 @@ class TemplateAssetDataService(private val project: Project) {
                 g.dispose()
             }
 
-            val outPath = targetImagesDir.resolve("${pageIndex + 1}.png")
+            val outPath = stagedImagesDir.resolve("${pageIndex + 1}.png")
             Files.createDirectories(outPath.parent)
-            ImageIO.write(canvas, "png", outPath.toFile())
+            check(ImageIO.write(canvas, "png", outPath.toFile())) { "PNG writer unavailable" }
             completed++
             onProgress(completed, total)
         }
@@ -521,13 +522,83 @@ class TemplateAssetDataService(private val project: Project) {
             cocoData.categories.filter { it.id in usedCatIds }.toMutableList(),
         )
 
-        val cocoTarget = Paths.get(targetFolder, "coco_annotations.json").toFile()
-        cocoTarget.parentFile?.mkdirs()
-        JSON.writerWithDefaultPrettyPrinter().writeValue(cocoTarget, serializeCoco(croppedCoco))
+        val cocoTarget = targetDir.resolve("coco_annotations.json")
+        val stagedCoco = stagingRoot.resolve("coco_annotations.json")
+        JSON.writerWithDefaultPrettyPrinter().writeValue(stagedCoco.toFile(), serializeCoco(croppedCoco))
 
+        val enumTarget = enumFile?.let { Paths.get(it) }
+        val enumInImages = enumTarget?.toAbsolutePath()?.normalize()
+            ?.startsWith(targetImagesDir.toAbsolutePath().normalize()) == true
+        var stagedEnum: Path? = null
         if (enumFile != null) {
             val labels = croppedCoco.categories.map { it.name }.sorted()
-            generateLabelEnum(enumFile, labels)
+            stagedEnum = if (enumInImages) {
+                stagedImagesDir.resolve(targetImagesDir.toAbsolutePath().normalize().relativize(enumTarget!!.toAbsolutePath().normalize()))
+            } else {
+                // enumTarget 可能位于另一卷；临时文件与旧版备份都放到它的父目录。
+                val enumParent = enumTarget!!.toAbsolutePath().normalize().parent
+                Files.createDirectories(enumParent)
+                enumStagingRoot = Files.createTempDirectory(enumParent, ".ok-toolkit-enum-")
+                enumStagingRoot!!.resolve("new").resolve(enumTarget.fileName)
+            }
+            generateLabelEnum(stagedEnum.toString(), labels)
+        }
+
+        // UI 的进度回调会检查取消；最后一次回调后仍可能在生成 COCO/枚举期间取消。
+        onProgress(completed, total)
+
+        // 备份旧产物再逐项替换；任何提交错误都逆序恢复。提交开始后不再检查取消。
+        data class ExportMove(
+            val destination: Path,
+            val staged: Path,
+            val backup: Path,
+            var hadOriginal: Boolean = false,
+            var installed: Boolean = false,
+        )
+        val moves = mutableListOf(
+            ExportMove(targetImagesDir, stagedImagesDir, stagingRoot.resolve("old-images")),
+            ExportMove(cocoTarget, stagedCoco, stagingRoot.resolve("old-coco.json")),
+        )
+        if (enumTarget != null && stagedEnum != null && !enumInImages) {
+            moves.add(ExportMove(enumTarget, stagedEnum, enumStagingRoot!!.resolve("old").resolve(enumTarget.fileName)))
+        }
+        try {
+            for (move in moves) {
+                move.destination.parent?.let { Files.createDirectories(it) }
+                if (Files.exists(move.destination)) {
+                    Files.createDirectories(move.backup.parent)
+                    Files.move(move.destination, move.backup)
+                    move.hadOriginal = true
+                }
+                Files.move(move.staged, move.destination)
+                move.installed = true
+            }
+        } catch (error: Throwable) {
+            val rollbackErrors = mutableListOf<String>()
+            for (move in moves.asReversed()) {
+                try {
+                    if (move.installed) Files.move(move.destination, move.staged)
+                    if (move.hadOriginal) Files.move(move.backup, move.destination)
+                } catch (rollbackError: Throwable) {
+                    rollbackErrors.add(rollbackError.toString())
+                }
+            }
+            if (rollbackErrors.isNotEmpty()) {
+                preserveStaging = true
+                val backupLocations = listOfNotNull(stagingRoot, enumStagingRoot).joinToString(", ")
+                throw IllegalStateException(
+                    "Export failed and rollback was incomplete; backups remain at $backupLocations: ${rollbackErrors.joinToString("; ")}",
+                    error,
+                )
+            }
+            throw error
+        }
+        } finally {
+            // 回滚不完整时保留备份以便人工恢复；清理失败不改变已完成的提交结果。
+            if (!preserveStaging) {
+                stagingRoot.toFile().deleteRecursively()
+                enumStagingRoot?.toFile()?.deleteRecursively()
+            }
         }
     }
 
@@ -562,8 +633,14 @@ class TemplateAssetDataService(private val project: Project) {
                 // 空枚举的类体不能什么都没有 —— 否则是 IndentationError: expected an indented block
                 append("    pass\n")
             }
+            val usedMemberNames = mutableSetOf<String>()
             for (label in labels) {
-                append("    ").append(memberNameFor(label)).append(" = ").append(pythonStringLiteral(label)).append('\n')
+                val baseName = memberNameFor(label)
+                var memberName = baseName
+                var suffix = 2
+                while (memberName in usedMemberNames) memberName = "${baseName}_${suffix++}"
+                usedMemberNames.add(memberName)
+                append("    ").append(memberName).append(" = ").append(pythonStringLiteral(label)).append('\n')
             }
         }
         file.writeText(content, Charsets.UTF_8)
@@ -633,8 +710,8 @@ class TemplateAssetDataService(private val project: Project) {
     }
 }
 
-/** Python 标识符：`[A-Za-z_][A-Za-z0-9_]*`（ASCII only，中文成员名刻意排除，见 [memberNameFor]） */
-private val PYTHON_IDENTIFIER = Regex("[A-Za-z_][A-Za-z0-9_]*")
+/** 枚举成员只使用 ASCII 字母开头，避免 Enum 将前导下划线解释为私有或保留名。 */
+private val PYTHON_ENUM_MEMBER = Regex("[A-Za-z][A-Za-z0-9_]*")
 
 /**
  * 把一段用户输入变成合法的 Python 单引号字符串字面量（含引号）。
@@ -678,12 +755,25 @@ internal fun pythonStringLiteral(value: String): String {
  * 所以 `LabelEnum.cat_6d17_53f0.value == '洗手台'` 依然成立 —— 规范化不丢信息。
  */
 internal fun memberNameFor(label: String): String {
-    val ascii = label.replace(Regex("[^A-Za-z0-9_]"), "_")
-    if (PYTHON_IDENTIFIER.matches(ascii)) return ascii
+    // 逐码点替换，避免非 BMP 字符在 JS 与 JVM 上分别变成两个和一个下划线。
+    val codepoints = label.codePoints().toArray()
+    val ascii = buildString {
+        for (codepoint in codepoints) {
+            append(
+                if (codepoint in 65..90 || codepoint in 97..122 || codepoint in 48..57 || codepoint == 95)
+                    codepoint.toChar() else '_'
+            )
+        }
+    }
+    if (PYTHON_ENUM_MEMBER.matches(ascii)) {
+        // Enum.mro 是内建方法名，不能用作成员名。
+        return if (ascii in LabelEnumGuard.PYTHON_KEYWORDS || ascii == "mro") "${ascii}_" else ascii
+    }
 
-    // 剩下两类：以数字开头，或规范化后一个有效字符都没有（全中文 / 全符号）
-    val suffix = label.map { it.code.toString(16) }.joinToString("_")
+    // 数字开头、前导下划线（Enum 的私有/保留名）及全非 ASCII 标签统一编码。
+    // 保留原始值，编码只影响源码中的成员名。
+    val suffix = codepoints.joinToString("_") { it.toString(16) }
     val prefix = if (ascii.firstOrNull()?.isDigit() == true) "n" else "cat"
     val candidate = if (suffix.isEmpty()) prefix else "${prefix}_$suffix"
-    return if (PYTHON_IDENTIFIER.matches(candidate)) candidate else "cat"
+    return candidate
 }

@@ -824,7 +824,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             object : com.intellij.openapi.progress.Task.Backgroundable(
                 project,
                 OkScriptToolkitBundle.message("templateAsset.export"),
-                // 对齐 VSCode 版：导出可取消（已完成分页保留，仅中止后续合成与 COCO 重写）
+                // 对齐 VSCode 版：导出可取消；临时分页会清理，旧图片与 COCO 保持不变。
                 true,
             ) {
                 override fun run(indicator: com.intellij.openapi.progress.ProgressIndicator) {

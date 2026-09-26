@@ -104,10 +104,10 @@ class TemplateAssetDataServiceLabelEnumTest {
     // ── 成员名规范化 ───────────────────────────────────────────────────
 
     @Test
-    fun `ascii identifier labels keep their name`() {
+    fun `ascii public identifier labels keep their name`() {
         assertEquals("apple", memberNameFor("apple"))
         assertEquals("banana_2", memberNameFor("banana_2"))
-        assertEquals("_private", memberNameFor("_private"))
+        assertEquals("cat_5f_70_72_69_76_61_74_65", memberNameFor("_private"))
     }
 
     @Test
