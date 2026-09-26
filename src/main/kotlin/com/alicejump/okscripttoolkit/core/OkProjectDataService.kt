@@ -80,26 +80,29 @@ class OkProjectDataService(private val project: Project) {
         val resolvedAt: Long,
     )
 
+    private data class OkTemplateCocoKey(val root: Path, val templatesDir: String, val name: String)
+
     // 与 VSCode 版 findOkTemplateCocoEntry 对齐：从 ok_templates 素材库 COCO
     // 按模板名反查原图与原始 bbox，带 30 秒 TTL 缓存
-    private val okTemplateCocoCache = ConcurrentHashMap<String, OkTemplateCocoResult>()
-    private val okTemplateCocoMissCache = ConcurrentHashMap<String, Long>()
+    private val okTemplateCocoCache = ConcurrentHashMap<OkTemplateCocoKey, OkTemplateCocoResult>()
+    private val okTemplateCocoMissCache = ConcurrentHashMap<OkTemplateCocoKey, Long>()
 
     fun findOkTemplateCocoEntry(name: String): Pair<Path, IntArray>? {
-        okTemplateCocoCache[name]?.let { cached ->
+        val root = rootPath()?.toAbsolutePath()?.normalize() ?: return null
+        val templatesDir = settings().okTemplatesDirectory()
+        val key = OkTemplateCocoKey(root, templatesDir, name)
+        okTemplateCocoCache[key]?.let { cached ->
             if (System.currentTimeMillis() - cached.resolvedAt < 30_000L) {
                 return cached.imagePath to cached.bbox
             }
         }
-        okTemplateCocoMissCache[name]?.let { missAt ->
+        okTemplateCocoMissCache[key]?.let { missAt ->
             if (System.currentTimeMillis() - missAt < 30_000L) return null
         }
 
-        val root = rootPath() ?: return null
-        val settings = settings()
         val cocoFiles = listOf(
-            resolve(root, settings.okTemplatesDirectory()).resolve("coco_annotations.json"),
-            root.resolve("ok_tasks").resolve(resolve(root, settings.okTemplatesDirectory()).fileName.toString())
+            resolve(root, templatesDir).resolve("coco_annotations.json"),
+            root.resolve("ok_tasks").resolve(resolve(root, templatesDir).fileName.toString())
                 .resolve("coco_annotations.json"),
         )
         for (coco in cocoFiles) {
@@ -122,12 +125,12 @@ class OkProjectDataService(private val project: Project) {
                 found
             }.getOrNull()
             if (entry != null) {
-                okTemplateCocoCache[name] = OkTemplateCocoResult(entry.first, entry.second, System.currentTimeMillis())
-                okTemplateCocoMissCache.remove(name)
+                okTemplateCocoCache[key] = OkTemplateCocoResult(entry.first, entry.second, System.currentTimeMillis())
+                okTemplateCocoMissCache.remove(key)
                 return entry
             }
         }
-        okTemplateCocoMissCache[name] = System.currentTimeMillis()
+        okTemplateCocoMissCache[key] = System.currentTimeMillis()
         return null
     }
     fun effectIds(): List<String> = current().effects.keys.sorted()
@@ -154,7 +157,8 @@ class OkProjectDataService(private val project: Project) {
         }
     }
 
-    fun rootPath(): Path? = project.basePath?.let(Paths::get)
+    fun rootPath(): Path? = ScreenshotCapture.detectProjectDir(project)
+        .takeIf { it.isNotBlank() }?.let(Paths::get)
 
     /* ---------------- 运行时模板库路径（config.py 的 coco_feature_json） ---------------- */
 

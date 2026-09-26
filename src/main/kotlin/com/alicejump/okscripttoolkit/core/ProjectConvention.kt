@@ -165,7 +165,7 @@ internal fun textOrNull(value: String?): String? = value?.trim()?.takeIf { it.is
  */
 object ConventionDefaults {
     const val TEMPLATES_DIRECTORY = "ok_templates"
-    val FEATURE_ALIASES = listOf("fL", "FeatureList")
+    val FEATURE_ALIASES = listOf("fL", "FeatureList", "Labels")
 
     const val I18N_ENABLED = true
     const val LANG_DIRECTORY = "assets/lang"

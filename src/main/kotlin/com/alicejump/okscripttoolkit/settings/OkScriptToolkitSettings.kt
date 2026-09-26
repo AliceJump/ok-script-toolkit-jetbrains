@@ -95,7 +95,8 @@ class OkScriptToolkitSettings(
         // 值恰好等于内置兜底、且用户从没点过「应用」→ 视为从未设置过。
         // `featureAliasesTouched` 用来区分"init 自动写的"与"用户手填的同样值" ——
         // 没有它，用户就永远无法用设置覆盖成"恰好等于内置默认"。
-        if (!state.featureAliasesTouched && state.featureAliases == DEFAULT_FEATURE_ALIASES) {
+        if (!state.featureAliasesTouched &&
+            (state.featureAliases == DEFAULT_FEATURE_ALIASES || state.featureAliases == listOf("fL", "FeatureList"))) {
             state.featureAliases = mutableListOf()
         }
         // 老用户没有 overriddenKeys 这个集合，给他们播一次种：

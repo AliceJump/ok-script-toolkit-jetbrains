@@ -92,6 +92,13 @@ To build the plugin from source instead, see [Build](#build).
   are toggled on/off with a checkbox (enqueued / polling), one-time tasks are
   enqueued to run once, plus stop-current-task / close-executor / pause / resume
   and a live output console.
+- **Global config takeover & health** — parses the target project's global config
+  groups (visible groups of the ok framework's GlobalConfig) and persists parameter
+  snapshots; the idle-state run center lists each group (hover for a read-only
+  summary). Changes are pushed live to the running executor (`gparams`), and the
+  full snapshot is injected as `OK_TOOLKIT_GCONFIG` at executor launch. A health
+  bar reflects executor state in real time (current task / execution queue /
+  trigger polling / paused), and task rows reveal a read-only summary on hover.
 - **Temp shots** — a scratch area for at most 10 recent screenshots. Paste a
   clipboard image, capture the game window, or drop/paste image files. The stage
   shows the selected shot or cycles all of them every 0.1s; box-select copies

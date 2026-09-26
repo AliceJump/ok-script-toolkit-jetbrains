@@ -3,6 +3,7 @@ package com.alicejump.okscripttoolkit.tasklauncher
 import com.alicejump.okscripttoolkit.core.PythonScriptLocator
 import com.alicejump.okscripttoolkit.core.PythonScriptRunner
 import com.alicejump.okscripttoolkit.core.RunDir
+import com.alicejump.okscripttoolkit.core.ScreenshotCapture
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -122,6 +123,7 @@ class TaskLauncherService(private val project: Project) {
         val total: Int = 0,
         val projectDir: String? = null,
         val locale: String? = null,
+        val taskMode: String? = null,
         val configModule: String? = null,
         /** 全局配置组快照源数据（#7 配置接管）；采集失败为空列表不影响任务 schema */
         val globalConfigGroups: List<GlobalConfigGroup> = emptyList(),
@@ -165,6 +167,9 @@ class TaskLauncherService(private val project: Project) {
         return project.basePath ?: throw IllegalStateException("Project base path is null")
     }
 
+    /** Storage keys follow the selected ok-script project, even when its files live outside the IDE workspace. */
+    fun getTargetRoot(): String = ScreenshotCapture.detectProjectDir(project).ifBlank { getWorkspaceRoot() }
+
     fun getPythonScriptDir(): String =
         PythonScriptLocator.findScriptDir()
 
@@ -180,7 +185,7 @@ class TaskLauncherService(private val project: Project) {
     fun parseConfigTasks(
         pythonPath: String,
         locale: String = "zh_CN",
-        projectDir: String = getWorkspaceRoot(),
+        projectDir: String = getTargetRoot(),
     ): TaskListResult {
         val scriptPath = Paths.get(getPythonScriptDir(), PARSE_CONFIG_SCRIPT).toString()
         if (!File(scriptPath).exists()) {
@@ -240,7 +245,7 @@ class TaskLauncherService(private val project: Project) {
         pythonPath: String,
         locale: String = "zh_CN",
         poDirectory: String = "i18n",
-        projectDir: String = getWorkspaceRoot(),
+        projectDir: String = getTargetRoot(),
     ): SchemaProbeResult {
         val scriptPath = Paths.get(getPythonScriptDir(), PROBE_SCHEMA_SCRIPT).toString()
         if (!File(scriptPath).exists()) {
@@ -510,12 +515,12 @@ class TaskLauncherService(private val project: Project) {
 
     fun getTaskConfig(taskKey: String): TaskConfig {
         val store = loadTaskConfigs()
-        return store.projects[getWorkspaceRoot()]?.tasks?.get(taskKey) ?: TaskConfig()
+        return store.projects[getTargetRoot()]?.tasks?.get(taskKey) ?: TaskConfig()
     }
 
     fun saveTaskConfig(taskKey: String, config: TaskConfig) {
         synchronized(storeLock) {
-            val root = getWorkspaceRoot()
+            val root = getTargetRoot()
             val updated = TaskConfigMerge.withTask(loadTaskConfigsLocked(), root, taskKey, config)
             saveTaskConfigs(updated)
             configStoreCache = updated
@@ -526,11 +531,11 @@ class TaskLauncherService(private val project: Project) {
 
     /** 已勾选的触发任务 key 列表（module::Class） */
     fun loadEnabledTriggers(): List<String> =
-        loadTaskConfigs().projects[getWorkspaceRoot()]?.enabledTriggers ?: emptyList()
+        loadTaskConfigs().projects[getTargetRoot()]?.enabledTriggers ?: emptyList()
 
     fun saveEnabledTriggers(keys: List<String>) {
         synchronized(storeLock) {
-            val root = getWorkspaceRoot()
+            val root = getTargetRoot()
             val updated = TaskConfigMerge.withEnabledTriggers(loadTaskConfigsLocked(), root, keys)
             saveTaskConfigs(updated)
             configStoreCache = updated
@@ -541,12 +546,12 @@ class TaskLauncherService(private val project: Project) {
 
     /** 当前项目的全局配置快照：{组名: {配置键: 值}} */
     fun loadGlobalConfigs(): Map<String, Map<String, Any?>> =
-        loadTaskConfigs().projects[getWorkspaceRoot()]?.globalConfigs ?: emptyMap()
+        loadTaskConfigs().projects[getTargetRoot()]?.globalConfigs ?: emptyMap()
 
     /** 整体替换当前项目的全局配置快照（tasks 与 enabledTriggers 不受影响） */
     fun saveGlobalConfigs(snapshots: Map<String, Map<String, Any?>>) {
         synchronized(storeLock) {
-            val root = getWorkspaceRoot()
+            val root = getTargetRoot()
             val updated = TaskConfigMerge.withGlobalConfigs(loadTaskConfigsLocked(), root, snapshots)
             saveTaskConfigs(updated)
             configStoreCache = updated
@@ -576,6 +581,9 @@ class TaskLauncherService(private val project: Project) {
             // Creator，readValue 会直接抛 "no Creators"（缓存此前从未加载成功过）。
             val cacheNode = objectMapper.readTree(cacheFile)
             val cached = parseSchemaProbeResult(cacheNode)
+            if (cached.taskMode != "all") {
+                return SchemaProbeResult(ok = false, error = "Schema cache predates all-task mode")
+            }
             // 旧缓存缺少可编辑键集，必须重探针，避免账号覆盖误用空 schema。
             if (cached.multiAccount.available && cacheNode.path("multiAccount").get("enabledTasks") == null) {
                 return SchemaProbeResult(ok = false, error = "Schema cache lacks multi-account keys")
@@ -601,6 +609,7 @@ class TaskLauncherService(private val project: Project) {
             total = node.get("total")?.asInt() ?: 0,
             projectDir = node.get("projectDir")?.asText(null),
             locale = node.get("locale")?.asText(null),
+            taskMode = node.get("taskMode")?.asText(null),
             configModule = node.get("configModule")?.asText(null),
             // 缓存里旧版本没有该键 → 空列表（物化规则对空输入零操作，安全）
             globalConfigGroups = parseGlobalConfigGroups(node),
@@ -612,7 +621,7 @@ class TaskLauncherService(private val project: Project) {
         val cacheFile = Paths.get(getWorkspaceRoot(), SCHEMA_CACHE_FILE).toFile()
         cacheFile.parentFile?.mkdirs()
         try {
-            val enriched = result.copy(projectDir = projectDir, locale = locale)
+            val enriched = result.copy(projectDir = projectDir, locale = locale, taskMode = "all")
             objectMapper.writerWithDefaultPrettyPrinter().writeValue(cacheFile, enriched)
         } catch (e: Exception) {
             LOG.error("Failed to save schema cache", e)

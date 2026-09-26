@@ -83,6 +83,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     private var images = listOf<TemplateImage>()
     private var visibleImages = listOf<TemplateImage>()
     private var currentFilter = ""
+    @Volatile private var enumPathFromConfig: Pair<String, String?>? = null
     // loadData 在后台线程失效缓存，EDT 在渲染时读写，需要并发安全
     private val thumbCache = java.util.concurrent.ConcurrentHashMap<String, ImageIcon?>()
     // 进行中的缩略图解码（过滤输入会高频触发 renderGrid，按路径去重避免重复读盘解码）
@@ -186,8 +187,13 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         statusLabel.text = OkScriptToolkitBundle.message("templateAsset.loading")
         CompletableFuture.supplyAsync {
             val settings = OkScriptToolkitSettings.getInstance(project)
-            val projectDir = project.basePath ?: ""
+            val projectDir = ScreenshotCapture.detectProjectDir(project)
             data.load(projectDir, settings.okTemplatesDirectory())
+            if (projectDir.isNotBlank() && enumPathFromConfig?.first != projectDir) {
+                val python = ScreenshotCapture.detectPythonPath(projectDir, project)
+                val declared = ScreenshotCapture(project).probeWindowConfig(projectDir, python)?.labelEnumRelativePath
+                enumPathFromConfig = projectDir to declared
+            }
             val result = data.listImages()
             // 图片集合可能已变化，按路径失效缩略图缓存
             val validPaths = result.map { it.file.absolutePath }.toSet()
@@ -396,7 +402,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             }
         com.intellij.openapi.fileChooser.FileChooser.chooseFiles(descriptor, project, null) { files ->
             val settings = OkScriptToolkitSettings.getInstance(project)
-            val projectDir = project.basePath ?: return@chooseFiles
+            val projectDir = ScreenshotCapture.detectProjectDir(project).ifBlank { return@chooseFiles }
             val targetDir = File(projectDir, settings.okTemplatesDirectory())
             val imported = data.importImages(files.map { File(it.path) }, targetDir)
             if (imported > 0) {
@@ -443,11 +449,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         val methodOverride = HardForegroundToggle.methodOverride(hardForegroundCheck)
         CompletableFuture.supplyAsync<Pair<Path?, String?>> {
             val base = Paths.get(projectRoot)
-            val outputDir = if (Files.isDirectory(base.resolve(templatesDirName))) {
-                base.resolve(templatesDirName)
-            } else {
-                Paths.get(project.basePath ?: projectRoot).resolve(templatesDirName)
-            }
+            val outputDir = base.resolve(templatesDirName)
             Files.createDirectories(outputDir)
             val ts = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
             val outputPath = outputDir.resolve("screenshot_$ts.png")
@@ -516,7 +518,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
      */
     private fun handleDropTemp(file: File) {
         val settings = OkScriptToolkitSettings.getInstance(project)
-        val projectDir = project.basePath ?: return
+        val projectDir = ScreenshotCapture.detectProjectDir(project).ifBlank { return }
         val targetDir = File(projectDir, settings.okTemplatesDirectory())
         CompletableFuture.supplyAsync {
             data.importImages(listOf(file), targetDir)
@@ -664,7 +666,13 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
          * （`src/data/FeatureList`，不带 .py，与 config.py 的 label_enum_relative_path 同形），
          * 而这里要的是**文件路径** —— 直接塞进去会生成一个没有扩展名的文件，Python import 不到。
          */
-        fun effectiveEnumPath(): String = settings.labelEnumPath()
+        var enumPathForThisExport: String? = null
+        fun effectiveEnumPath(): String = enumPathForThisExport ?: settings.labelEnumPath().ifBlank {
+            val discovered = enumPathFromConfig?.takeIf { it.first == projectDir }?.second
+            if (discovered != null && labelEnumPathInputError(discovered) == null) {
+                normalizeLabelEnumFile(discovered).orEmpty()
+            } else ""
+        }
 
         val targets = listOf("assets", "ok_tasks/assets")
 
@@ -726,6 +734,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
                     // 存的是**相对项目根**的路径，设置里的值才能跟"项目在哪"无关。
                     val normalized = normalizeLabelEnumFile(input.trim()).orEmpty()
                     settings.setLabelEnumPath(SaveToAssetsFlow.toProjectRelative(projectDir, normalized))
+                    enumPathForThisExport = normalized
                     enumPathDecided = true
                 }
                 SaveToAssetsFlow.Choice.ENUM_NAME -> {
@@ -782,6 +791,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
                     }
                     val normalized = normalizeLabelEnumFile(input.trim()).orEmpty()
                     settings.setLabelEnumPath(SaveToAssetsFlow.toProjectRelative(projectDir, normalized))
+                    enumPathForThisExport = normalized
                     if (normalized.isNotEmpty()) {
                         enumAbsolutePath = SaveToAssetsFlow.toAbsolute(projectDir, normalized)
                     }

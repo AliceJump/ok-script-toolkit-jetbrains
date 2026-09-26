@@ -22,7 +22,7 @@ import kotlin.test.assertTrue
 class ConventionSourcesTest {
 
     private val JSON = ObjectMapper()
-    private val ALIASES_FALLBACK = listOf("fL", "FeatureList")
+    private val ALIASES_FALLBACK = listOf("fL", "FeatureList", "Labels")
     private val TPL_FALLBACK = "ok_templates"
 
     private fun rows(
@@ -169,7 +169,7 @@ class ConventionSourcesTest {
         assertTrue(!tpl.overridden, "内置层不算个人覆盖")
 
         val aliases = row(rows(), "featureAliases")
-        assertEquals("fL, FeatureList", aliases.effective, "别名兜底同样可读")
+        assertEquals("fL, FeatureList, Labels", aliases.effective, "别名兜底同样可读")
         assertEquals(ConventionLayer.BUILTIN, aliases.layer)
         assertNull(aliases.declared)
 

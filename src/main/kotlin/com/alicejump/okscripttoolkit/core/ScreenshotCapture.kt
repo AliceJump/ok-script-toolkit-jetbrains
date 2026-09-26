@@ -145,6 +145,8 @@ class ScreenshotCapture(private val project: Project) {
                 // 字符串 "null" —— 所以必须用 `isTextual` 判，不能只看非空。
                 cocoFeatureJson = node.path("coco_feature_json")
                     ?.takeIf { it.isTextual && it.asText().isNotBlank() }?.asText(),
+                labelEnumRelativePath = node.path("label_enum_relative_path")
+                    ?.takeIf { it.isTextual && it.asText().isNotBlank() }?.asText(),
             ).also { LOG.info("Detected window config: ${it.describe()}") }
         } catch (e: Exception) {
             LOG.warn("probe_window_config failed", e)
@@ -644,6 +646,7 @@ data class WindowConfig(
      * 见 [CocoFeaturePath]：它和素材面板的 `<模板目录>/coco_annotations.json` 是两个不同的文件。
      */
     val cocoFeatureJson: String? = null,
+    val labelEnumRelativePath: String? = null,
 ) {
     fun describe(): String = listOfNotNull(
         exe?.takeIf { it.isNotEmpty() }?.let { "exe: ${it.joinToString(", ")}" },

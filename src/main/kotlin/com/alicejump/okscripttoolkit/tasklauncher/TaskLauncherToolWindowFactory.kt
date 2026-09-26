@@ -937,8 +937,7 @@ class TaskLauncherPanel(private val project: Project) {
             error.foreground = TaskLauncherTheme.ERR
             content.add(error, gbc)
         } else {
-            val config = taskService.loadTaskConfigs().projects[taskService.getWorkspaceRoot()]?.tasks?.get(key)
-            val edited = config?.params?.size ?: 0
+            val edited = taskService.getTaskConfig(key).params?.size ?: 0
             content.add(
                 mutedLabel(
                     OkScriptToolkitBundle.message("taskLauncher.schemaFieldCount", edited, schema.fields.size),
@@ -957,8 +956,17 @@ class TaskLauncherPanel(private val project: Project) {
                 .createPopup()
                 .also { popup ->
                     val anchorRow = if (row in 0 until taskTable.rowCount) row else 1
-                    val rect = taskTable.getCellRect(anchorRow, 1, true)
-                    popup.show(RelativePoint(taskTable, java.awt.Point(rect.x, rect.y + rect.height)))
+                    val rect = taskTable.getCellRect(anchorRow, 0, true)
+                    val anchor = java.awt.Point(rect.x, rect.y)
+                    javax.swing.SwingUtilities.convertPointToScreen(anchor, taskTable)
+                    val bounds = taskTable.graphicsConfiguration?.bounds
+                    val titleWidth = taskTable.getFontMetrics(taskTable.font).stringWidth(task.displayName) + 72
+                    val popupWidth = maxOf(popup.content.preferredSize.width + 40, titleWidth)
+                    if (bounds == null || anchor.x - bounds.x < popupWidth + 12) {
+                        popup.cancel() // 没有左侧空间时保留点击详情入口，不遮住任务行
+                    } else {
+                        popup.show(RelativePoint(taskTable, java.awt.Point(rect.x - popupWidth - 12, rect.y)))
+                    }
                 }
         }
     }
@@ -1262,7 +1270,7 @@ class TaskLauncherPanel(private val project: Project) {
             actionToolbar.updateActionsAsync()
             accountEditor?.takeIf { it.isOpen() }?.updateMetadata(result.multiAccount, result.schemas, result.globalConfigGroups)
 
-            tasks = result.schemas.filter { (_, schema) -> schema.showInTaskTab }.map { (key, schema) ->
+            tasks = result.schemas.map { (key, schema) ->
                 val parts = key.split("::")
                 TaskLauncherService.TaskInfo(
                     module = parts.getOrElse(0) { "" },
@@ -2396,6 +2404,7 @@ class TaskLauncherPanel(private val project: Project) {
         // IntelliJ 侧数据文件都在 .idea 下，故沙箱与之并列（VS Code 版对应 .vscode）。
         // 路径与探针共用 RunDir，避免两处各写一份字面量后静默错位。
         env[RunDir.ENV] = RunDir.forProject(projectDir)
+        env["OK_TOOLKIT_LOCALE"] = project.service<OkProjectDataService>().currentLocale()
         val overrides = allParamOverrides()
         if (overrides.isNotEmpty()) {
             env["OK_LANG_HINTS_INJECT"] = objectMapper.writeValueAsString(overrides)
@@ -2403,7 +2412,7 @@ class TaskLauncherPanel(private val project: Project) {
         // 全局配置快照（#7 配置接管）：非空才注入，执行器侧拿它覆盖框架/项目 store 的
         // 全局配置。物化语义（首建继承当前值、新键取默认、孤儿键保留）由探针采集后的
         // GlobalSnapshotRules 负责，这里只管把快照带给执行器。
-        val gconfig = taskService.loadTaskConfigs().projects[taskService.getWorkspaceRoot()]?.globalConfigs
+        val gconfig = taskService.loadGlobalConfigs()
         if (!gconfig.isNullOrEmpty()) {
             env["OK_TOOLKIT_GCONFIG"] = objectMapper.writeValueAsString(gconfig)
         }
@@ -2439,7 +2448,7 @@ class TaskLauncherPanel(private val project: Project) {
 
     /** 全量参数覆盖：{module::Class: {key: value}}，执行器按任务各自取用 */
     private fun allParamOverrides(): Map<String, Map<String, Any>> {
-        val projectConfig = taskService.loadTaskConfigs().projects[taskService.getWorkspaceRoot()]
+        val projectConfig = taskService.loadTaskConfigs().projects[taskService.getTargetRoot()]
             ?: return emptyMap()
         val overrides = linkedMapOf<String, Map<String, Any>>()
         for ((key, config) in projectConfig.tasks) {
@@ -2458,7 +2467,7 @@ class TaskLauncherPanel(private val project: Project) {
 
     /** 历史配置里的 extraArgs / env 在单进程模型下无法按任务生效，启动时提示一次 */
     private fun warnLegacyPerTaskSettings() {
-        val tasks = taskService.loadTaskConfigs().projects[taskService.getWorkspaceRoot()]?.tasks ?: return
+        val tasks = taskService.loadTaskConfigs().projects[taskService.getTargetRoot()]?.tasks ?: return
         val affected = tasks.values.count { !it.extraArgs.isNullOrBlank() || !it.env.isNullOrEmpty() }
         if (affected > 0) {
             taskRunner.log(OkScriptToolkitBundle.message("taskLauncher.legacySettingsIgnored", affected))
