@@ -351,15 +351,20 @@ class CharacterDataService(private val project: Project) {
                     val staggerValue = skillNode.get("stagger_value")?.asInt() ?: 0
                     val cooldown = skillNode.get("cooldown").textOr("")
                     val spiritCost = skillNode.get("spirit_cost")?.asInt() ?: 0
-                    val hasEnhancement = skillNode.get("has_enhancement")?.asBoolean() ?: false
+                    val hasEnhancementNode = skillNode.get("has_enhancement")
                     val isCustom = skillNode.get("_ok_lang_hints_custom")?.asBoolean() ?: false
 
                     // Parse effects from multiple arrays
                     val effectRefs = mutableListOf<CharacterEffectRef>()
+                    val seenBaseEffects = mutableSetOf<String>()
                     for (arrayName in listOf("effects", "attach_effects", "status_effects", "clear_effects")) {
                         skillNode.get(arrayName)?.forEach { effectNode ->
                             parseEffectRef(effectNode)?.let { ref ->
+                                // legacy 附加数组（attach/status/clear）与主 effects 按 effectId
+                                // 去重（对齐 VS Code seenBaseEffects）：同一效果只显示一枚 chip
+                                if (arrayName != "effects" && ref.effectId in seenBaseEffects) return@forEach
                                 effectRefs.add(ref)
+                                seenBaseEffects.add(ref.effectId)
                                 pendingUsages.add(PendingUsage(
                                     ref.effectId,
                                     CharacterEffectUsage(characterId, name, skillId, skillName, skillType,
@@ -384,6 +389,12 @@ class CharacterDataService(private val project: Project) {
                         parseEnhancement(legacyEnhancement, characterId, name, skillId, skillName, skillType, pendingUsages, effectTermMap, effectDefinitions?.keys)
                             ?.let { enhancements.add(it) }
                     }
+
+                    // 缺省语义对齐 VS Code（booleanValue(raw['has_enhancement'], enhancements.length > 0)）：
+                    // 字段缺失时默认「有强化数据就算 true」—— 不然强化组齐全却没写开关的技能
+                    // 会被误报 unexpected-enhancement-data。显式 JSON null 同样走缺省。
+                    val hasEnhancement = hasEnhancementNode?.takeIf { it.isBoolean }?.asBoolean()
+                        ?: enhancements.isNotEmpty()
 
                     if (hasEnhancement && enhancements.isEmpty()) {
                         issues.add(CharacterIssue(nextIssueId(), IssueSeverity.WARNING, "missing-enhancement-data",
@@ -420,10 +431,18 @@ class CharacterDataService(private val project: Project) {
             }
 
             // ── Resolve locales and build CharacterView ──────────
+            // 视图集合 = master ∪ 已解析（对齐 VS Code allCharacterIds）：master 里有、
+            // 但缺技能文件的角色也要出现在列表里（skills 空、名称/星级回退 master 表）——
+            // 只有问题页一行字的话，用户没法在列表里定位这个角色。
             val characters = mutableListOf<CharacterView>()
-            for (parsed in parsedCharacters) {
-                val masterEntry = masterEntries?.get(parsed.characterId)
-                if (masterEntry != null) {
+            val parsedById = parsedCharacters.associateBy { it.characterId }
+            val allCharacterIds = LinkedHashSet<String>()
+            allCharacterIds.addAll(masterCharacterIds)
+            allCharacterIds.addAll(seenCharacterIds)
+            for (characterId in allCharacterIds) {
+                val parsed = parsedById[characterId]
+                val masterEntry = masterEntries?.get(characterId)
+                if (parsed != null && masterEntry != null) {
                     val masterZh = masterEntry.get("zh").textOr("")
                     if (masterZh.isNotBlank() && masterZh != parsed.name) {
                         issues.add(CharacterIssue(nextIssueId(), IssueSeverity.WARNING, "character-name-mismatch",
@@ -436,14 +455,14 @@ class CharacterDataService(private val project: Project) {
                             "Character '${parsed.characterId}': master stars $masterStars != skill star ${parsed.star}",
                             CharacterIssueSource(SourceKind.CHARACTER, characterId = parsed.characterId)))
                     }
-                } else {
+                } else if (parsed != null) {
                     issues.add(CharacterIssue(nextIssueId(), IssueSeverity.WARNING, "missing-master-entry",
                         "Skill file for '${parsed.characterId}' has no master table entry",
                         CharacterIssueSource(SourceKind.CHARACTER, characterId = parsed.characterId)))
                 }
 
                 val locales = mutableMapOf<String, String>()
-                val localeEntry = localeData?.get(parsed.characterId)
+                val localeEntry = localeData?.get(characterId)
                 if (localeEntry != null && localeEntry.isObject) {
                     localeEntry.forEachField { localeCode, node ->
                         val value = node.get("string").textOrNull()?.takeIf { it.isNotBlank() }
@@ -453,24 +472,35 @@ class CharacterDataService(private val project: Project) {
                 }
                 if (locales.isEmpty()) {
                     issues.add(CharacterIssue(nextIssueId(), IssueSeverity.WARNING, "missing-character-locales",
-                        "Character '${parsed.characterId}' has no locale entries",
-                        CharacterIssueSource(SourceKind.LOCALE, characterId = parsed.characterId)))
+                        "Character '$characterId' has no locale entries",
+                        CharacterIssueSource(SourceKind.LOCALE, characterId = characterId)))
                 }
 
                 val master = masterEntry?.let {
                     CharacterMasterView(
-                        parsed.characterId,
+                        characterId,
                         it.get("zh").textOr(""),
                         it.get("en").textOr(""),
                         it.get("stars")?.asInt() ?: 0,
                     )
                 }
 
+                // 名称 / 星级回退链对齐 VS Code（`parsed?.name || masterInfo?.zh || id`）：
+                // 缺技能文件时名称取 master 的 zh，星级取 master 的 stars。
+                // 星级 0 视为"没有数据"继续回退（VS Code 的 `||` 对 0 也是 falsy）。
+                val viewName = parsed?.name?.takeIf { it.isNotBlank() }
+                    ?: master?.zh?.takeIf { it.isNotBlank() }
+                    ?: characterId
+                val viewStar = parsed?.star?.takeIf { it > 0 }
+                    ?: master?.stars?.takeIf { it > 0 }
+                    ?: 0
+
                 // 真实的问题数在全部 issue 收集完之后回填（见下方 issueIndex）
                 characters.add(CharacterView(
-                    parsed.characterId, parsed.name, parsed.star, parsed.element,
-                    parsed.profession, parsed.weaponType, parsed.wikiItemId,
-                    parsed.sourceFile, master, locales, parsed.skills,
+                    characterId, viewName, viewStar,
+                    parsed?.element ?: "", parsed?.profession ?: "",
+                    parsed?.weaponType ?: "", parsed?.wikiItemId ?: "",
+                    parsed?.sourceFile, master, locales, parsed?.skills ?: emptyList(),
                     0, 0,
                 ))
             }
@@ -496,6 +526,9 @@ class CharacterDataService(private val project: Project) {
                 }
             }
 
+            // 已定义效果先建视图；未定义但被引用的 ID 补 defined=false 视图（对齐 VS Code）：
+            // 技能里写错 / 上游删掉的效果 ID 只在问题页有一行字的话，用户没法在效果页
+            // 直接搜到它的影响面 —— 主仓库把它当 `__undefined__` 分类展示。
             val effectViews = allEffectIds.map { effectId ->
                 val entry = effectDefinitions?.get(effectId)
                 val displayName = resolveEffectDisplayName(effectId, effectNames, projectLocale)
@@ -507,7 +540,24 @@ class CharacterDataService(private val project: Project) {
                     defined = entry != null,
                     usages = effectUsageMap[effectId] ?: emptyList(),
                 )
-            }.sortedBy { it.id }
+            }.toMutableList()
+            for (unknownId in effectUsageMap.keys) {
+                if (unknownId in allEffectIds) continue
+                effectViews.add(
+                    CharacterEffectView(
+                        id = unknownId,
+                        displayName = resolveEffectDisplayName(unknownId, effectNames, projectLocale),
+                        description = "",
+                        category = "__undefined__",
+                        defined = false,
+                        usages = effectUsageMap[unknownId].orEmpty(),
+                    ),
+                )
+            }
+            // 未定义优先，再按分类、ID（对齐 VS Code 排序）
+            effectViews.sortWith(
+                compareBy<CharacterEffectView> { it.defined }.thenBy { it.category }.thenBy { it.id },
+            )
 
             // ── 回填每个角色的问题数（对齐 VSCode：issueCount / errorCount）──
             // 必须在所有 issue 收集完之后——未知效果 ID 的问题是在这一刻才补全的。
@@ -549,7 +599,10 @@ class CharacterDataService(private val project: Project) {
             val snapshot = CharacterManagerSnapshot(
                 projectDir = paths.projectDir,
                 loadedAt = Instant.now().toString(),
-                characters = finalCharacters.sortedBy { it.name },
+                characters = finalCharacters.sortedWith(
+                    // 星级降序 + 名称（对齐 VS Code：b.star - a.star || a.name.localeCompare(b.name)）
+                    compareByDescending<CharacterView> { it.star }.thenBy { it.name },
+                ),
                 effects = effectViews,
                 effectCategories = effectCategories,
                 issues = sortedIssues,
@@ -739,11 +792,13 @@ class CharacterDataService(private val project: Project) {
                                 }
                             }
                         } else if (effectsNode.isObject) {
+                            // all 与 any 互斥、all 优先（对齐 VS Code trigger_condition 解析）：
+                            // 两个数组都写时只认 all，不叠加 —— 否则同一批效果会按两种语义重复入列
                             val allNode = effectsNode.get("all")
                             val anyNode = effectsNode.get("any")
-                            if (anyNode != null && anyNode.isArray) {
-                                triggerEffectMode = "any"
-                                anyNode.forEach { effNode ->
+                            if (allNode != null && allNode.isArray) {
+                                triggerEffectMode = "all"
+                                allNode.forEach { effNode ->
                                     parseEffectRef(effNode)?.let { ref ->
                                         triggerEffects.add(ref)
                                         pendingUsages.add(PendingUsage(
@@ -754,9 +809,9 @@ class CharacterDataService(private val project: Project) {
                                         ))
                                     }
                                 }
-                            }
-                            if (allNode != null && allNode.isArray) {
-                                allNode.forEach { effNode ->
+                            } else if (anyNode != null && anyNode.isArray) {
+                                triggerEffectMode = "any"
+                                anyNode.forEach { effNode ->
                                     parseEffectRef(effNode)?.let { ref ->
                                         triggerEffects.add(ref)
                                         pendingUsages.add(PendingUsage(

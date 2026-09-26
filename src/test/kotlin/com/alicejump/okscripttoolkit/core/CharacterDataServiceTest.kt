@@ -177,4 +177,128 @@ class CharacterDataServiceTest {
         ).filter { it == "null" }
         assertTrue(suspicious.isEmpty(), "不该有任何字段被读成字面量 \"null\"，实际有 ${suspicious.size} 个")
     }
+
+/* ── 视图集合与解析语义对齐 VS Code（characterData.ts）────────────────── */
+
+/** 构造最小可加载项目：master + 技能文件目录 + effects.py */
+private fun writeParityProject(
+    dir: java.io.File,
+    masterJson: String,
+    skillFiles: Map<String, String>,
+    effectsPy: String? = null,
+): CharacterDataPaths {
+    val skillsDir = dir.resolve("character_skills").apply { mkdirs() }
+    dir.resolve("characters.json").writeText(masterJson)
+    for ((name, content) in skillFiles) {
+        skillsDir.resolve(name).writeText(content)
+    }
+    if (effectsPy != null) dir.resolve("effects.py").writeText(effectsPy)
+    return CharacterDataPaths(
+        projectDir = dir.absolutePath,
+        masterFile = dir.resolve("characters.json").absolutePath,
+        skillsDir = skillsDir.absolutePath,
+        localeFile = dir.resolve("lang.json").absolutePath,
+        effectsFile = dir.resolve("effects.py").absolutePath,
+        effectNamesFile = dir.resolve("effect_names.json").absolutePath,
+    )
+}
+
+@Test
+fun `master-only characters appear in the list and unknown effect ids land in the effects page`() {
+    val dir = TestTmp.create("ok-character-parity")
+    val paths = writeParityProject(
+        dir,
+        masterJson = """{"char_a":{"zh":"甲","stars":5},"char_b":{"zh":"乙","stars":3}}""",
+        skillFiles = mapOf(
+            "char_b.json" to """
+                {
+                  "character_id": "char_b", "name": "乙", "star": 3,
+                  "skills": [
+                    {"skill_id": "s1", "name": "一", "skill_type": "主动", "effects": ["fx_missing"]}
+                  ]
+                }
+            """.trimIndent(),
+        ),
+        effectsPy = """
+            class EffectType:
+                # 伤害
+                DMG = "dmg"
+
+            # 效果描述映射
+            EffectType.DMG: "造成伤害",
+        """.trimIndent(),
+    )
+
+    val result = CharacterDataService.load(paths, "zh_CN")
+
+    // master 里有、但缺技能文件的角色必须出现在列表（skills 空、名称/星级回退 master）
+    val charA = result.snapshot.characters.firstOrNull { it.characterId == "char_a" }
+    assertNotNull(charA, "master-only 角色必须生成视图，不能只在问题页有一行字")
+    assertEquals("甲", charA.name, "缺技能文件时名称回退 master 的 zh")
+    assertEquals(5, charA.star, "缺技能文件时星级回退 master 的 stars")
+    assertEquals(0, charA.skills.size)
+
+    // 未定义但被引用的效果 ID 生成 defined=false 视图，且排在效果页最前
+    val undefined = result.snapshot.effects.filter { !it.defined }
+    assertEquals(listOf("fx_missing"), undefined.map { it.id })
+    assertEquals("__undefined__", undefined[0].category)
+    assertEquals(1, undefined[0].usages.size, "未知效果的使用点必须挂上")
+    assertEquals("fx_missing", result.snapshot.effects.first().id, "未定义效果排在全部已定义效果之前")
+
+    // 列表排序：星级降序（char_a 5星 在 char_b 3星 之前）
+    assertEquals(listOf("char_a", "char_b"), result.snapshot.characters.map { it.characterId })
+}
+
+@Test
+fun `has_enhancement defaults to data presence, legacy arrays dedupe, trigger all wins over any`() {
+    val dir = TestTmp.create("ok-character-parity-2")
+    val paths = writeParityProject(
+        dir,
+        masterJson = """{"c1":{"zh":"甲","stars":1}}""",
+        skillFiles = mapOf(
+            "c1.json" to """
+                {
+                  "character_id": "c1", "name": "甲", "star": 1,
+                  "skills": [
+                    {
+                      "skill_id": "s1", "name": "无开关", "skill_type": "主动",
+                      "enhancements": [{"name": "强化一", "effects": ["fx_a"]}]
+                    },
+                    {
+                      "skill_id": "s2", "name": "去重", "skill_type": "主动",
+                      "effects": ["fx_a"],
+                      "attach_effects": ["fx_a", "fx_b"],
+                      "status_effects": ["fx_a"]
+                    },
+                    {
+                      "skill_id": "s3", "name": "互斥", "skill_type": "主动",
+                      "enhancements": [{
+                        "name": "触发",
+                        "trigger_condition": {"effects": {"all": ["fx_all1"], "any": ["fx_any1"]}}
+                      }]
+                    }
+                  ]
+                }
+            """.trimIndent(),
+        ),
+    )
+
+    val result = CharacterDataService.load(paths, "zh_CN")
+    val skills = result.snapshot.characters.single().skills.associateBy { it.skillId }
+
+    // 字段缺失 + 有强化数据 → 默认 true，且不误报 unexpected-enhancement-data
+    assertEquals(true, skills.getValue("s1").hasEnhancement)
+    assertTrue(
+        result.snapshot.issues.none { it.code == "unexpected-enhancement-data" && it.message.contains("无开关") },
+        "has_enhancement 缺省时不能按 false 误报",
+    )
+
+    // legacy 附加数组与主 effects 按 effectId 去重
+    assertEquals(listOf("fx_a", "fx_b"), skills.getValue("s2").effects.map { it.effectId })
+
+    // trigger_condition 同时含 all/any 时只认 all
+    val trigger = skills.getValue("s3").enhancements.single()
+    assertEquals("all", trigger.triggerEffectMode)
+    assertEquals(listOf("fx_all1"), trigger.triggerEffects.map { it.effectId })
+}
 }
