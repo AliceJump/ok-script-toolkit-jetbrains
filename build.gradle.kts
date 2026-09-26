@@ -67,6 +67,33 @@ val copyPython = tasks.register<Sync>("copyPythonScripts") {
 }
 tasks.processResources { dependsOn(copyPython) }
 
+// ── 约定文件 JSON Schema 打包 ─────────────────────────────────────────
+// VS Code 侧通过 package.json 的 jsonValidation 把 schemas/ok-script-toolkit.schema.json
+// 挂到 ok-script-toolkit.json 上（补全 + 悬浮文档 + 校验）；JetBrains 侧由
+// OkConventionSchemaProviderFactory 从 JAR 资源读同一份 schema。
+// schema 的维护源头是父仓 schemas/，这里只做同步打包，避免两份各改各的。
+val configuredSchemaFile = providers.gradleProperty("conventionSchemaFile").orNull
+val conventionSchemaFile = configuredSchemaFile?.let { configured ->
+    val path = File(configured)
+    (if (path.isAbsolute) path else project.rootDir.resolve(path)).normalize()
+} ?: project.rootDir.resolve("../schemas/ok-script-toolkit.schema.json").normalize()
+// 与 copyPythonScripts 同一策略：子仓独立 CI 没有父仓时放行（空跑），发版任务必须带。
+if (!conventionSchemaFile.isFile) {
+    val isDistributable = gradle.startParameter.taskNames.any { requested ->
+        val taskName = requested.substringAfterLast(':')
+        distributableTasks.any { name -> name.equals(taskName, ignoreCase = true) }
+    }
+    if (isDistributable) {
+        throw GradleException("Convention schema not found at ${conventionSchemaFile.absolutePath}. Required for distributable builds.")
+    }
+    logger.warn("Warning: ${conventionSchemaFile.absolutePath} not found, skipping convention schema packaging")
+}
+val copyConventionSchema = tasks.register<Sync>("copyConventionSchema") {
+    from(conventionSchemaFile)
+    into(project.layout.buildDirectory.dir("resources/main/schemas"))
+}
+tasks.processResources { dependsOn(copyConventionSchema) }
+
 dependencies {
     intellijPlatform {
         val localPath = providers.gradleProperty("platformLocalPath").orNull
@@ -75,6 +102,9 @@ dependencies {
         } else {
             pycharm(providers.gradleProperty("platformVersion").get())
             bundledPlugin("PythonCore")
+            // 约定文件 JSON Schema（OkConventionSchemaProviderFactory）编译需要 json 插件里的
+            // com.jetbrains.jsonSchema.extension.* —— plugin.xml 已 depends com.intellij.modules.json
+            bundledPlugin("com.intellij.modules.json")
         }
         testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
     }

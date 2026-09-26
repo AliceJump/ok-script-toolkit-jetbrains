@@ -81,6 +81,11 @@
             id="okScriptToolkit"
             displayType="BALLOON"
             isLogByDefault="true"/>
+
+        <!-- 项目约定文件 ok-script-toolkit.json 的 schema（补全/文档/校验），
+             与 VS Code 侧 jsonValidation 共用父仓 schemas/ 的同一份 schema 文件 -->
+        <JavaScript.JsonSchema.ProviderFactory
+            implementation="com.alicejump.okscripttoolkit.editor.OkConventionSchemaProviderFactory"/>
     </extensions>
 
     <actions>
