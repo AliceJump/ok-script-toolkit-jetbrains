@@ -19,6 +19,7 @@ Brings ok-script language keys, OCR fixes, templates, effects and tasks into you
 [![Platform](https://img.shields.io/badge/Platform-2025.1%2B-000000?logo=jetbrains&logoColor=white)](gradle.properties)
 [![Kotlin](https://img.shields.io/badge/Kotlin-JDK%2021-7F52FF?logo=kotlin&logoColor=white)](build.gradle.kts)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/AliceJump/ok-script-toolkit-jetbrains)
 
 [安装](#安装) · [功能](#功能) · [构建](#构建) · [发布](#发布) · [开发](#agent-技能)
 
