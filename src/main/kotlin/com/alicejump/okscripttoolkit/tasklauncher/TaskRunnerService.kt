@@ -21,6 +21,8 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.Disposer
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
 import java.awt.BorderLayout
 import java.io.File
 import java.io.OutputStreamWriter
@@ -396,8 +398,23 @@ class TaskRunnerService(private val project: Project) : Disposable {
             exitCode == 0 -> OkScriptToolkitBundle.message("taskLauncher.executorClosed")
             else -> OkScriptToolkitBundle.message("taskLauncher.executorExitCode", exitCode)
         }
-        if (!wasForced && exitCode != null && exitCode != 0) {
-            LOG.warn("Executor exited with code $exitCode")
+        if (!wasForced) {
+            // 异常退出 / 启动失败要主动告知（对齐 VS Code 的 showErrorMessage toast）：
+            // 只靠状态栏红点 + finishMessage，不看任务工具窗就不知道执行器崩了。
+            // 通知挂在项目级 service 上发 —— 工具窗关闭后执行器还在跑，崩了照样要有人听见。
+            val failureMessage = when {
+                startupError != null -> startupError
+                exitCode != null && exitCode != 0 ->
+                    OkScriptToolkitBundle.message("taskLauncher.executorExitCode", exitCode)
+                else -> null
+            }
+            if (failureMessage != null) {
+                LOG.warn("Executor failed: $failureMessage")
+                NotificationGroupManager.getInstance()
+                    .getNotificationGroup("okScriptToolkit")
+                    .createNotification(failureMessage, NotificationType.ERROR)
+                    .notify(project)
+            }
         }
         snapshot = ExecutorState(
             status = "idle",
