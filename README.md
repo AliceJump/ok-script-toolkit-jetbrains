@@ -15,7 +15,7 @@ Brings ok-script language keys, OCR fixes, templates, effects and tasks into you
 
 [![JetBrains Marketplace](https://img.shields.io/badge/JetBrains%20Marketplace-OK%20Script%20Toolkit-000000?logo=jetbrains&logoColor=white)](https://plugins.jetbrains.com/plugin/34091-ok-script-toolkit)
 [![Downloads](https://img.shields.io/jetbrains/plugin/d/34091)](https://plugins.jetbrains.com/plugin/34091-ok-script-toolkit)
-[![Version](https://img.shields.io/badge/version-1.13.0-blue)](gradle.properties)
+[![Version](https://img.shields.io/badge/version-1.14.0-blue)](gradle.properties)
 [![Platform](https://img.shields.io/badge/Platform-2025.1%2B-000000?logo=jetbrains&logoColor=white)](gradle.properties)
 [![Kotlin](https://img.shields.io/badge/Kotlin-JDK%2021-7F52FF?logo=kotlin&logoColor=white)](build.gradle.kts)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
