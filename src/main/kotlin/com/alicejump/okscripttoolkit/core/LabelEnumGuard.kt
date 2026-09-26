@@ -37,10 +37,17 @@ object LabelEnumGuard {
     const val FALLBACK_ENUM_CLASS_NAME = "LabelEnum"
 
     private val PYTHON_IDENTIFIER = Regex("^[A-Za-z_][A-Za-z0-9_]*$")
+    /** Python 3 的硬关键字；match/case/type 是软关键字，仍可作类名或成员名。 */
+    val PYTHON_KEYWORDS = setOf(
+        "False", "None", "True", "and", "as", "assert", "async", "await", "break",
+        "class", "continue", "def", "del", "elif", "else", "except", "finally",
+        "for", "from", "global", "if", "import", "in", "is", "lambda", "nonlocal",
+        "not", "or", "pass", "raise", "return", "try", "while", "with", "yield",
+    )
     private val CLASS_DECLARATION = Regex("^[ \t]*class[ \t]+([A-Za-z_][A-Za-z0-9_]*)", RegexOption.MULTILINE)
 
     /**
-     * **真正会写进源码的类名**：非法标识符退回 [FALLBACK_ENUM_CLASS_NAME]。
+     * **真正会写进源码的类名**：非法标识符或 Python 关键字退回 [FALLBACK_ENUM_CLASS_NAME]。
      *
      * 与 `TemplateAssetDataService.generateLabelEnum` **共用**这一个函数。各写一遍的后果是
      * 校验拿"用户填的名字"去比、而文件里写的是"兜底名字"，于是警告内容与实际不符 ——
@@ -48,7 +55,7 @@ object LabelEnumGuard {
      * 而实际写进去的还是 `LabelEnum`，什么都没变。**一句不成立的警告比没有警告更糟**。
      */
     fun writableClassName(raw: String): String =
-        if (PYTHON_IDENTIFIER.matches(raw)) raw else FALLBACK_ENUM_CLASS_NAME
+        if (PYTHON_IDENTIFIER.matches(raw) && raw !in PYTHON_KEYWORDS) raw else FALLBACK_ENUM_CLASS_NAME
 
     /**
      * 从 Python 源码里取第一个 `class X(...)` 的类名。
