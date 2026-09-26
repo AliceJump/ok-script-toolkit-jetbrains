@@ -17,7 +17,6 @@ import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.SwingUtilities
 import com.alicejump.okscripttoolkit.core.forEachField
 
@@ -111,8 +110,25 @@ class ToolboxService(private val project: Project) : Disposable {
     @Volatile
     private var executorRunning = false
 
-    /** 连接或断开进行中标记，防止两种操作交错覆盖状态。 */
-    private val connecting = AtomicBoolean(false)
+    /** 服务已释放（dispose 后排队的连接操作直接跳过，对齐 VS Code 的 disposed 检查） */
+    @Volatile
+    private var disposed = false
+
+    /**
+     * 连接/断开操作的**串行队列**（对齐 VS Code toolboxConnect 的 connectionTail）。
+     *
+     * connect_game.py 在游戏未运行时会自动拉起游戏、最长等 150s —— 期间用户点
+     * 「断开」必须生效（排在正在跑的 Connect 之后执行），不能像旧实现那样被
+     * AtomicBoolean 静默丢弃：连接最终成功后用户以为已断开，任务进程照样连上旧窗口。
+     * 单工作线程保证操作不交错；单个操作的错误只交给调用方，队列继续处理后续操作。
+     */
+    private val connectionOps = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "ok-script-toolkit-connection").apply { isDaemon = true }
+    }
+
+    /** 尚未跑完的 Connect（对齐 VS Code pendingConnect）：并发两次 Connect 合并成一次 */
+    @Volatile
+    private var pendingConnect: Pair<String, CompletableFuture<Unit>>? = null
 
     // ── State access ──────────────────────────────────────────────────
 
@@ -214,50 +230,57 @@ class ToolboxService(private val project: Project) : Disposable {
             postStatus(OkScriptToolkitBundle.message("toolbox.noProject"))
             return CompletableFuture.completedFuture(Unit)
         }
-        if (!connecting.compareAndSet(false, true)) {
-            return CompletableFuture.completedFuture(Unit)
-        }
+        // 并发的两次 Connect 合并成一次（对齐 VS Code pendingConnect）
+        pendingConnect?.let { (dir, future) -> if (dir == projectDir) return future }
         postStatus(OkScriptToolkitBundle.message("toolbox.connecting"))
-        return CompletableFuture.supplyAsync {
-            try {
-                val script = Paths.get(PythonScriptLocator.findScriptDir(), "connect_game.py")
-                val result = pythonRunner.runSync(
-                    pythonPath = pythonPath,
-                    scriptPath = script.toString(),
-                    args = listOf(projectDir),
-                    workingDir = File(projectDir),
-                    timeoutMs = CONNECT_TIMEOUT_MS,
-                )
-                // 项目脚本约定：失败时往 stdout 末尾打印 {"ok": false, "error": "..."}；
-                // 优先回传结构化错误，其次 stderr，最后才是通用命令失败信息。
-                val parsed = pythonRunner.parseJsonFromStdout(result.stdout)
-                    ?.let { runCatching { JSON.readTree(it) }.getOrNull() }
-                if (parsed?.path("ok")?.asBoolean(false) != true) {
-                    val error = parsed?.path("error")?.asText(null)
-                        ?: result.stderr.trim().ifEmpty {
-                            OkScriptToolkitBundle.message("toolbox.connectExit", result.exitCode)
-                        }
-                    throw IllegalStateException(error)
-                }
-                val game = GameConnection(
-                    hwnd = parsed.path("hwnd").asLong(0),
-                    pid = parsed.path("pid").asLong(0),
-                    title = parsed.path("title").asText(""),
-                    exe = parsed.path("exe").asText(""),
-                    connectedAt = System.currentTimeMillis(),
-                )
-                saveState(projectDir, strict = true) { it.copy(game = game) }
-                postStatus("")
-                // 调试浮层开启时拉起常驻宿主：无需启动任务即可 Alt+右键框选取坐标
-                if (loadState(projectDir).overlay) {
-                    startOverlayHost(projectDir, pythonPath)
-                }
-            } catch (e: Exception) {
-                LOG.warn("connect_game.py failed", e)
-                postStatus(OkScriptToolkitBundle.message("toolbox.connectFailed", e.message ?: "unknown"))
-            } finally {
-                connecting.set(false)
+        val future = CompletableFuture<Unit>()
+        pendingConnect = projectDir to future
+        future.whenComplete { _, _ -> if (pendingConnect?.second === future) pendingConnect = null }
+        connectionOps.execute {
+            if (disposed) { future.complete(Unit); return@execute }
+            doConnect(projectDir, pythonPath)
+            future.complete(Unit)
+        }
+        return future
+    }
+
+    private fun doConnect(projectDir: String, pythonPath: String) {
+        try {
+            val script = Paths.get(PythonScriptLocator.findScriptDir(), "connect_game.py")
+            val result = pythonRunner.runSync(
+                pythonPath = pythonPath,
+                scriptPath = script.toString(),
+                args = listOf(projectDir),
+                workingDir = File(projectDir),
+                timeoutMs = CONNECT_TIMEOUT_MS,
+            )
+            // 项目脚本约定：失败时往 stdout 末尾打印 {"ok": false, "error": "..."}；
+            // 优先回传结构化错误，其次 stderr，最后才是通用命令失败信息。
+            val parsed = pythonRunner.parseJsonFromStdout(result.stdout)
+                ?.let { runCatching { JSON.readTree(it) }.getOrNull() }
+            if (parsed?.path("ok")?.asBoolean(false) != true) {
+                val error = parsed?.path("error")?.asText(null)
+                    ?: result.stderr.trim().ifEmpty {
+                        OkScriptToolkitBundle.message("toolbox.connectExit", result.exitCode)
+                    }
+                throw IllegalStateException(error)
             }
+            val game = GameConnection(
+                hwnd = parsed.path("hwnd").asLong(0),
+                pid = parsed.path("pid").asLong(0),
+                title = parsed.path("title").asText(""),
+                exe = parsed.path("exe").asText(""),
+                connectedAt = System.currentTimeMillis(),
+            )
+            saveState(projectDir, strict = true) { it.copy(game = game) }
+            postStatus("")
+            // 调试浮层开启时拉起常驻宿主：无需启动任务即可 Alt+右键框选取坐标
+            if (loadState(projectDir).overlay) {
+                startOverlayHost(projectDir, pythonPath)
+            }
+        } catch (e: Exception) {
+            LOG.warn("connect_game.py failed", e)
+            postStatus(OkScriptToolkitBundle.message("toolbox.connectFailed", e.message ?: "unknown"))
         }
     }
 
@@ -270,48 +293,54 @@ class ToolboxService(private val project: Project) : Disposable {
             postStatus(OkScriptToolkitBundle.message("toolbox.noProject"))
             return CompletableFuture.completedFuture(Unit)
         }
-        if (!connecting.compareAndSet(false, true)) {
-            return CompletableFuture.completedFuture(Unit)
-        }
+        // 取消还没开跑的 Connect（对齐 VS Code disconnect 里的 pendingConnect = undefined）；
+        // 已在跑的 Connect 仍会完成，本次 Disconnect 排在它之后执行 —— 最终状态是断开。
+        pendingConnect = null
         postStatus(OkScriptToolkitBundle.message("toolbox.disconnecting"))
-        return CompletableFuture.supplyAsync {
-            try {
-                val script = Paths.get(PythonScriptLocator.findScriptDir(), "connect_game.py")
-                val result = pythonRunner.runSync(
-                    pythonPath = pythonPath,
-                    scriptPath = script.toString(),
-                    args = listOf(projectDir, "--disconnect"),
-                    workingDir = File(projectDir),
-                    timeoutMs = DISCONNECT_TIMEOUT_MS,
-                )
-                val parsed = pythonRunner.parseJsonFromStdout(result.stdout)
-                    ?.let { runCatching { JSON.readTree(it) }.getOrNull() }
-                if (result.exitCode != 0 ||
-                    parsed?.path("ok")?.asBoolean(false) != true ||
-                    parsed?.path("disconnected")?.asBoolean(false) != true
-                ) {
-                    val error = parsed?.path("error")?.asText(null)
-                        ?: result.stderr.trim().ifEmpty {
-                            if (result.exitCode != 0) {
-                                OkScriptToolkitBundle.message("toolbox.connectExit", result.exitCode)
-                            } else {
-                                OkScriptToolkitBundle.message("toolbox.disconnectNoConfirmation")
-                            }
+        val future = CompletableFuture<Unit>()
+        connectionOps.execute {
+            if (disposed) { future.complete(Unit); return@execute }
+            doDisconnect(projectDir, pythonPath)
+            future.complete(Unit)
+        }
+        return future
+    }
+
+    private fun doDisconnect(projectDir: String, pythonPath: String) {
+        try {
+            val script = Paths.get(PythonScriptLocator.findScriptDir(), "connect_game.py")
+            val result = pythonRunner.runSync(
+                pythonPath = pythonPath,
+                scriptPath = script.toString(),
+                args = listOf(projectDir, "--disconnect"),
+                workingDir = File(projectDir),
+                timeoutMs = DISCONNECT_TIMEOUT_MS,
+            )
+            val parsed = pythonRunner.parseJsonFromStdout(result.stdout)
+                ?.let { runCatching { JSON.readTree(it) }.getOrNull() }
+            if (result.exitCode != 0 ||
+                parsed?.path("ok")?.asBoolean(false) != true ||
+                parsed?.path("disconnected")?.asBoolean(false) != true
+            ) {
+                val error = parsed?.path("error")?.asText(null)
+                    ?: result.stderr.trim().ifEmpty {
+                        if (result.exitCode != 0) {
+                            OkScriptToolkitBundle.message("toolbox.connectExit", result.exitCode)
+                        } else {
+                            OkScriptToolkitBundle.message("toolbox.disconnectNoConfirmation")
                         }
-                    throw IllegalStateException(error)
-                }
-                stopOverlayHost()
-                saveState(projectDir, strict = true) { it.copy(game = null) }
-                postStatus("")
-            } catch (e: Exception) {
-                LOG.warn("connect_game.py --disconnect failed", e)
-                postStatus(OkScriptToolkitBundle.message(
-                    "toolbox.disconnectFailed",
-                    e.message ?: OkScriptToolkitBundle.message("toolbox.disconnectNoConfirmation"),
-                ))
-            } finally {
-                connecting.set(false)
+                    }
+                throw IllegalStateException(error)
             }
+            stopOverlayHost()
+            saveState(projectDir, strict = true) { it.copy(game = null) }
+            postStatus("")
+        } catch (e: Exception) {
+            LOG.warn("connect_game.py --disconnect failed", e)
+            postStatus(OkScriptToolkitBundle.message(
+                "toolbox.disconnectFailed",
+                e.message ?: OkScriptToolkitBundle.message("toolbox.disconnectNoConfirmation"),
+            ))
         }
     }
 
@@ -470,6 +499,9 @@ class ToolboxService(private val project: Project) : Disposable {
     }
 
     override fun dispose() {
+        disposed = true
+        // 队列收尾：等在跑的操作自然结束（脚本有超时），不再接新活
+        connectionOps.shutdown()
         stopOverlayHost()
     }
 

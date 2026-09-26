@@ -1109,23 +1109,21 @@ class TaskLauncherPanel(private val project: Project) {
 
     private fun connectGame() {
         val projectDir = checkedProjectPath(toolboxStatusLabel, "toolbox.noProject") ?: return
+        // 只锁自己的按钮（对齐 VS Code：连接进行中「断开」仍可点，操作经服务层排队生效）
         connectGameButton.isEnabled = false
-        disconnectGameButton.isEnabled = false
         toolboxService.connectGame(projectDir, detectPythonPath()).whenComplete { _, _ ->
             SwingUtilities.invokeLater {
                 connectGameButton.isEnabled = true
-                disconnectGameButton.isEnabled = true
             }
         }
     }
 
     private fun disconnectGame() {
         val projectDir = checkedProjectPath(toolboxStatusLabel, "toolbox.noProject") ?: return
-        connectGameButton.isEnabled = false
+        // 只锁自己的按钮：connect_game.py 连接中最长等 150s，期间用户必须能改点「断开」
         disconnectGameButton.isEnabled = false
         toolboxService.disconnectGame(projectDir, detectPythonPath()).whenComplete { _, _ ->
             SwingUtilities.invokeLater {
-                connectGameButton.isEnabled = true
                 disconnectGameButton.isEnabled = true
             }
         }
@@ -1174,10 +1172,16 @@ class TaskLauncherPanel(private val project: Project) {
         return DEFAULT_PYTHON_PATH
     }
 
+    /** 刷新代数：新刷新开始后，旧刷新的异步结果全部作废（对齐 VS Code refreshGeneration）——
+     *  连续两次刷新可交错，旧探针后返回会把新结果整个覆盖回去 */
+    @Volatile
+    private var loadGeneration = 0
+
     private fun loadTasks() {
         val projectDir = checkedProjectPath(statusLabel, "taskLauncher.noProject") ?: return
 
         statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.loading")
+        val generation = ++loadGeneration
         progressBar.isIndeterminate = true
         progressBar.isVisible = true
 
@@ -1202,7 +1206,10 @@ class TaskLauncherPanel(private val project: Project) {
             } else {
                 parseOnlyResult(parseResult, projectDir, locale)
             }
-            SwingUtilities.invokeLater { applyProbeResult(immediate, finished = false) }
+            SwingUtilities.invokeLater {
+                if (generation != loadGeneration) return@invokeLater
+                applyProbeResult(immediate, finished = false)
+            }
 
             // ② 然后**无条件**全量采集（对齐 VSCode 的 probeSchemasInBackground）。
             //
@@ -1223,9 +1230,13 @@ class TaskLauncherPanel(private val project: Project) {
                 immediate
             }
         }.thenAccept { result ->
-            SwingUtilities.invokeLater { applyProbeResult(result, finished = true) }
+            SwingUtilities.invokeLater {
+                if (generation != loadGeneration) return@invokeLater
+                applyProbeResult(result, finished = true)
+            }
         }.exceptionally { throwable ->
             SwingUtilities.invokeLater {
+                if (generation != loadGeneration) return@invokeLater
                 progressBar.isIndeterminate = false
                 progressBar.isVisible = false
                 statusLabel.text = "Error: ${throwable.message}"
@@ -2336,6 +2347,14 @@ class TaskLauncherPanel(private val project: Project) {
                 pushParamOverrides()
             } catch (e: Exception) {
                 LOG.warn("Failed to save task config for $taskKey", e)
+                // 静默丢保存 = 参数编辑无声丢失（对齐 VS Code：showErrorMessage + webview 状态条）
+                com.intellij.notification.NotificationGroupManager.getInstance()
+                    .getNotificationGroup("okScriptToolkit")
+                    .createNotification(
+                        OkScriptToolkitBundle.message("taskLauncher.saveFailed", e.message ?: "unknown"),
+                        com.intellij.notification.NotificationType.ERROR,
+                    )
+                    .notify(project)
             }
         }
     }
