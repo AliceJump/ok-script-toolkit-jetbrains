@@ -127,6 +127,9 @@ class TaskRunnerService(private val project: Project) : Disposable {
 
     fun isRunning(): Boolean = process?.isAlive == true
 
+    /** 执行器正在服务的项目目录（未启动时为空串）—— UI 用它做跨项目防护（projectMismatch） */
+    val runningProjectDir: String get() = currentProjectDir
+
     fun currentState(): ExecutorState = snapshot.copy(
         status = when {
             // connecting 优先于 isRunning()：进程是异步 spawn 的，在它真正起来之前
