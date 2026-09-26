@@ -358,15 +358,19 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
             }
             val result = CharacterDataService.load(resolved, settings.displayLocale().ifBlank { "zh_CN" })
             val avatarMap = mutableMapOf<String, Icon?>()
-            runCatching { Regex(settings.characterAvatarTemplateRegex()) }.getOrNull()?.let { avatarRegex ->
-                val gallery = project.service<OkProjectDataService>()
-                for (char in result.snapshot.characters) {
-                    val candidate = char.master?.en ?: char.characterId
-                    gallery.features().firstOrNull { tpl ->
-                        val stripped = avatarRegex.find(tpl.name)?.let { tpl.name.replaceFirst(it.value, "") } ?: tpl.name
-                        stripped.equals(candidate, ignoreCase = true) || tpl.name.equals(candidate, ignoreCase = true)
-                    }?.let { avatarMap[char.characterId] = loadAvatarIcon(it) }
-                }
+            val gallery = project.service<OkProjectDataService>()
+            // 匹配语义（归一化 key / 双候选 / 唯一后缀回退 / 非法正则兜底）见 [AvatarMatcher]
+            val avatarRegex = AvatarMatcher.compile(
+                settings.characterAvatarTemplateRegex(),
+                OkScriptToolkitSettings.DEFAULT_AVATAR_TEMPLATE_REGEX,
+            )
+            for (char in result.snapshot.characters) {
+                AvatarMatcher.select(
+                    gallery.features(),
+                    { it.name },
+                    avatarRegex,
+                    listOf(char.master?.en, char.characterId),
+                )?.let { avatarMap[char.characterId] = loadAvatarIcon(it) }
             }
             LoadResult(result.snapshot, result.sources, resolved, avatarMap, projectDir)
         }.thenAccept { result ->
