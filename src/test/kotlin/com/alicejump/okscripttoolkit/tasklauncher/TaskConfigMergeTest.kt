@@ -21,6 +21,114 @@ import kotlin.test.assertNull
  */
 class TaskConfigMergeTest {
 
+    @Test
+    fun `late schema materialization only adds missing keys to the latest task snapshot`() {
+        // 探针读到 x=1 后，用户自动保存先写入 x=99；晚到的探针只能补新键。
+        val latest = TaskConfigStore(
+            projects = mapOf(
+                "/old" to TaskConfigStore.ProjectConfig(
+                    tasks = mapOf("m::A" to TaskConfig(params = mapOf("x" to 99, "orphan" to "keep"))),
+                    enabledTriggers = listOf("m::T"),
+                ),
+                "/new" to TaskConfigStore.ProjectConfig(
+                    tasks = mapOf("m::A" to TaskConfig(params = mapOf("x" to 7))),
+                ),
+            ),
+        )
+        val (updated, added) = TaskConfigMerge.withMaterializedTaskParams(
+            latest,
+            "/old",
+            mapOf("m::A" to TaskLauncherService.TaskSchema(fields = listOf(
+                TaskLauncherService.TaskParamField(key = "x", value = 1),
+                TaskLauncherService.TaskParamField(key = "new", value = null),
+            ))),
+        )
+
+        assertEquals(1, added)
+        val params = updated.projects["/old"]?.tasks?.get("m::A")?.params
+        assertEquals(99, params?.get("x"), "不能把用户刚保存的值写回旧探针值")
+        assertEquals("keep", params?.get("orphan"))
+        assertEquals(true, params?.containsKey("new"), "显式 null 也算已物化的键")
+        assertEquals(null, params?.get("new"))
+        assertEquals(listOf("m::T"), updated.projects["/old"]?.enabledTriggers)
+        assertEquals(mapOf("x" to 7), updated.projects["/new"]?.tasks?.get("m::A")?.params)
+
+        val (unchanged, secondAdded) = TaskConfigMerge.withMaterializedTaskParams(
+            updated,
+            "/old",
+            mapOf("m::A" to TaskLauncherService.TaskSchema(fields = listOf(
+                TaskLauncherService.TaskParamField(key = "new", value = "different"),
+            ))),
+        )
+        assertEquals(0, secondAdded)
+        assertEquals(updated, unchanged)
+    }
+
+    @Test
+    fun `late probe uses re-probe default after a user save creates the snapshot`() {
+        val latest = storeWith(mapOf("/proj" to projectOf(
+            taskEntries = mapOf("m::A" to config("edited" to 99)),
+        )))
+        val (updated, added) = TaskConfigMerge.withMaterializedTaskParams(
+            latest,
+            "/proj",
+            mapOf("m::A" to TaskLauncherService.TaskSchema(fields = listOf(
+                TaskLauncherService.TaskParamField(key = "new", default = 5, value = 50),
+            ))),
+        )
+        assertEquals(1, added)
+        assertEquals(5, updated.projects["/proj"]?.tasks?.get("m::A")?.params?.get("new"))
+        assertEquals(99, updated.projects["/proj"]?.tasks?.get("m::A")?.params?.get("edited"))
+    }
+
+    @Test
+    fun `late global probe preserves edited groups and materializes against latest values`() {
+        val latest = storeWith(mapOf("/proj" to projectOf().copy(globalConfigs = mapOf(
+            "A" to mapOf("edited" to 99),
+            "B" to mapOf("keep" to true),
+        ))))
+        val (updated, added) = TaskConfigMerge.withMaterializedGlobalConfigs(
+            latest,
+            "/proj",
+            listOf(TaskLauncherService.GlobalConfigGroup(name = "A", fields = listOf(
+                TaskLauncherService.TaskParamField(key = "new", default = 5, value = 50),
+            ))),
+        )
+        assertEquals(1, added)
+        assertEquals(mapOf("edited" to 99, "new" to 5), updated.projects["/proj"]?.globalConfigs?.get("A"))
+        assertEquals(mapOf("keep" to true), updated.projects["/proj"]?.globalConfigs?.get("B"))
+    }
+
+    @Test
+    fun `editing one global group preserves another group saved since the editor opened`() {
+        val latest = storeWith(mapOf("/proj" to projectOf().copy(globalConfigs = mapOf(
+            "A" to mapOf("old" to 1),
+            "B" to mapOf("newer" to 2),
+        ))))
+        val updated = TaskConfigMerge.withGlobalConfigGroup(latest, "/proj", "A", mapOf("edited" to 3))
+        assertEquals(mapOf("edited" to 3), updated.projects["/proj"]?.globalConfigs?.get("A"))
+        assertEquals(mapOf("newer" to 2), updated.projects["/proj"]?.globalConfigs?.get("B"))
+    }
+
+    @Test
+    fun `late debounced user save keeps keys materialized after the form snapshot was built`() {
+        val latest = storeWith(
+            mapOf("/proj" to projectOf(
+                taskEntries = mapOf("m::A" to config("x" to 1, "newSchemaKey" to "default")),
+            )),
+        )
+        val saved = TaskConfigMerge.withUserTaskSnapshot(
+            latest,
+            "/proj",
+            "m::A",
+            config("x" to 99),
+        )
+        assertEquals(
+            mapOf("x" to 99, "newSchemaKey" to "default"),
+            saved.projects["/proj"]?.tasks?.get("m::A")?.params,
+        )
+    }
+
     private fun storeWith(
         projectEntries: Map<String, TaskConfigStore.ProjectConfig> = emptyMap(),
     ): TaskConfigStore = TaskConfigStore(projects = projectEntries)

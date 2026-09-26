@@ -39,6 +39,83 @@ import com.alicejump.okscripttoolkit.tasklauncher.TaskLauncherService.TaskConfig
 internal object TaskConfigMerge {
 
     /**
+     * 在最新 store 上物化探针字段。首建/重探针的取值也必须在写入锁内判定。
+     */
+    fun withMaterializedTaskParams(
+        store: TaskConfigStore,
+        projectRoot: String,
+        schemas: Map<String, TaskLauncherService.TaskSchema>,
+    ): Pair<TaskConfigStore, Int> {
+        val projectConfig = store.projects[projectRoot] ?: TaskConfigStore.ProjectConfig()
+        val tasks = projectConfig.tasks.toMutableMap()
+        var added = 0
+        for ((taskKey, schema) in schemas) {
+            if (schema.broken || schema.fields.isEmpty()) continue
+            val existing = tasks[taskKey] ?: TaskConfig()
+            val (params, taskAdded) = GlobalSnapshotRules.materialize(existing.params.orEmpty(), schema.fields)
+            if (taskAdded == 0) continue
+            // 探针 JSON 允许显式 null；TaskConfig 的旧签名使用 Any，运行时 Map 可保留 null。
+            @Suppress("UNCHECKED_CAST")
+            val snapshot = params as Map<String, Any>
+            tasks[taskKey] = existing.copy(params = snapshot)
+            added += taskAdded
+        }
+        if (added == 0) return store to 0
+        val projects = store.projects.toMutableMap()
+        projects[projectRoot] = projectConfig.copy(tasks = tasks)
+        return store.copy(projects = projects) to added
+    }
+
+    /** 全局配置按最新 store 物化，以免晚到的探针覆盖用户在编辑器里保存的值。 */
+    fun withMaterializedGlobalConfigs(
+        store: TaskConfigStore,
+        projectRoot: String,
+        groups: List<TaskLauncherService.GlobalConfigGroup>,
+    ): Pair<TaskConfigStore, Int> {
+        val projectConfig = store.projects[projectRoot] ?: TaskConfigStore.ProjectConfig()
+        val snapshots = projectConfig.globalConfigs.toMutableMap()
+        var added = 0
+        for (group in groups) {
+            val (snapshot, count) = GlobalSnapshotRules.materialize(snapshots[group.name].orEmpty(), group.fields)
+            if (count == 0) continue
+            snapshots[group.name] = snapshot
+            added += count
+        }
+        if (added == 0) return store to 0
+        val projects = store.projects.toMutableMap()
+        projects[projectRoot] = projectConfig.copy(globalConfigs = snapshots)
+        return store.copy(projects = projects) to added
+    }
+
+    /** 用户编辑单个全局组时不覆盖其他组。 */
+    fun withGlobalConfigGroup(
+        store: TaskConfigStore,
+        projectRoot: String,
+        groupName: String,
+        values: Map<String, Any?>,
+    ): TaskConfigStore {
+        val projectConfig = store.projects[projectRoot] ?: TaskConfigStore.ProjectConfig()
+        val snapshots = projectConfig.globalConfigs.toMutableMap()
+        snapshots[groupName] = values
+        val projects = store.projects.toMutableMap()
+        projects[projectRoot] = projectConfig.copy(globalConfigs = snapshots)
+        return store.copy(projects = projects)
+    }
+
+    /** 防抖表单快照晚到时，保留其构建后由探针补入的新键；表单里的值仍优先。 */
+    fun withUserTaskSnapshot(
+        store: TaskConfigStore,
+        projectRoot: String,
+        taskKey: String,
+        config: TaskConfig,
+    ): TaskConfigStore {
+        val latest = store.projects[projectRoot]?.tasks?.get(taskKey)
+        val params = LinkedHashMap<String, Any>(latest?.params.orEmpty())
+        params.putAll(config.params.orEmpty())
+        return withTask(store, projectRoot, taskKey, config.copy(params = params.ifEmpty { null }))
+    }
+
+    /**
      * 写入某个任务的配置，**保留**该项目下其它任务的参数与用户的勾选集合。
      *
      * 项目根不存在时自动新建（首次改参数必然遇到）。

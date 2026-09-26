@@ -190,6 +190,21 @@ class TaskLauncherPanel(private val project: Project) {
     private var configModule = "src.config"
     private var schemas = mapOf<String, TaskLauncherService.TaskSchema>()
     private val saveTimer = javax.swing.Timer(400, null)
+    private var pendingSave: PendingTaskSave? = null
+    /** 防抖写盘仍要保持用户操作顺序；commonPool 的独立任务可能倒序完成。 */
+    private var taskSaveTail: CompletableFuture<Boolean> = CompletableFuture.completedFuture(true)
+    private var triggerSaveTail: CompletableFuture<Boolean> = CompletableFuture.completedFuture(true)
+    @Volatile
+    private var lastTaskSaveError = ""
+    @Volatile
+    private var lastTriggerSaveError = ""
+    /** 必须在 init 前初始化：init 会立即调用 loadTasks，声明在后面会把代数重置为 0。 */
+    @Volatile
+    private var loadGeneration = 0
+    @Volatile
+    private var disposed = false
+    /** 当前表格/参数面板所属的项目根；设置切换后异步保存仍须写回原项目。 */
+    private var displayedProjectDir = ""
 
     // ── 右侧详情区（选中谁就显示谁）──
     private val detailTitle = JBLabel()
@@ -781,14 +796,14 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     private fun editGlobalConfig(group: TaskLauncherService.GlobalConfigGroup) {
-        val existing = taskService.loadGlobalConfigs()
+        val root = taskDataRoot()
+        val existing = taskService.loadGlobalConfigs(root)
         val edited = GlobalConfigEditor.show(mainPanel, group, existing[group.name].orEmpty()) ?: return
         if (edited.values == existing[group.name]) return
-        val snapshots = existing.toMutableMap().apply { put(group.name, edited.values) }
         try {
-            taskService.saveGlobalConfigs(snapshots)
-            pushGlobalSnapshot(snapshots)
-            if (runCenterVisible) renderRunCenter(taskRunner.currentState())
+            taskService.saveGlobalConfigGroup(group.name, edited.values, root)
+            pushGlobalSnapshot(taskService.loadGlobalConfigs(root), root)
+            if (runCenterVisible) renderRunCenter(runnerStateForDisplay())
         } catch (e: Exception) {
             LOG.warn("Failed to save global configuration", e)
             JOptionPane.showMessageDialog(
@@ -802,6 +817,10 @@ class TaskLauncherPanel(private val project: Project) {
 
     private fun openAccountEditor() {
         val projectDir = checkedProjectPath(statusLabel, "taskLauncher.noProject") ?: return
+        if (displayedProjectDir.isNotBlank() && displayedProjectDir != projectDir) {
+            loadTasks()
+            return
+        }
         if (!multiAccountInfo.hasStoreModule) {
             JOptionPane.showMessageDialog(
                 mainPanel,
@@ -856,7 +875,7 @@ class TaskLauncherPanel(private val project: Project) {
     private fun showGroupSummaryPopup(anchorComponent: JComponent, group: TaskLauncherService.GlobalConfigGroup) {
         val content = JPanel(GridBagLayout())
         content.isOpaque = false
-        val effective = taskService.loadGlobalConfigs()[group.name].orEmpty()
+        val effective = taskService.loadGlobalConfigs(taskDataRoot())[group.name].orEmpty()
         val gbc = GridBagConstraints().apply {
             gridx = 0
             gridy = 0
@@ -957,7 +976,7 @@ class TaskLauncherPanel(private val project: Project) {
             error.foreground = TaskLauncherTheme.ERR
             content.add(error, gbc)
         } else {
-            val edited = taskService.getTaskConfig(key).params?.size ?: 0
+            val edited = taskService.getTaskConfig(key, taskDataRoot()).params?.size ?: 0
             content.add(
                 mutedLabel(
                     OkScriptToolkitBundle.message("taskLauncher.schemaFieldCount", edited, schema.fields.size),
@@ -1144,6 +1163,9 @@ class TaskLauncherPanel(private val project: Project) {
         homeDir = System.getProperty("user.home").orEmpty(),
     )
 
+    /** 表格仍展示旧项目时，编辑和异步保存都继续使用表格所属的根。 */
+    private fun taskDataRoot(): String = displayedProjectDir.ifBlank { taskService.getTargetRoot() }
+
     private fun checkedProjectPath(messageLabel: JBLabel, missingKey: String): String? {
         val path = detectProjectPath()
         if (path.isBlank()) {
@@ -1172,16 +1194,19 @@ class TaskLauncherPanel(private val project: Project) {
         return DEFAULT_PYTHON_PATH
     }
 
-    /** 刷新代数：新刷新开始后，旧刷新的异步结果全部作废（对齐 VS Code refreshGeneration）——
-     *  连续两次刷新可交错，旧探针后返回会把新结果整个覆盖回去 */
-    @Volatile
-    private var loadGeneration = 0
-
     private fun loadTasks() {
-        val projectDir = checkedProjectPath(statusLabel, "taskLauncher.noProject") ?: return
-
-        statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.loading")
+        // 切项目/刷新前先提交旧面板的防抖编辑，避免后续编辑覆盖唯一的 pendingSave。
+        saveTimer.stop()
+        flushPendingSave().join()
+        triggerSaveTail.join()
+        // 即使新路径无效，也要先作废仍在后台运行的旧探针。
         val generation = ++loadGeneration
+        val projectDir = checkedProjectPath(statusLabel, "taskLauncher.noProject") ?: run {
+            progressBar.isIndeterminate = false
+            progressBar.isVisible = false
+            return
+        }
+        statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.loading")
         progressBar.isIndeterminate = true
         progressBar.isVisible = true
 
@@ -1207,8 +1232,8 @@ class TaskLauncherPanel(private val project: Project) {
                 parseOnlyResult(parseResult, projectDir, locale)
             }
             SwingUtilities.invokeLater {
-                if (generation != loadGeneration) return@invokeLater
-                applyProbeResult(immediate, finished = false)
+                if (disposed || generation != loadGeneration || projectDir != detectProjectPath()) return@invokeLater
+                applyProbeResult(immediate, finished = false, sourceProjectDir = projectDir)
             }
 
             // ② 然后**无条件**全量采集（对齐 VSCode 的 probeSchemasInBackground）。
@@ -1231,12 +1256,12 @@ class TaskLauncherPanel(private val project: Project) {
             }
         }.thenAccept { result ->
             SwingUtilities.invokeLater {
-                if (generation != loadGeneration) return@invokeLater
-                applyProbeResult(result, finished = true)
+                if (disposed || generation != loadGeneration || projectDir != detectProjectPath()) return@invokeLater
+                applyProbeResult(result, finished = true, sourceProjectDir = projectDir)
             }
         }.exceptionally { throwable ->
             SwingUtilities.invokeLater {
-                if (generation != loadGeneration) return@invokeLater
+                if (disposed || generation != loadGeneration || projectDir != detectProjectPath()) return@invokeLater
                 progressBar.isIndeterminate = false
                 progressBar.isVisible = false
                 statusLabel.text = "Error: ${throwable.message}"
@@ -1283,13 +1308,18 @@ class TaskLauncherPanel(private val project: Project) {
      * [finished] 为 false 时只渲染列表、不动进度条 —— 用于"先用缓存快速首屏"，
      * 真正的收尾（隐藏进度条）留给最后一次调用。
      */
-    private fun applyProbeResult(result: TaskLauncherService.SchemaProbeResult, finished: Boolean) {
+    private fun applyProbeResult(
+        result: TaskLauncherService.SchemaProbeResult,
+        finished: Boolean,
+        sourceProjectDir: String,
+    ) {
         if (finished) {
             progressBar.isIndeterminate = false
             progressBar.isVisible = false
         }
 
         if (result.ok && result.schemas != null) {
+            displayedProjectDir = sourceProjectDir
             schemas = result.schemas
             if (result.configModule != null) {
                 configModule = result.configModule
@@ -1313,7 +1343,7 @@ class TaskLauncherPanel(private val project: Project) {
 
             // 勾选集合来自插件自己的持久化文件；执行器运行中则以它的快照为准
             enabledTriggers.clear()
-            enabledTriggers.addAll(taskService.loadEnabledTriggers())
+            enabledTriggers.addAll(taskService.loadEnabledTriggers(sourceProjectDir))
 
             // 刷新后尽量保住原来的选中项（按 module::Class 找回）
             val previousSelection = detailTask?.let { taskKeyOf(it) }
@@ -1351,9 +1381,9 @@ class TaskLauncherPanel(private val project: Project) {
 
             // #7 配置接管：物化全局配置组 + 每个任务的参数快照（新增键 > 0 时覆盖状态提示）。
             // 缓存首屏（finished=false）只物化不提示 —— 对齐 VS Code：状态条消息只在探针完成后出。
-            val materialized = materializeTaskSnapshots(result.schemas) +
+            val materialized = materializeTaskSnapshots(result.schemas, sourceProjectDir) +
                 if (result.globalConfigGroups.isNotEmpty()) {
-                    materializeGlobalSnapshots(result.globalConfigGroups)
+                    materializeGlobalSnapshots(result.globalConfigGroups, sourceProjectDir)
                 } else 0
             if (finished && materialized > 0) {
                 statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.gconfigMaterialized", materialized)
@@ -1384,23 +1414,13 @@ class TaskLauncherPanel(private val project: Project) {
      *
      * @return 新增键数（0 = 全部快照无变化，不落盘不推送）
      */
-    private fun materializeTaskSnapshots(schemas: Map<String, TaskLauncherService.TaskSchema>): Int {
-        val updates = linkedMapOf<String, Map<String, Any?>>()
-        var added = 0
-        for ((taskKey, schema) in schemas) {
-            if (schema.broken || schema.fields.isEmpty()) continue
-            val existing = taskService.getTaskConfig(taskKey).params.orEmpty()
-            val (snapshot, count) = GlobalSnapshotRules.materialize(existing, schema.fields)
-            if (count > 0) {
-                updates[taskKey] = snapshot
-                added += count
-            }
-        }
-        if (updates.isNotEmpty()) {
-            taskService.saveMaterializedTaskParams(updates)
-            // 探针可在执行器启动后完成：物化出的新键必须即时推给常驻执行器
-            pushParamOverrides()
-        }
+    private fun materializeTaskSnapshots(
+        schemas: Map<String, TaskLauncherService.TaskSchema>,
+        root: String,
+    ): Int {
+        val added = taskService.saveMaterializedTaskParams(schemas, root)
+        // 探针可在执行器启动后完成：物化出的新键必须即时推给常驻执行器
+        if (added > 0) pushParamOverrides(root)
         return added
     }
 
@@ -1414,30 +1434,28 @@ class TaskLauncherPanel(private val project: Project) {
      *
      * @return 新增键数（0 = 快照无变化，不落盘不推送）
      */
-    private fun materializeGlobalSnapshots(groups: List<TaskLauncherService.GlobalConfigGroup>): Int {
-        val existing = taskService.loadGlobalConfigs()
-        val snapshots = existing.toMutableMap()
-        var added = 0
-        for (group in groups) {
-            val (snap, count) = GlobalSnapshotRules.materialize(existing[group.name].orEmpty(), group.fields)
-            snapshots[group.name] = snap
-            added += count
-        }
+    private fun materializeGlobalSnapshots(
+        groups: List<TaskLauncherService.GlobalConfigGroup>,
+        root: String,
+    ): Int {
+        val added = taskService.saveMaterializedGlobalConfigs(groups, root)
         if (added > 0) {
-            taskService.saveGlobalConfigs(snapshots)
-            pushGlobalSnapshot(snapshots)
+            pushGlobalSnapshot(taskService.loadGlobalConfigs(root), root)
         }
         return added
     }
 
     /** 全局配置快照即时推送：执行器运行中才推（gparams 是全量快照，幂等可重放） */
-    private fun pushGlobalSnapshot(snapshots: Map<String, Map<String, Any?>>) {
-        if (!taskRunner.isRunning()) return
+    private fun pushGlobalSnapshot(snapshots: Map<String, Map<String, Any?>>, root: String) {
+        if (!taskRunner.isRunning() || taskRunner.runningProjectDir != root) return
         if (snapshots.isEmpty()) return
-        taskRunner.pushGlobalParams(objectMapper.writeValueAsString(snapshots))
+        taskRunner.pushGlobalParams(objectMapper.writeValueAsString(snapshots), root)
     }
 
     private fun loadTaskParams(task: TaskLauncherService.TaskInfo) {
+        // 切换任务前保存上一张表单；单个 pendingSave 不能被下一张表单覆盖。
+        saveTimer.stop()
+        flushPendingSave().join()
         paramPanel.removeAll()
         paramFields.clear()
         visibilityRefresher = null
@@ -1451,7 +1469,7 @@ class TaskLauncherPanel(private val project: Project) {
 
         var row = 0
 
-        val taskConfig = taskService.getTaskConfig(taskKey)
+        val taskConfig = taskService.getTaskConfig(taskKey, taskDataRoot())
 
         if (schema != null && schema.fields.isNotEmpty()) {
             val separator = JSeparator()
@@ -2016,7 +2034,7 @@ class TaskLauncherPanel(private val project: Project) {
             val liveControl = getValueControl(field.key)
             if (liveControl is JCheckBox) return liveControl.isSelected
             // 回退到持久化的值
-            val taskConfig = taskService.getTaskConfig("${task.module}::${task.className}")
+            val taskConfig = taskService.getTaskConfig("${task.module}::${task.className}", taskDataRoot())
             return when (val v = taskConfig.params?.get(field.key) ?: field.value ?: field.default) {
                 is Boolean -> v
                 is String -> v.trim().equals("true", ignoreCase = true)
@@ -2062,7 +2080,7 @@ class TaskLauncherPanel(private val project: Project) {
     private fun createFieldComponent(field: TaskLauncherService.TaskParamField, task: TaskLauncherService.TaskInfo): JComponent {
         val owningRenderer = currentRenderer ?: throw IllegalStateException("createFieldComponent called without active renderer")
         val taskKey = "${task.module}::${task.className}"
-        val taskConfig = taskService.getTaskConfig(taskKey)
+        val taskConfig = taskService.getTaskConfig(taskKey, taskDataRoot())
         val savedValue = taskConfig.params?.get(field.key)
         val currentValue = savedValue ?: field.value ?: field.default
 
@@ -2329,24 +2347,32 @@ class TaskLauncherPanel(private val project: Project) {
         // 从编辑的控件同步到其他重复控件
         currentRenderer?.syncFromEdited()
         visibilityRefresher?.invoke()
+        val root = taskDataRoot()
         val taskKey = "${task.module}::${task.className}"
-        val config = buildTaskConfig(task)
-        pendingSave = taskKey to config
+        val config = buildTaskConfig(task, root)
+        pendingSave = PendingTaskSave(root, taskKey, config)
         saveTimer.restart()
     }
 
-    private var pendingSave: Pair<String, TaskLauncherService.TaskConfig>? = null
+    private data class PendingTaskSave(
+        val root: String,
+        val taskKey: String,
+        val config: TaskLauncherService.TaskConfig,
+    )
 
-    private fun flushPendingSave() {
-        val (taskKey, config) = pendingSave ?: return
+    private fun flushPendingSave(): CompletableFuture<Boolean> {
+        val (root, taskKey, config) = pendingSave ?: return taskSaveTail
         pendingSave = null
-        CompletableFuture.runAsync {
+        taskSaveTail = taskSaveTail.thenApplyAsync { _ ->
             try {
-                taskService.saveTaskConfig(taskKey, config)
+                taskService.saveTaskConfig(taskKey, config, root)
                 // 执行器是常驻进程：参数覆盖必须即时推送，否则要重启执行器才生效
-                pushParamOverrides()
+                pushParamOverrides(root)
+                lastTaskSaveError = ""
+                true
             } catch (e: Exception) {
                 LOG.warn("Failed to save task config for $taskKey", e)
+                lastTaskSaveError = e.message.orEmpty()
                 // 静默丢保存 = 参数编辑无声丢失（对齐 VS Code：showErrorMessage + webview 状态条）
                 com.intellij.notification.NotificationGroupManager.getInstance()
                     .getNotificationGroup("okScriptToolkit")
@@ -2355,8 +2381,10 @@ class TaskLauncherPanel(private val project: Project) {
                         com.intellij.notification.NotificationType.ERROR,
                     )
                     .notify(project)
+                false
             }
         }
+        return taskSaveTail
     }
 
     /**
@@ -2378,8 +2406,8 @@ class TaskLauncherPanel(private val project: Project) {
      * 注意「不让用户手填的字段被清掉」比「及时清理废弃字段」更重要：
      * 清理是单向不可逆的，而多留两个已知不生效的键只是噪音。
      */
-    private fun buildTaskConfig(task: TaskLauncherService.TaskInfo): TaskLauncherService.TaskConfig {
-        val existing = taskService.getTaskConfig(taskKeyOf(task))
+    private fun buildTaskConfig(task: TaskLauncherService.TaskInfo, root: String): TaskLauncherService.TaskConfig {
+        val existing = taskService.getTaskConfig(taskKeyOf(task), root)
         val params = LinkedHashMap<String, Any>(existing.params.orEmpty())
         for ((key, component) in paramFields) {
             // 使用 renderer 的 getValueControl 方法获取值控件
@@ -2483,6 +2511,21 @@ class TaskLauncherPanel(private val project: Project) {
      */
     private fun ensureExecutor(): Boolean {
         val projectDir = checkedProjectPath(statusLabel, "taskLauncher.noProject") ?: return false
+        // 设置已切到别的项目而表格尚未刷新：旧任务不能向新项目执行器入队。
+        if (displayedProjectDir.isNotBlank() && displayedProjectDir != projectDir) {
+            loadTasks()
+            return false
+        }
+        // 首次任务可能在启动后立刻执行；先等表单的防抖保存落盘并推送完成。
+        saveTimer.stop()
+        if (!flushPendingSave().join()) {
+            statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.saveFailed", lastTaskSaveError)
+            return false
+        }
+        if (!triggerSaveTail.join()) {
+            statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.saveFailed", lastTriggerSaveError)
+            return false
+        }
         if (taskRunner.isRunning()) {
             // 跨项目防护（对齐 VS Code ensureExecutor 的 projectMismatch）：执行器是
             // 项目级服务、常驻后台 —— 用户改了 okScriptProjectPath 再点启动/入队，
@@ -2511,18 +2554,18 @@ class TaskLauncherPanel(private val project: Project) {
         // 路径与探针共用 RunDir，避免两处各写一份字面量后静默错位。
         env[RunDir.ENV] = RunDir.forProject(projectDir)
         env["OK_TOOLKIT_LOCALE"] = project.service<OkProjectDataService>().currentLocale()
-        val overrides = allParamOverrides()
+        val overrides = allParamOverrides(projectDir)
         if (overrides.isNotEmpty()) {
             env["OK_LANG_HINTS_INJECT"] = objectMapper.writeValueAsString(overrides)
         }
         // 全局配置快照（#7 配置接管）：非空才注入，执行器侧拿它覆盖框架/项目 store 的
         // 全局配置。物化语义（首建继承当前值、新键取默认、孤儿键保留）由探针采集后的
         // GlobalSnapshotRules 负责，这里只管把快照带给执行器。
-        val gconfig = taskService.loadGlobalConfigs()
+        val gconfig = taskService.loadGlobalConfigs(projectDir)
         if (!gconfig.isNullOrEmpty()) {
             env["OK_TOOLKIT_GCONFIG"] = objectMapper.writeValueAsString(gconfig)
         }
-        warnLegacyPerTaskSettings()
+        warnLegacyPerTaskSettings(projectDir)
 
         // 工具箱共享配置：执行器启动无感沿用调试浮层开关与游戏连接
         val toolboxState = toolboxService.loadState(projectDir)
@@ -2553,8 +2596,8 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     /** 全量参数覆盖：{module::Class: {key: value}}，执行器按任务各自取用 */
-    private fun allParamOverrides(): Map<String, Map<String, Any>> {
-        val projectConfig = taskService.loadTaskConfigs().projects[taskService.getTargetRoot()]
+    private fun allParamOverrides(root: String): Map<String, Map<String, Any>> {
+        val projectConfig = taskService.loadTaskConfigs().projects[root]
             ?: return emptyMap()
         val overrides = linkedMapOf<String, Map<String, Any>>()
         for ((key, config) in projectConfig.tasks) {
@@ -2568,15 +2611,15 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     /** 参数覆盖即时推送（执行器是常驻进程，不推就要重启才生效） */
-    private fun pushParamOverrides() {
-        if (!taskRunner.isRunning()) return
-        val json = objectMapper.writeValueAsString(allParamOverrides())
-        taskRunner.pushParams(json)
+    private fun pushParamOverrides(root: String) {
+        if (!taskRunner.isRunning() || taskRunner.runningProjectDir != root) return
+        val json = objectMapper.writeValueAsString(allParamOverrides(root))
+        taskRunner.pushParams(json, root)
     }
 
     /** 历史配置里的 extraArgs / env 在单进程模型下无法按任务生效，启动时提示一次 */
-    private fun warnLegacyPerTaskSettings() {
-        val tasks = taskService.loadTaskConfigs().projects[taskService.getTargetRoot()]?.tasks ?: return
+    private fun warnLegacyPerTaskSettings(root: String) {
+        val tasks = taskService.loadTaskConfigs().projects[root]?.tasks ?: return
         val affected = tasks.values.count { !it.extraArgs.isNullOrBlank() || !it.env.isNullOrEmpty() }
         if (affected > 0) {
             taskRunner.log(OkScriptToolkitBundle.message("taskLauncher.legacySettingsIgnored", affected))
@@ -2681,6 +2724,10 @@ class TaskLauncherPanel(private val project: Project) {
      * 执行器已在运行时勾选依然即时生效（对齐 VSCode 端 setTriggerEnabled）。
      */
     private fun setTriggerEnabled(task: TaskLauncherService.TaskInfo, enabled: Boolean) {
+        if (displayedProjectDir.isNotBlank() && displayedProjectDir != detectProjectPath()) {
+            loadTasks()
+            return
+        }
         val key = taskKeyOf(task)
         if (enabled) enabledTriggers.add(key) else enabledTriggers.remove(key)
         persistEnabledTriggers()
@@ -2696,12 +2743,24 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     private fun persistEnabledTriggers() {
+        val root = taskDataRoot()
         val keys = enabledTriggers.toList()
-        CompletableFuture.runAsync {
+        triggerSaveTail = triggerSaveTail.thenApplyAsync { _ ->
             try {
-                taskService.saveEnabledTriggers(keys)
+                taskService.saveEnabledTriggers(keys, root)
+                lastTriggerSaveError = ""
+                true
             } catch (e: Exception) {
                 LOG.warn("Failed to save enabled triggers", e)
+                lastTriggerSaveError = e.message.orEmpty()
+                com.intellij.notification.NotificationGroupManager.getInstance()
+                    .getNotificationGroup("okScriptToolkit")
+                    .createNotification(
+                        OkScriptToolkitBundle.message("taskLauncher.saveFailed", lastTriggerSaveError),
+                        com.intellij.notification.NotificationType.ERROR,
+                    )
+                    .notify(project)
+                false
             }
         }
     }
@@ -2721,6 +2780,11 @@ class TaskLauncherPanel(private val project: Project) {
     fun onDispose() {
         // 只解绑视图：常驻执行器由 TaskRunnerService 持有，工具窗关闭后继续在后台运行，
         // 日志也留在 Run 工具窗口里
+        disposed = true
+        loadGeneration++
+        saveTimer.stop()
+        flushPendingSave().join()
+        triggerSaveTail.join()
         toolboxService.removeStateListener(toolboxStateListener)
         toolboxService.removeStatusListener(toolboxStatusListener)
         taskRunner.removeStateListener(runnerStateListener)

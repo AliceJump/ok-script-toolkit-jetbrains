@@ -97,6 +97,9 @@ class TaskRunnerService(private val project: Project) : Disposable {
     @Volatile
     private var currentProjectDir = ""
 
+    /** UI 自动保存和工具栏可能从不同线程同时推送命令，stdin 每行必须完整写入。 */
+    private val commandLock = Any()
+
     /** 调试浮层当前是否生效（启动沿用工具箱状态，运行中经 overlay_* 标记同步） */
     @Volatile
     private var overlayActive = false
@@ -346,7 +349,7 @@ class TaskRunnerService(private val project: Project) : Disposable {
                 val proc = processBuilder.start()
                 process = proc
                 // 浮层开关等工具箱命令改经服务转发（与视图生命周期解耦）
-                toolboxService.registerTaskCommandWriter(::sendCommand)
+                toolboxService.registerTaskCommandWriter { command -> sendCommand(command) }
                 // 浮层互斥：执行器进程自带 overlay，通知工具箱停掉独立浮层宿主
                 toolboxService.onExecutorRunningChanged(true)
                 emitState()
@@ -445,13 +448,15 @@ class TaskRunnerService(private val project: Project) : Disposable {
     fun stopCurrent(): Boolean = sendCommand("task_disable")
 
     /** 参数覆盖即时推送（执行器是常驻进程，不推就要重启才生效） */
-    fun pushParams(json: String): Boolean = sendCommand("params $json")
+    fun pushParams(json: String, expectedProjectDir: String): Boolean =
+        sendCommand("params $json", expectedProjectDir)
 
     /**
      * 全局配置快照即时推送（#7 配置接管，对齐 VS Code 侧 gparams 命令）。
      * 推整个快照映射 {组名: {键: 值}}，执行器侧防抖应用；无运行进程返回 false。
      */
-    fun pushGlobalParams(json: String): Boolean = sendCommand("gparams $json")
+    fun pushGlobalParams(json: String, expectedProjectDir: String): Boolean =
+        sendCommand("gparams $json", expectedProjectDir)
 
     /**
      * 关闭执行器：先请它自己退出，超时再强杀进程树。
@@ -522,23 +527,27 @@ class TaskRunnerService(private val project: Project) : Disposable {
      * 向执行器 stdin 写入控制命令（trigger_enable / onetime_enqueue / pause / resume /
      * overlay_on|off / stop …）。无运行进程返回 false；调用线程任意。
      */
-    fun sendCommand(command: String): Boolean {
-        val proc = process ?: return false
-        if (!proc.isAlive) return false
-        return try {
-            val writer = OutputStreamWriter(proc.outputStream, Charsets.UTF_8)
-            writer.write("$command\n")
-            writer.flush()
-            true
-        } catch (e: Exception) {
-            // 只记命令名不记参数：gparams/params 的 JSON 快照可能含用户配置里的
-            // 敏感值，写进 IDE 日志就是泄露（CWE-532，CodeRabbit Major 意见）
-            val commandName = command.substringBefore(' ')
-            LOG.warn("Failed to send control command: $commandName", e)
-            recordAndEmit(OkScriptToolkitBundle.message("toolbox.sendCommandFailed", e.message ?: ""))
-            false
+    fun sendCommand(command: String, expectedProjectDir: String? = null): Boolean =
+        synchronized(commandLock) {
+            // 先固定进程实例再核对项目。进程在检查后退出/切换时，最多写到已退出的旧实例，
+            // 不能把旧项目的 params/gparams 写到刚启动的新项目执行器。
+            val proc = process ?: return@synchronized false
+            if (expectedProjectDir != null && currentProjectDir != expectedProjectDir) return@synchronized false
+            if (!proc.isAlive) return@synchronized false
+            try {
+                val writer = OutputStreamWriter(proc.outputStream, Charsets.UTF_8)
+                writer.write("$command\n")
+                writer.flush()
+                true
+            } catch (e: Exception) {
+                // 只记命令名不记参数：gparams/params 的 JSON 快照可能含用户配置里的
+                // 敏感值，写进 IDE 日志就是泄露（CWE-532，CodeRabbit Major 意见）
+                val commandName = command.substringBefore(' ')
+                LOG.warn("Failed to send control command: $commandName", e)
+                recordAndEmit(OkScriptToolkitBundle.message("toolbox.sendCommandFailed", e.message ?: ""))
+                false
+            }
         }
-    }
 
     // ── Control markers ───────────────────────────────────────────────
 
