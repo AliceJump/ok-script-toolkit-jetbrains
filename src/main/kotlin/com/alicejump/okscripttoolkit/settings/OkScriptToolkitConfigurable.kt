@@ -13,7 +13,9 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
     private val langDirectory = JBTextField()
     private val poDirectory = JBTextField()
     private val poDomains = JBTextField()
-    private val displayLocale = JBTextField()
+    // 显示语言做成下拉（对齐 VS Code package.json 的 enum）——原先的自由文本框
+    // 能存进 zh-cn 之类的脏值，非法值在取值处静默回退 en_US，用户毫无感知。
+    private val displayLocale = javax.swing.JComboBox(OkScriptToolkitSettings.DISPLAY_LOCALES.toTypedArray())
     private val featureAliases = JBTextField()
     private val effectsFile = JBTextField()
     private val enablePoData = JBCheckBox(OkScriptToolkitBundle.message("settings.enablePoData"))
@@ -48,6 +50,7 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
 
     init {
         captureMethod.toolTipText = OkScriptToolkitBundle.message("settings.captureMethodTooltip")
+        displayLocale.toolTipText = OkScriptToolkitBundle.message("settings.autoLocale")
     }
 
     override fun getDisplayName(): String = OkScriptToolkitBundle.message("settings.displayName")
@@ -127,7 +130,8 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
         return langDirectory.text != state.langDirectory.orEmpty() ||
             poDirectory.text != state.poDirectory.orEmpty() ||
             splitList(poDomains.text) != state.poDomains ||
-            displayLocale.text != state.displayLocale.orEmpty() ||
+            displayLocale.let { OkScriptToolkitSettings.normalizeDisplayLocale(it.selectedItem as? String) } !=
+                OkScriptToolkitSettings.normalizeDisplayLocale(state.displayLocale) ||
             splitList(featureAliases.text) != state.featureAliases ||
             effectsFile.text != state.effectsFile.orEmpty() ||
             enablePoData.isSelected != state.enablePoData ||
@@ -222,7 +226,8 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
         settings.state.langDirectory = langDirectory.text.trim()
         settings.state.poDirectory = poDirectory.text.trim()
         settings.state.poDomains = splitList(poDomains.text).toMutableList()
-        settings.state.displayLocale = displayLocale.text.trim()
+        settings.state.displayLocale =
+            OkScriptToolkitSettings.normalizeDisplayLocale(displayLocale.selectedItem as? String)
         settings.state.featureAliases = splitList(featureAliases.text).toMutableList()
         // 标记"用户动过"：让 init 的一次性迁移不再清空它 ——
         // 否则用户想把别名**故意设成**恰好等于内置默认值时，设置会被静默清掉。
@@ -251,7 +256,7 @@ class OkScriptToolkitConfigurable(private val project: Project) : Configurable {
         langDirectory.text = state.langDirectory.orEmpty()
         poDirectory.text = state.poDirectory.orEmpty()
         poDomains.text = state.poDomains.joinToString(", ")
-        displayLocale.text = state.displayLocale.orEmpty()
+        displayLocale.selectedItem = OkScriptToolkitSettings.normalizeDisplayLocale(state.displayLocale)
         featureAliases.text = state.featureAliases.joinToString(", ")
         effectsFile.text = state.effectsFile.orEmpty()
         enablePoData.isSelected = state.enablePoData

@@ -3,6 +3,7 @@ package com.alicejump.okscripttoolkit.core
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.intellij.DynamicBundle
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.project.Project
 import com.intellij.util.ui.UIUtil
@@ -146,7 +147,9 @@ class OkProjectDataService(private val project: Project) {
     fun currentLocale(): String {
         val configured = settings().displayLocale()
         if (configured != "auto") return configured
-        val locale = Locale.getDefault().toLanguageTag().lowercase(Locale.ROOT)
+        // auto 跟随 **IDE 显示语言**（对齐 VS Code 的 vscode.env.language 语义），
+        // 不是 JVM 默认 locale —— 英文系统装中文 IDE 时两者不同，跟随 OS 会显示错语言。
+        val locale = DynamicBundle.getLocale().toLanguageTag().lowercase(Locale.ROOT)
         return when {
             locale.startsWith("zh-tw") || locale.startsWith("zh-hant") -> "zh_TW"
             locale.startsWith("zh") -> "zh_CN"

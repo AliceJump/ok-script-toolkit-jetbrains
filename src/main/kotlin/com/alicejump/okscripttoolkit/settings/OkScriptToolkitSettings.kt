@@ -144,6 +144,9 @@ class OkScriptToolkitSettings(
         /** 截图方式可选值，与 capture_game_window.py 的 --method 保持一致 */
         val CAPTURE_METHODS = listOf("auto", "wgc", "bitblt", "foreground")
 
+        /** 显示语言可选值（对齐 VS Code package.json 里 displayLocale 的 enum），首项 = 跟随 IDE */
+        val DISPLAY_LOCALES = listOf("auto", "zh_CN", "zh_TW", "en_US", "ja_JP", "ko_KR", "es_ES")
+
         /** 面板上的「硬前台」复选框对应的方式：激活窗口到前台再读屏幕 */
         const val CAPTURE_METHOD_FOREGROUND = "foreground"
 
@@ -223,6 +226,10 @@ class OkScriptToolkitSettings(
         /** 非法值（含旧配置残留）一律回退到 auto，避免把脏值传给 python 脚本 */
         fun normalizeCaptureMethod(value: String?): String =
             value?.trim()?.takeIf { it in CAPTURE_METHODS } ?: "auto"
+
+        /** 显示语言非法值（旧版本是自由文本框，可能存过 zh-cn 之类）回退 auto */
+        fun normalizeDisplayLocale(value: String?): String =
+            value?.trim()?.takeIf { it in DISPLAY_LOCALES } ?: "auto"
 
         fun getInstance(project: Project): OkScriptToolkitSettings = project.service()
     }
