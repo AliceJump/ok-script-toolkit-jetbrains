@@ -183,9 +183,6 @@ class TaskLauncherPanel(private val project: Project) {
 
     private val hoverPopupDelayMs = 800
 
-    /** 最近一次物化的新增键数（供 applyProbeResult 的状态提示取用） */
-    private var lastMaterializedCount = 0
-
     private val paramPanel = JPanel(GridBagLayout())
     private val paramFields = mutableMapOf<String, JComponent>()
 
@@ -560,7 +557,7 @@ class TaskLauncherPanel(private val project: Project) {
 
     // ── 运行中心（#9 rc-queue / gpop 的 Swing 等价物）────────────────
     // 相关状态字段（runCenterVisible / globalConfigGroups / hoverSuppressUntil /
-    // hoverPopupDelayMs / lastMaterializedCount）声明在 init 块之前的字段区 ——
+    // hoverPopupDelayMs）声明在 init 块之前的字段区 ——
     // 构造顺序约束，见那里的说明。
 
     /**
@@ -1317,11 +1314,14 @@ class TaskLauncherPanel(private val project: Project) {
 
             statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.loaded", tasks.size)
 
-            // #7 配置接管：探针成功后物化全局配置快照（新增键 > 0 时覆盖状态提示）
-            if (result.globalConfigGroups.isNotEmpty() &&
-                materializeGlobalSnapshots(result.globalConfigGroups) > 0
-            ) {
-                statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.gconfigMaterialized", lastMaterializedCount)
+            // #7 配置接管：物化全局配置组 + 每个任务的参数快照（新增键 > 0 时覆盖状态提示）。
+            // 缓存首屏（finished=false）只物化不提示 —— 对齐 VS Code：状态条消息只在探针完成后出。
+            val materialized = materializeTaskSnapshots(result.schemas) +
+                if (result.globalConfigGroups.isNotEmpty()) {
+                    materializeGlobalSnapshots(result.globalConfigGroups)
+                } else 0
+            if (finished && materialized > 0) {
+                statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.gconfigMaterialized", materialized)
             }
         } else {
             if (!finished) return
@@ -1333,6 +1333,40 @@ class TaskLauncherPanel(private val project: Project) {
                 JOptionPane.ERROR_MESSAGE,
             )
         }
+    }
+
+    /**
+     * 物化**每个任务**的参数快照并落盘（配置接管 —— 对齐 VS Code materializeAllSnapshots
+     * 的任务半边；全局组半边见 [materializeGlobalSnapshots]）。
+     *
+     * 规则同全局组，复用 [GlobalSnapshotRules.materialize]：existing 为空（首建）→ 全部键
+     * 继承 f.value（项目当前值原样进快照）；非空（重探针）→ 已有键保留、新键取 f.defaultOrValue()。
+     * broken schema（探针失败的任务）与无字段的任务跳过。
+     *
+     * 之前只物化全局组，任务参数只在用户**打开并编辑过**该任务时才进 tasks.json ——
+     * 未编辑过的任务在执行器侧始终实时跟随项目 configs（不是冻结快照），与 VS Code
+     * 「UI 显示 = 实际执行」的接管语义不一致。
+     *
+     * @return 新增键数（0 = 全部快照无变化，不落盘不推送）
+     */
+    private fun materializeTaskSnapshots(schemas: Map<String, TaskLauncherService.TaskSchema>): Int {
+        val updates = linkedMapOf<String, Map<String, Any?>>()
+        var added = 0
+        for ((taskKey, schema) in schemas) {
+            if (schema.broken || schema.fields.isEmpty()) continue
+            val existing = taskService.getTaskConfig(taskKey).params.orEmpty()
+            val (snapshot, count) = GlobalSnapshotRules.materialize(existing, schema.fields)
+            if (count > 0) {
+                updates[taskKey] = snapshot
+                added += count
+            }
+        }
+        if (updates.isNotEmpty()) {
+            taskService.saveMaterializedTaskParams(updates)
+            // 探针可在执行器启动后完成：物化出的新键必须即时推给常驻执行器
+            pushParamOverrides()
+        }
+        return added
     }
 
     /**
@@ -1355,7 +1389,6 @@ class TaskLauncherPanel(private val project: Project) {
             added += count
         }
         if (added > 0) {
-            lastMaterializedCount = added
             taskService.saveGlobalConfigs(snapshots)
             pushGlobalSnapshot(snapshots)
         }
@@ -2286,6 +2319,11 @@ class TaskLauncherPanel(private val project: Project) {
     /**
      * 由表单当前值构建任务配置。
      *
+     * **起点是既有快照的副本**（对齐 VS Code sanitizeTaskConfig 的「永不删键」决议）：
+     * schema 已不存在的孤儿键（default_config 里删掉的旧键）原样保留 —— 键回归 schema
+     * 时设置自动复活。之前只收集表单控件，用户一编辑就把孤儿键从 tasks.json 里抹掉了。
+     * 表单没渲染出来的键（schema 未就绪 / 隐藏字段）同样走这条路径保留。
+     *
      * **legacy 字段必须带过来**：`extraArgs` / `env` 在单进程执行器模型下已不生效
      * （[warnLegacyPerTaskSettings] 会在启动时提示一次），但 UI 上早就没有它们的入口了 ——
      * 如果这里只返回 `params`，用户的历史配置会在下一次自动保存时被**静默清空**。
@@ -2298,15 +2336,24 @@ class TaskLauncherPanel(private val project: Project) {
      * 清理是单向不可逆的，而多留两个已知不生效的键只是噪音。
      */
     private fun buildTaskConfig(task: TaskLauncherService.TaskInfo): TaskLauncherService.TaskConfig {
-        val params = mutableMapOf<String, Any>()
+        val existing = taskService.getTaskConfig(taskKeyOf(task))
+        val params = LinkedHashMap<String, Any>(existing.params.orEmpty())
         for ((key, component) in paramFields) {
             // 使用 renderer 的 getValueControl 方法获取值控件
             val actualComponent = currentRenderer?.getValueControl(key) ?: component
             when (actualComponent) {
                 is JCheckBox -> params[key] = actualComponent.isSelected
                 is JSpinner -> params[key] = actualComponent.value
-                is JTextField -> if (actualComponent.text.isNotBlank()) params[key] = actualComponent.text
-                is JTextArea -> textAreaValue(actualComponent)?.let { params[key] = it }
+                // 空串也是有效值：用户明确清空参数 → 执行器收到 ""；
+                // 丢键会让执行器回退项目配置值，UI 显示与实际执行就不一致了（对齐 VS Code buildText）
+                is JTextField -> params[key] = actualComponent.text
+                is JTextArea ->
+                    if (actualComponent.getClientProperty(OK_JSON_FIELD) == true) {
+                        // JSON 字段：非法/清空时保持既有值（对齐 VS Code：解析失败不提交新值也不删旧值）
+                        textAreaValue(actualComponent)?.let { params[key] = it }
+                    } else {
+                        params[key] = actualComponent.text
+                    }
                 // 对齐 VSCode：表单当前值全量保存（包括空列表）
                 is ListEditorComponent -> params[key] = actualComponent.value
                 is JComboBox<*> -> actualComponent.selectedItem?.let { params[key] = it }
@@ -2316,7 +2363,6 @@ class TaskLauncherPanel(private val project: Project) {
                 }
             }
         }
-        val existing = taskService.getTaskConfig(taskKeyOf(task))
         return TaskLauncherService.TaskConfig(
             params = params.ifEmpty { null },
             // 原样保留：UI 已无入口，丢了就再也找不回来
@@ -2452,8 +2498,11 @@ class TaskLauncherPanel(private val project: Project) {
             ?: return emptyMap()
         val overrides = linkedMapOf<String, Map<String, Any>>()
         for ((key, config) in projectConfig.tasks) {
-            val filtered = TaskParamWhitelist.filter(config.params, schemas[key]?.fields)
-            if (filtered.isNotEmpty()) overrides[key] = filtered
+            val params = config.params ?: continue
+            // 推送持久化的完整 params（含 schema 之外的孤儿键）—— 对齐 VS Code collectOverrides：
+            // 孤儿键是「配置接管 · 永不删键」决议的一部分，键回归 schema 时设置要能自动复活，
+            // 半路过滤掉就复活不了了。执行器侧本来就按任务取自己的键，未知键无害。
+            if (params.isNotEmpty()) overrides[key] = params
         }
         return overrides
     }

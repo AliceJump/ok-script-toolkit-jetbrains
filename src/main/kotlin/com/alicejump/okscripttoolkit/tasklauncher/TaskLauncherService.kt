@@ -527,6 +527,32 @@ class TaskLauncherService(private val project: Project) {
         }
     }
 
+    /**
+     * 批量物化任务级配置快照并落盘（配置接管，对齐 VS Code 的 materializeAllSnapshots）。
+     *
+     * 与逐任务调 [saveTaskConfig] 的区别：这里一次锁内读-改-写全部更新 ——
+     * 物化发生在每次刷新（缓存首屏 + 探针完成）后，逐任务保存会对 N 个任务做 N 次整文件 IO。
+     * 只更新列出的任务，其余任务的参数与勾选集合 / 全局快照原样保留（[TaskConfigMerge]）。
+     */
+    fun saveMaterializedTaskParams(updates: Map<String, Map<String, Any?>>) {
+        if (updates.isEmpty()) return
+        synchronized(storeLock) {
+            val root = getTargetRoot()
+            var store = loadTaskConfigsLocked()
+            for ((taskKey, params) in updates) {
+                val existing = store.projects[root]?.tasks?.get(taskKey) ?: TaskConfig()
+                // schema 的 value/default 来自探针 JSON，可能显式为 null —— VS Code 侧原样存进
+                // 快照并推给执行器，这里保持一致。Map<String, Any> 在擦除后运行时允许 null 值，
+                // 且解析路径（convertValue → as? Map<String, Any>）本来就可能产出这种表。
+                @Suppress("UNCHECKED_CAST")
+                val snapshot = params as Map<String, Any>
+                store = TaskConfigMerge.withTask(store, root, taskKey, existing.copy(params = snapshot))
+            }
+            saveTaskConfigs(store)
+            configStoreCache = store
+        }
+    }
+
     // ── 触发任务启用集合 ──────────────────────────────────────────────
 
     /** 已勾选的触发任务 key 列表（module::Class） */
