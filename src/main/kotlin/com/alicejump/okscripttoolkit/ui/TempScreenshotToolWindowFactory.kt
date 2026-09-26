@@ -98,6 +98,9 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
         /** 坐标框手柄的命中半径（像素） */
         private const val HANDLE_PX = 8
 
+        /** 拖入文件允许的图片扩展名（ImageIO 可解码集合） */
+        private val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "bmp", "gif")
+
         private val COORD_COLOR = JBColor(0xE8A33D, 0xFFB454)
     }
 
@@ -128,6 +131,7 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
 
     init {
         buildUI()
+        installFileDropTarget()
         reloadAsync()
     }
 
@@ -380,6 +384,38 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
             store.register(target)
         } catch (_: Exception) {
             notify("tempShots.saveFailed", NotificationType.ERROR)
+        }
+    }
+
+    /**
+     * 从资源管理器拖入图片文件直接入列（对齐 VS Code tempScreenshots 的 document drop）。
+     *
+     * 只接管**操作系统文件**拖入：卡片拖出用的是 [TempShotTransferable.FLAVOR]（仅含
+     * 自定义 flavor），canImport 对它返回 false，不会把自己拖出的卡片又导入一遍。
+     * 类注释里声明的这个能力此前并未实现（只有粘贴文件列表可部分替代）。
+     */
+    private fun installFileDropTarget() {
+        mainPanel.transferHandler = object : TransferHandler() {
+            override fun canImport(support: TransferSupport): Boolean =
+                support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)
+
+            override fun importData(support: TransferSupport): Boolean {
+                val files = try {
+                    @Suppress("UNCHECKED_CAST")
+                    support.transferable.getTransferData(DataFlavor.javaFileListFlavor) as? List<File>
+                } catch (_: Exception) {
+                    null
+                } ?: return false
+                var imported = false
+                for (file in files) {
+                    // 只收 ImageIO 能解码的图片格式（对齐 VS Code 的 image/* 过滤）
+                    if (file.isFile && file.extension.lowercase() in IMAGE_EXTENSIONS) {
+                        importShotFile(file)
+                        imported = true
+                    }
+                }
+                return imported
+            }
         }
     }
 
