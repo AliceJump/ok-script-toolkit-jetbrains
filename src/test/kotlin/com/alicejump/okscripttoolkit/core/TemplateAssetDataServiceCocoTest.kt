@@ -1,5 +1,8 @@
 package com.alicejump.okscripttoolkit.core
 
+import com.alicejump.okscripttoolkit.TestTmp
+import com.intellij.openapi.project.Project
+import java.lang.reflect.Proxy
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -73,5 +76,70 @@ class TemplateAssetDataServiceCocoTest {
         val reloaded = TemplateAssetDataService.parseCoco(TemplateAssetDataService.serializeCoco(restored))
         val boxes = reloaded.annotationsForImage(img.id).map { it.bbox.toList() }
         assertEquals(listOf(listOf(5, 6, 7, 8), listOf(9, 10, 11, 12)), boxes)
+    }
+
+    @Test
+    fun `supercategory survives a round trip and new categories write empty string`() {
+        val source = TemplateAssetDataService.parseCoco(
+            com.fasterxml.jackson.databind.ObjectMapper().readTree(
+                """
+                {"images":[],"annotations":[],"categories":[
+                  {"id":1,"name":"imported","supercategory":"ui"},
+                  {"id":2,"name":"plain","supercategory":null}
+                ]}
+                """.trimIndent(),
+            ),
+        )
+        assertEquals("ui", source.categories.first { it.name == "imported" }.supercategory)
+        assertEquals("", source.categories.first { it.name == "plain" }.supercategory)
+
+        val roundTripped = TemplateAssetDataService.parseCoco(TemplateAssetDataService.serializeCoco(source))
+        assertEquals("ui", roundTripped.categories.first { it.name == "imported" }.supercategory)
+
+        val fresh = CocoData()
+        fresh.getOrCreateCategory("new_cat")
+        val node = TemplateAssetDataService.serializeCoco(fresh)
+        assertEquals("", node.get("categories")[0].get("supercategory").asText())
+    }
+
+    @Test
+    fun `image lookup list and delete use the same normalized filename key`() {
+        val root = TestTmp.create("ok-coco-key")
+        val templates = root.resolve("ok_templates").apply { mkdirs() }
+        val diskFile = templates.resolve("shot_001.png").apply { writeBytes(byteArrayOf()) }
+        val coco = CocoData()
+        val image = coco.addImage("Shot_001.PNG", 10, 20)
+        val category = coco.getOrCreateCategory("icon")
+        coco.addAnnotation(image.id, category.id, intArrayOf(1, 2, 3, 4))
+        templates.resolve("coco_annotations.json")
+            .writeText(TemplateAssetDataService.serializeCoco(coco).toPrettyString())
+
+        // 这些方法只使用项目路径参数，不查询 Project；代理让测试走真实服务路径。
+        val project = Proxy.newProxyInstance(
+            Project::class.java.classLoader,
+            arrayOf(Project::class.java),
+        ) { _, _, _ -> null } as Project
+        val service = TemplateAssetDataService(project)
+        service.load(root.absolutePath, "ok_templates")
+
+        assertEquals("shot_001", coco.filenameKey("nested\\SHOT_001.PNG"))
+        assertEquals(image, service.getImageEntryForFile("shot_001.png"))
+        assertEquals(image, service.getImageEntryForFile("shot_001"))
+        assertEquals(image, service.addImageEntry("SHOT_001.jpg", 99, 99))
+        val listed = service.listImages().single()
+        assertEquals(10, listed.width, "大小写不一致时仍须读到 COCO 宽度")
+        assertEquals(20, listed.height)
+        assertEquals(1, listed.annotations.size)
+
+        service.deleteImage(diskFile)
+        service.save()
+        assertTrue(!diskFile.exists())
+        assertEquals(null, service.getImageEntryForFile("shot_001.png"))
+        val afterDelete = com.fasterxml.jackson.databind.ObjectMapper().readTree(
+            templates.resolve("coco_annotations.json"),
+        )
+        assertEquals(0, afterDelete.get("images").size())
+        assertEquals(0, afterDelete.get("annotations").size())
+        assertEquals(0, afterDelete.get("categories").size())
     }
 }

@@ -12,6 +12,7 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.project.Project
 import java.awt.image.BufferedImage
 import java.io.File
+import java.util.Locale
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -47,6 +48,8 @@ data class CocoAnnotation(
 data class CocoCategory(
     val id: Int,
     val name: String,
+    /** COCO 标准字段：加载时原样保留，新建分类为空串（对齐 VS Code，导出保真） */
+    val supercategory: String = "",
 )
 
 data class CocoData(
@@ -54,6 +57,19 @@ data class CocoData(
     val annotations: MutableList<CocoAnnotation> = mutableListOf(),
     val categories: MutableList<CocoCategory> = mutableListOf(),
 ) {
+    /**
+     * 归一化文件名 key：basename → 小写 → 去扩展名（对齐 VS Code filenameKey）。
+     * COCO 的 file_name 与磁盘实际大小写不一致（Windows 上很常见）时也要能对上。
+     */
+    fun filenameKey(name: String): String =
+        name.substringAfterLast('/').substringAfterLast('\\')
+            .lowercase(Locale.ROOT).replace(Regex("\\.[^.]+$"), "")
+
+    fun findImageByFileName(fileName: String): CocoImage? {
+        val key = filenameKey(fileName)
+        return images.find { filenameKey(it.fileName) == key }
+    }
+
     private var nextImageId = 1
     private var nextAnnotationId = 1
     private var nextCategoryId = 1
@@ -87,6 +103,8 @@ data class CocoData(
     fun removeImage(imageId: Int) {
         images.removeAll { it.id == imageId }
         annotations.removeAll { it.imageId == imageId }
+        val usedCategoryIds = annotations.mapTo(mutableSetOf()) { it.categoryId }
+        categories.removeAll { it.id !in usedCategoryIds }
     }
 
     fun annotationsForImage(imageId: Int): List<CocoAnnotation> =
@@ -148,6 +166,7 @@ class TemplateAssetDataService(private val project: Project) {
                 val catNode = JSON.createObjectNode()
                 catNode.put("id", cat.id)
                 catNode.put("name", cat.name)
+                catNode.put("supercategory", cat.supercategory)
                 categoriesArray.add(catNode)
             }
             root.set<JsonNode>("categories", categoriesArray)
@@ -190,6 +209,7 @@ class TemplateAssetDataService(private val project: Project) {
                     CocoCategory(
                         catNode.get("id").asInt(),
                         catNode.get("name").asText(),
+                        catNode.get("supercategory")?.takeIf { !it.isNull }?.asText("") ?: "",
                     ),
                 )
             }
@@ -280,7 +300,7 @@ class TemplateAssetDataService(private val project: Project) {
             ?.filter { it.isFile && it.extension.lowercase() in extensions }
             ?.sortedByDescending { it.lastModified() }
             ?.map { file ->
-                val imgEntry = cocoData.images.find { it.fileName == file.name }
+                val imgEntry = cocoData.findImageByFileName(file.name)
                 val width = imgEntry?.width ?: readImageWidth(file)
                 val height = imgEntry?.height ?: readImageHeight(file)
                 val annotations = if (imgEntry != null) {
@@ -294,8 +314,7 @@ class TemplateAssetDataService(private val project: Project) {
     }
 
     fun addImageEntry(fileName: String, width: Int, height: Int): CocoImage {
-        val existing = cocoData.images.find { it.fileName == fileName }
-        if (existing != null) return existing
+        cocoData.findImageByFileName(fileName)?.let { return it }
         return cocoData.addImage(fileName, width, height)
     }
 
@@ -304,7 +323,7 @@ class TemplateAssetDataService(private val project: Project) {
     }
 
     fun getImageEntryForFile(fileName: String): CocoImage? =
-        cocoData.images.find { it.fileName == fileName }
+        cocoData.findImageByFileName(fileName)
 
     fun getAnnotationsForImage(imageId: Int): List<CocoAnnotation> =
         cocoData.annotationsForImage(imageId)
@@ -326,7 +345,7 @@ class TemplateAssetDataService(private val project: Project) {
     }
 
     fun deleteImage(file: File) {
-        val imgEntry = cocoData.images.find { it.fileName == file.name }
+        val imgEntry = cocoData.findImageByFileName(file.name)
         if (imgEntry != null) {
             cocoData.removeImage(imgEntry.id)
         }
