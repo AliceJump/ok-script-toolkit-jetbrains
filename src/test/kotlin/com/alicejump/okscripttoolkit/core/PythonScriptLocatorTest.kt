@@ -123,6 +123,95 @@ class PythonScriptLocatorTest {
         )
     }
 
+    /**
+     * classpath 上 `python/` 资源目录里实际存在的 .py 文件名。
+     *
+     * 打包形态有两种：IDE 沙箱/开发运行时是**目录** classpath（`file:` URL），
+     * 生产环境是**JAR**（`jar:file:` URL）—— 枚举必须同时支持，否则这条断言
+     * 只在其中一个形态下生效。
+     *
+     * 只统计**本插件自己的** `python/` 目录：测试 classpath 上还有 IDE 发行版
+     * 的 `python/` 资源（PyCharm 平台 JAR 里也塞了 `python/prompthooks.py`），
+     * 用 `parse_config_tasks.py` 这个平台绝无仅有的脚本当标记过滤 ——
+     * 不做这一步会把平台脚本误判成白名单缺口。
+     */
+    private fun bundledPythonResources(): Set<String> {
+        val marker = "parse_config_tasks.py"
+        val names = mutableSetOf<String>()
+        val loader = PythonScriptLocator::class.java.classLoader
+        val urls = loader.getResources("python")
+        while (urls.hasMoreElements()) {
+            val url = urls.nextElement()
+            val scripts = when (url.protocol) {
+                "file" -> {
+                    val dir = java.io.File(url.toURI())
+                    dir.listFiles { f -> f.isFile && f.name.endsWith(".py") }
+                        ?.map { it.name }
+                }
+                "jar" -> {
+                    // jar:file:/.../x.jar!/python → 取出 JAR 路径与条目前缀
+                    val path = url.path
+                    val jarPath = java.net.URLDecoder.decode(
+                        path.removePrefix("file:").substringBefore("!/"), Charsets.UTF_8,
+                    )
+                    val prefix = path.substringAfterLast("!/", "python")
+                    java.util.jar.JarFile(jarPath).use { jar ->
+                        val entries = jar.entries()
+                        val found = mutableListOf<String>()
+                        while (entries.hasMoreElements()) {
+                            val e = entries.nextElement()
+                            if (!e.isDirectory && e.name.startsWith("$prefix/") && e.name.endsWith(".py")) {
+                                found.add(e.name.substringAfterLast('/'))
+                            }
+                        }
+                        found
+                    }
+                }
+                else -> null
+            } ?: continue
+            // 标记过滤：只有同时能取到我们独有脚本的目录才算本插件的 python/
+            val hasMarker = when (url.protocol) {
+                "file" -> java.io.File(url.toURI()).resolve(marker).isFile
+                "jar" -> {
+                    val path = url.path
+                    val jarPath = java.net.URLDecoder.decode(
+                        path.removePrefix("file:").substringBefore("!/"), Charsets.UTF_8,
+                    )
+                    val prefix = path.substringAfterLast("!/", "python")
+                    java.util.jar.JarFile(jarPath).use { it.getJarEntry("$prefix/$marker") != null }
+                }
+                else -> false
+            }
+            if (hasMarker) names.addAll(scripts)
+        }
+        return names
+    }
+
+    /**
+     * **白名单覆盖性断言**：classpath 上 `python/` 里的每个脚本都必须进 [PythonScriptLocator.BUNDLED_SCRIPTS]。
+     *
+     * 盯的是另一个真实踩过的坑（2026-09-26）：`copyPythonScripts` 是整目录 Sync（JAR 里
+     * 脚本齐全），但运行时解压按 [PythonScriptLocator.BUNDLED_SCRIPTS] 白名单执行 ——
+     * `task_visibility.py` 在父仓 python/ 里一直存在、却从未进白名单，解压目录里于是
+     * 没有它，`run_executor.py` 的 `from task_visibility import ...`（从脚本同目录导入）
+     * 启动即 `ModuleNotFoundError`，执行器一个任务都跑不起来。上面
+     * [extracts every bundled script into a stable directory] 只断言「白名单内的文件被
+     * 解压出来」，对「白名单外的脚本被漏掉」是盲的。
+     */
+    @Test
+    fun `BUNDLED_SCRIPTS covers every python script on the classpath`() {
+        requireBundledScripts()
+        val onClasspath = bundledPythonResources()
+        assertTrue(onClasspath.isNotEmpty(), "classpath 上必须能枚举到打包脚本目录")
+
+        val missing = onClasspath - PythonScriptLocator.BUNDLED_SCRIPTS.toSet()
+        assertTrue(
+            missing.isEmpty(),
+            "classpath 上的脚本 $missing 不在 BUNDLED_SCRIPTS 里 —— 解压白名单漏掉它时，" +
+                "run_executor.py 从同目录 import 会直接 ModuleNotFoundError",
+        )
+    }
+
     /** 历史遗留目录（旧版的时间戳命名）要被清掉，否则它会一直占着旧脚本。 */
     @Test
     fun `legacy timestamped directories are cleaned up`() {

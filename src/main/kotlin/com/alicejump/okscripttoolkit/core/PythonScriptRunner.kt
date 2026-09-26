@@ -147,6 +147,9 @@ object PythonScriptLocator {
         "parse_config_tasks.py",
         "probe_task_schemas.py",
         "run_executor.py",
+        // run_executor.py 顶部 `from task_visibility import install_all_registered_tasks`
+        // 从脚本同目录导入 —— 漏掉它执行器一启动就 ModuleNotFoundError 退出。
+        "task_visibility.py",
         "account_store.py",
         "capture_game_window.py",
         "probe_window_config.py",
@@ -175,7 +178,7 @@ object PythonScriptLocator {
      * 曾经用 `classLoader.getResource(...).openConnection().lastModified` 当版本戳，
      * 并把它拼进目录名（`ok-script-toolkit-scripts-<stamp>`）。但 **JAR 内资源的
      * `lastModified` 实测恒为 0**，于是目录名恒为 `ok-script-toolkit-scripts-0`；
-     * 再配合「8 个文件都在就直接 return」，后果是：
+     * 再配合「打包脚本都在就直接 return」，后果是：
      * **一旦解压过，插件升级后再也不会重新解压 —— 用户会一直跑旧脚本。**
      *
      * 真实后果（2026-09-20 实测确认）：用户装的 1.7.1 里 `run_executor.py` 是
@@ -184,7 +187,7 @@ object PythonScriptLocator {
      * 执行器照样写目标项目的 `configs/`（实测：执行器运行期间项目 configs 被写、
      * 沙箱目录纹丝不动）。
      *
-     * 覆盖写出的代价是 8 个小文件（合计约 90 KB），相对"跑错脚本"完全可以忽略。
+     * 覆盖写出的代价是十来个小文件（合计约 100 KB），相对"跑错脚本"完全可以忽略。
      *
      * @param baseDir 临时根目录。做成参数是为了让单测指向自己的临时目录 ——
      *   否则测试一旦失败会在真实临时目录里留下损坏脚本，反而弄坏用户的插件。
