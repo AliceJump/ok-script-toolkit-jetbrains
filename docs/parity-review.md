@@ -105,8 +105,9 @@ Next review should override this table and update the status.
   （probe 顺序直出、无分组、无搜索）改版为与父仓任务页同构的卡片列表
   `tasklauncher/TaskCardListPanel` —— 触发任务在前、一次性任务按 `schema.groupName`
   二级分组（可折叠、带计数、未分组兜底，折叠状态落 tasks.json `uiState`，键与
-  父仓 webview 的 `taskGroupCollapsed::*` 一致）；卡片 = 状态点 + 名称 + 类型 chip +
-  状态徽标 + 类名·模块 + 描述 + 类型动作（启用勾选或 ▶启动）；点击卡片在详情栏
+  父仓 webview 的 `taskGroupCollapsed::*` 一致）；卡片只显示任务名与介绍，
+  类型和运行状态由双层边框颜色表示，类名与模块名放在 tooltip，另有无文字的
+  类型动作（启用勾选或 ▶启动）；点击卡片在详情栏
   打开完整描述、参数、同步与恢复默认；带搜索框（搜索激活时忽略折叠）与执行队列条；执行器状态
   推送走逐卡原地刷新。编排规则收敛到纯对象 `TaskListGrouping.kt`
   （`TaskListGroupingTest.kt` 钉住），⇄/⟲ 语义对齐父仓 `syncDefaultToSnapshot`

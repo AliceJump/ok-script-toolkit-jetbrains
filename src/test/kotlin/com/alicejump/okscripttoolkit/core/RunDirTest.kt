@@ -21,18 +21,18 @@ import kotlin.test.assertTrue
  *     所以"把 Kotlin 的值抄成 Python 的默认值"同样是 bug，不是简化。
  *
  * 断言对象取自 **classpath 上的打包脚本**（`build.gradle.kts` 的 `copyPythonScripts`
- * 从父仓 `../python` 同步进来），因此校验的是**真正会随插件发布的那份**。
+ * 从配置的 `pythonScriptsDir` 同步进来），因此校验的是**真正会随插件发布的那份**。
  *
- * ⚠️ `jetbrains/` 是独立公开仓库，其 CI 只检出自己，`../python` 不可见。只有这种没有
- * 脚本源的情况才用 `assumeTrue` **跳过**（而不是 `return`，也不是让断言恒真）。父仓 CI
- * 带 submodules 检出后，classpath 上缺脚本会直接失败，确保 `copyPythonScripts` 的打包回归
- * 不会掩盖跨语言断言。判据与生产代码同源（`PythonScriptLocator.BUNDLED_SCRIPTS.first()`），
+ * ⚠️ `jetbrains/` 也能独立构建；仅当 Gradle 没拿到共享 Python 源目录时才用
+ * `assumeTrue` 跳过。子仓 CI 将父仓检出到 `parent-source/python`，通过 Gradle 属性
+ * `ok.bundled.python.source` 识别这一目录，因而会执行跨语言断言。源码存在但
+ * classpath 缺脚本时直接失败，确保 `copyPythonScripts` 的打包回归不会掩盖契约断言。
  * 见 [PythonScriptLocatorTest]。
  */
 class RunDirTest {
 
-    private val parentPythonSourcePresent: Boolean
-        get() = File(System.getProperty("user.dir"), "../python").toPath().normalize().toFile().isDirectory
+    private val sharedPythonSourcePresent: Boolean
+        get() = System.getProperty("ok.bundled.python.source")?.let(::File)?.isDirectory == true
 
     private val bundledScriptsPresent: Boolean
         get() = PythonScriptLocator::class.java.classLoader
@@ -40,8 +40,8 @@ class RunDirTest {
 
     private fun requireBundledScripts() {
         assumeTrue(
-            parentPythonSourcePresent,
-            "父仓的 python/ 源目录不存在 —— 只检出了 jetbrains 子仓库，跳过跨语言断言。",
+            sharedPythonSourcePresent,
+            "Gradle 未提供共享 python/ 源目录，跳过跨语言断言。",
         )
         assertTrue(
             bundledScriptsPresent,

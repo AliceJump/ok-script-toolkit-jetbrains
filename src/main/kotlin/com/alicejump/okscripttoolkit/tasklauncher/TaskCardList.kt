@@ -107,8 +107,9 @@ internal class EllipsizingLabel(text: String = "") : JBLabel(text) {
  *
  * - 顶层「触发任务」「一次性任务」两个可折叠组头（带计数，状态落 tasks.json 的 uiState）；
  * - 一次性任务按 schema.groupName 二级分组（组头 = 组名 + 计数，缺省归「未分组」）；
- * - 每个任务是一张**精简**卡：状态点 + 名称 + 类名·模块 + 类型 chip + 状态徽标，
- *   以及类型动作（触发 = 启用勾选 / 一次性 = ▶启动）。参数与快照操作不在卡上 ——
+ * - 每个任务是一张**精简**卡：名称 + 可换行介绍，以及无文字的类型动作
+ *   （触发 = 启用勾选 / 一次性 = ▶启动）。类型和运行状态由双层边框表示，
+ *   类名与模块名放在 tooltip；参数与快照操作不在卡上 ——
  *   点击卡片即选中，右栏显示详情与参数（信息架构重设计：卡片即入口）；
  * - 搜索框过滤（命中显示名/类名/模块/描述/分组名），搜索激活时无视折叠；
  * - 收起的组不建卡片 DOM（对齐 webview 的伸缩性处理）；
@@ -167,7 +168,8 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
         for ((key, card) in cardsByKey) {
             card.setSelected(key == taskKey)
         }
-        cardsByKey[taskKey]?.scrollRectToVisible(cardRectOf(cardsByKey.getValue(taskKey)))
+        val selectedCard = cardsByKey[taskKey]
+        selectedCard?.scrollRectToVisible(cardRectOf(selectedCard))
     }
 
     private fun cardRectOf(card: TaskCard) = java.awt.Rectangle(0, card.y, width, card.height)
@@ -201,6 +203,7 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
                     if (kindSectionHidden || groupHidden) continue
                     val card = TaskCard(row.task)
                     cardsByKey[TaskSchemaMerge.keyOf(row.task)] = card
+                    card.setSelected(card.cardKey == selectedKey)
                     addRow(card, gridY++, CARD_INSETS)
                 }
             }

@@ -3216,6 +3216,7 @@ class TaskLauncherPanel(private val project: Project) {
         override fun onTaskActivated(task: TaskLauncherService.TaskInfo) {
             hoverSuppressUntil = System.currentTimeMillis() + 1200
             cancelTaskHover()
+            taskCardList.selectTask(taskKeyOf(task))
             loadTaskParams(task)
         }
 
