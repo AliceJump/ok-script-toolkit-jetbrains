@@ -23,30 +23,25 @@ import com.intellij.openapi.ui.popup.JBPopupFactory
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.awt.RelativePoint
+import com.intellij.ui.SearchTextField
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.UIUtil
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.content.ContentManagerEvent
 import com.intellij.ui.content.ContentManagerListener
-import com.intellij.ui.table.JBTable
 import java.awt.BorderLayout
-import java.awt.Component
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Font
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.Insets
-import java.awt.Color
 import java.util.concurrent.CompletableFuture
-import java.nio.file.Files
 import java.nio.file.Paths
 import javax.swing.*
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
-import javax.swing.table.DefaultTableCellRenderer
-import javax.swing.table.DefaultTableModel
 
 class TaskLauncherToolWindowFactory : ToolWindowFactory {
 
@@ -79,12 +74,6 @@ class TaskLauncherPanel(private val project: Project) {
         private const val LF_CHAR: Char = 0x0A.toChar()
         private const val OK_JSON_FIELD = "ok-script.jsonField"
 
-        /**
-         * 操作列（左栏第 0 列）：触发任务是复选框、一次性任务是运行按钮。
-         * 表格里多处按序号取列，集中成常量免得改列序时漏掉某处。
-         */
-        private const val ACTION_COLUMN = 0
-
         // 状态语义色（亮 / 暗主题各一套）；色调编号见 TaskRowState.TONE_*
         // 语义色统一收敛到 TaskLauncherTheme（对应 VS Code 侧 tokens.css 的 token 单点）；
         // 这里保留原名作别名，包内既有引用零改动。tasklauncher 包内禁止再写 Color(0x…) 字面量。
@@ -101,48 +90,23 @@ class TaskLauncherPanel(private val project: Project) {
     private val accountStoreService = AccountStoreService(project)
     private val toolboxService = ToolboxService.getInstance(project)
 
-    /** 每行的任务类型（trigger / onetime），供表格勾选列判断可编辑性 */
-    private val rowKinds = mutableListOf<String>()
-
-    /** 每行状态的语义色调（见 TONE_*），状态列渲染器据此着色 */
-    private val rowTones = mutableListOf<Int>()
-
-    /** 程序化改写表格时抑制 TableModelListener 的副作用 */
-    private var updatingTableModel = false
-
     /** 已勾选「启用」的触发任务 key（module::Class），持久化到 .idea/ok-script-toolkit-tasks.json */
     private val enabledTriggers = linkedSetOf<String>()
 
     /**
-     * 左栏是「主」列表：操作 / 任务 / 状态三列。
-     *
-     * **类型不再靠图标表达** —— 操作列直接给出各自真正可点的控件：
-     * 触发任务是一个复选框（勾选即入列轮询），一次性任务是一枚运行按钮（点一下入队跑一次）。
-     * 任务列只显示名字，不放任何图标（放过的图标看着能点、实际不能点）。
+     * 左栏任务卡列表（对齐 VS Code 侧 media/console/taskCard.js 的编排）：
+     * 触发 / 一次性两个可折叠组 + 一次性任务按 schema.groupName 二级分组 + 搜索。
+     * 之前是「操作/任务/状态」三列平铺 JTable —— probe 顺序直出、无分组、无搜索，
+     * 与 VS Code 侧的任务编排完全对不上。
      */
-    private val taskTableModel = object : DefaultTableModel(
-        arrayOf(
-            OkScriptToolkitBundle.message("taskLauncher.actionColumn"),
-            OkScriptToolkitBundle.message("taskLauncher.taskColumn"),
-            OkScriptToolkitBundle.message("taskLauncher.statusColumn"),
-        ),
-        0,
-    ) {
-        // 必须返回包装类 Boolean（而不是基本类型 boolean），否则 Swing 不会套用复选框
-        // 渲染器 / 编辑器；拆成提前 return 也避开了 if/else 推导出交叉类型的告警。
-        override fun getColumnClass(columnIndex: Int): Class<*> {
-            if (columnIndex == ACTION_COLUMN) return java.lang.Boolean::class.javaObjectType
-            return String::class.java
-        }
+    private val taskCardList = TaskCardListPanel(CardHost())
+    private val taskSearchField = SearchTextField(false)
 
-        /**
-         * 只有触发任务可以「编辑」—— 那一格是复选框。
-         * 一次性任务那一格是运行按钮，编辑语义在 [installActionColumnClick] 里，不走编辑器。
-         */
-        override fun isCellEditable(row: Int, column: Int): Boolean =
-            column == ACTION_COLUMN && rowKinds.getOrElse(row) { TaskRowState.ONETIME } == TaskRowState.TRIGGER
+    /** 执行队列条（#queueStrip 的等价物）：一次性队列非空时显示任务名 chips */
+    private val queueStrip = JPanel(FlowLayout(FlowLayout.LEFT, 4, 1)).apply {
+        isOpaque = false
+        isVisible = false
     }
-    private val taskTable = JBTable(taskTableModel)
     private val refreshAction = ToolbarAction(AllIcons.Actions.Refresh, OkScriptToolkitBundle.message("taskLauncher.refresh")) { loadTasks() }
     private val accountEditorAction = ToolbarAction(AllIcons.Actions.Edit, OkScriptToolkitBundle.message("taskLauncher.accounts")) { openAccountEditor() }
     /** 显式启动执行器：勾选触发任务不再隐式拉起，启动行为集中在这里 */
@@ -182,7 +146,13 @@ class TaskLauncherPanel(private val project: Project) {
     /** 悬停弹层抑制截止时间：点选/切换后 1.2s 内不弹（对齐主仓库约定） */
     private var hoverSuppressUntil = 0L
 
+    /** 悬停弹层定时器：卡片 mouseEntered 时重启，800ms 后弹（弹层单例由 activeHoverPopup 保证） */
+    private var hoverTimer: Timer? = null
+
     private val hoverPopupDelayMs = 800
+
+    /** 任务卡分组折叠状态（tasks.json uiState 的内存快照；applyProbeResult 按项目根刷新） */
+    private var uiCollapseState: Map<String, Boolean> = emptyMap()
 
     private val paramPanel = object : JPanel(GridBagLayout()), Scrollable {
         override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
@@ -384,36 +354,32 @@ class TaskLauncherPanel(private val project: Project) {
         val toolbar = actionToolbar.component
         toolbar.border = BorderFactory.createEmptyBorder(2, 2, 2, 6)
 
-        taskTable.selectionModel.selectionMode = ListSelectionModel.SINGLE_SELECTION
-        taskTable.showHorizontalLines = true
-        taskTable.showVerticalLines = false
-        taskTable.rowHeight = 24
-        taskTable.selectionModel.addListSelectionListener {
-            val selectedRow = taskTable.selectedRow
-            if (selectedRow >= 0 && selectedRow < tasks.size) {
-                loadTaskParams(tasks[selectedRow])
-            } else {
-                showDetailPlaceholder()
-            }
-        }
-        // 触发任务的勾选列：勾上 = 入列轮询，取消 = 出列（等价 ok-script GUI 的启用开关）
-        taskTableModel.addTableModelListener { event ->
-            if (updatingTableModel) return@addTableModelListener
-            if (event.type != javax.swing.event.TableModelEvent.UPDATE || event.column != 0) {
-                return@addTableModelListener
-            }
-            val row = event.firstRow
-            if (row < 0 || row >= tasks.size || rowKinds.getOrElse(row) { TaskRowState.ONETIME } != TaskRowState.TRIGGER) {
-                return@addTableModelListener
-            }
-            setTriggerEnabled(tasks[row], taskTableModel.getValueAt(row, 0) == true)
-        }
-        installTableRenderers()
-        installActionColumnClick()
-        installTaskHoverPopup()
+        taskSearchField.textEditor.emptyText.setText(OkScriptToolkitBundle.message("taskLauncher.searchTasks"))
+        taskSearchField.toolTipText = OkScriptToolkitBundle.message("taskLauncher.searchTasks")
+        taskSearchField.addDocumentListener(object : DocumentListener {
+            override fun insertUpdate(e: DocumentEvent?) = applySearch()
+            override fun removeUpdate(e: DocumentEvent?) = applySearch()
+            override fun changedUpdate(e: DocumentEvent?) = applySearch()
+        })
 
-        val tableScrollPane = JBScrollPane(taskTable)
-        tableScrollPane.border = BorderFactory.createEmptyBorder()
+        val listScrollPane = JBScrollPane(taskCardList)
+        listScrollPane.border = BorderFactory.createEmptyBorder()
+        // 搜索行 + 队列条 + 卡片列表（#pageTasks 的 search-row / rc-queue / task-list 等价物）
+        val northColumn = JPanel()
+        northColumn.layout = BoxLayout(northColumn, BoxLayout.Y_AXIS)
+        northColumn.isOpaque = false
+        val searchRow = JPanel(BorderLayout())
+        searchRow.isOpaque = false
+        searchRow.border = BorderFactory.createEmptyBorder(6, 6, 2, 6)
+        searchRow.add(taskSearchField, BorderLayout.CENTER)
+        northColumn.add(searchRow)
+        queueStrip.border = BorderFactory.createEmptyBorder(0, 8, 2, 8)
+        northColumn.add(queueStrip)
+
+        val leftPane = JPanel(BorderLayout())
+        leftPane.isOpaque = false
+        leftPane.add(northColumn, BorderLayout.NORTH)
+        leftPane.add(listScrollPane, BorderLayout.CENTER)
 
         val paramScrollPane = JBScrollPane(paramPanel)
         paramScrollPane.border = BorderFactory.createEmptyBorder()
@@ -423,7 +389,7 @@ class TaskLauncherPanel(private val project: Project) {
         detailPane.add(paramScrollPane, BorderLayout.CENTER)
 
         val splitPane = com.intellij.openapi.ui.Splitter(false, 0.42f)
-        splitPane.firstComponent = tableScrollPane
+        splitPane.firstComponent = leftPane
         splitPane.secondComponent = detailPane
 
         // 健康度条：[健康点] [状态文字] [当前任务 chip] …… [进度条] [查看日志]
@@ -461,97 +427,46 @@ class TaskLauncherPanel(private val project: Project) {
         showDetailPlaceholder()
     }
 
-    // ── 左列表：渲染器 ────────────────────────────────────────────────
+    // ── 左列表：搜索 / 队列条 / 悬停（表格渲染器已由 TaskCardListPanel 取代） ──
 
-    /**
-     * 操作列渲染器见 [TaskActionRenderer]：触发行画复选框（模型里是 Boolean，可交互），
-     * 一次性行画运行按钮（模型里是 null，点击由 [installActionColumnClick] 处理）。
-     */
-    private fun installTableRenderers() {
-        taskTable.columnModel.getColumn(0).apply {
-            cellRenderer = TaskActionRenderer { row -> rowKinds.getOrElse(row) { TaskRowState.ONETIME } }
-            // 要放得下一个复选框 / 一枚运行按钮，比原来的 30 稍宽。
-            preferredWidth = 38
-            maxWidth = 38
-            resizable = false
-        }
-        taskTable.columnModel.getColumn(1).apply {
-            cellRenderer = TaskNameRenderer()
-            preferredWidth = 160
-        }
-        taskTable.columnModel.getColumn(2).apply {
-            cellRenderer = StatusToneRenderer()
-            preferredWidth = 64
-            maxWidth = 96
-        }
+    /** 搜索框输入 → 卡片列表过滤（对齐 webview setSearch：搜索激活时忽略折叠） */
+    private fun applySearch() {
+        taskCardList.setSearch(taskSearchField.text)
     }
 
-    /**
-     * 操作列里「一次性任务」那一格的点击 → 直接入队运行。
-     *
-     * 为什么不用 `TableCellEditor` 放真按钮：单元格编辑器要点两下
-     * （第一下进入编辑态、第二下才按到按钮），而这里要的是"点一下就跑"。
-     * 渲染器负责画成按钮，点击语义放在表格这一层。
-     *
-     * 只处理**一次性**行：触发行的那一格是复选框，由表格自带的 Boolean 编辑器接管，
-     * 这里必须让开，否则一次点击会既改勾选又触发运行。
-     */
-    private fun installActionColumnClick() {
-        taskTable.addMouseListener(object : java.awt.event.MouseAdapter() {
-            override fun mouseClicked(event: java.awt.event.MouseEvent) {
-                if (!javax.swing.SwingUtilities.isLeftMouseButton(event)) return
-                val row = taskTable.rowAtPoint(event.point)
-                val column = taskTable.columnAtPoint(event.point)
-                if (row < 0 || column != ACTION_COLUMN) return
-                if (rowKinds.getOrElse(row) { TaskRowState.ONETIME } != TaskRowState.ONETIME) return
-                taskTable.setRowSelectionInterval(row, row)
-                runTaskAt(row)
+    /** 执行队列条：一次性队列非空时显示「执行队列」+ 任务名 chips（#queueStrip 等价物） */
+    private fun renderQueueStrip(state: TaskRunnerService.ExecutorState) {
+        queueStrip.removeAll()
+        val queue = if (executorMatchesProject()) state.onetimeQueue else emptyList()
+        if (queue.isEmpty()) {
+            queueStrip.isVisible = false
+        } else {
+            val title = mutedLabel(OkScriptToolkitBundle.message("taskLauncher.queueTitle"))
+            queueStrip.add(title)
+            for (key in queue) {
+                val chip = JBLabel(displayNameOf(key))
+                TaskLauncherTheme.styleChip(chip, TaskLauncherTheme.ONETIME, displayNameOf(key))
+                chip.toolTipText = key
+                queueStrip.add(chip)
             }
-        })
+            queueStrip.isVisible = true
+        }
+        queueStrip.revalidate()
+        queueStrip.repaint()
     }
 
-    /**
-     * 任务列渲染器：**只显示任务名**。
-     *
-     * 曾经在名字前按类型挂图标（触发 = 轮询循环，一次性 = 运行三角）来替代单独的类型列，
-     * 但那个图标看着像按钮、点了却没反应（真正能点的控件在操作列）。
-     * 现在类型完全由操作列表达 —— 触发是复选框、一次性是运行按钮 ——
-     * 名字列不再放任何图标；悬浮提示保留，作为文字上的补充。
-     */
-    private inner class TaskNameRenderer : DefaultTableCellRenderer() {
-        override fun getTableCellRendererComponent(
-            table: JTable,
-            value: Any?,
-            isSelected: Boolean,
-            hasFocus: Boolean,
-            row: Int,
-            column: Int,
-        ): Component {
-            val component = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column)
-            icon = null
-            val isTrigger = rowKinds.getOrElse(row) { TaskRowState.ONETIME } == TaskRowState.TRIGGER
-            toolTipText = OkScriptToolkitBundle.message(
-                if (isTrigger) "taskLauncher.triggerTask" else "taskLauncher.oneTimeTask",
-            )
-            return component
+    /** 卡片悬停：800ms 后弹只读摘要；移出即取消（弹层单例在 showHoverPopup） */
+    private fun scheduleTaskHover(task: TaskLauncherService.TaskInfo, anchor: JComponent) {
+        hoverTimer?.stop()
+        if (System.currentTimeMillis() < hoverSuppressUntil) return
+        hoverTimer = Timer(hoverPopupDelayMs) { showTaskSummaryPopup(task, anchor) }.apply {
+            isRepeats = false
+            start()
         }
     }
 
-    /** 状态列渲染器：按语义着色（运行中绿 / 等待琥珀 / 异常红 / 其余次要色） */
-    private inner class StatusToneRenderer : DefaultTableCellRenderer() {
-        override fun getTableCellRendererComponent(
-            table: JTable,
-            value: Any?,
-            isSelected: Boolean,
-            hasFocus: Boolean,
-            row: Int,
-            column: Int,
-        ): Component {
-            val component = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column)
-            val tone = rowTones.getOrElse(row) { TaskRowState.TONE_NEUTRAL }
-            foreground = if (isSelected) table.selectionForeground else colorForTone(tone)
-            return component
-        }
+    private fun cancelTaskHover() {
+        hoverTimer?.stop()
     }
 
     // ── 右详情区：任务头 ──────────────────────────────────────────────
@@ -872,12 +787,10 @@ class TaskLauncherPanel(private val project: Project) {
             }
         }
 
-    /** 选中左侧任务表中的行（触发 selection listener → loadTaskParams） */
+    /** 运行中心行点击 → 右栏加载该任务参数（卡片列表无选中行的概念，直接定向打开） */
     private fun selectTaskRow(taskKey: String) {
-        val index = tasks.indexOfFirst { taskKeyOf(it) == taskKey }
-        if (index >= 0 && index < taskTable.rowCount) {
-            taskTable.setRowSelectionInterval(index, index)
-        }
+        val task = tasks.firstOrNull { taskKeyOf(it) == taskKey } ?: return
+        loadTaskParams(task)
     }
 
     /** 全局配置组摘要弹层：只读、无交互按钮（用户硬规则），最多列 12 个字段。
@@ -913,42 +826,9 @@ class TaskLauncherPanel(private val project: Project) {
         }
     }
 
-    /** 任务卡悬停弹出（#9 任务卡 hover 概览）：hover 800ms 弹只读摘要。
-     *  弹层单实例：新弹层显示前先 cancel 旧的，避免多行间停留时叠加；
-     *  mouseExited 停 timer 并重置 hoverRow —— 鼠标离开表格后不再弹出。 */
+    /** 任务卡悬停弹出（#9 任务卡 hover 概览）：hover 800ms 弹只读摘要（计时在 scheduleTaskHover）。
+     *  弹层单实例：新弹层显示前先 cancel 旧的，避免多张卡间停留时叠加。 */
     private var activeHoverPopup: com.intellij.openapi.ui.popup.JBPopup? = null
-
-    private fun installTaskHoverPopup() {
-        var hoverRow = -1
-        var timer: Timer? = null
-        taskTable.addMouseMotionListener(object : java.awt.event.MouseMotionAdapter() {
-            override fun mouseMoved(e: java.awt.event.MouseEvent) {
-                val row = taskTable.rowAtPoint(e.point)
-                if (row == hoverRow) return
-                hoverRow = row
-                timer?.stop()
-                if (row < 0 || row >= tasks.size) return
-                if (System.currentTimeMillis() < hoverSuppressUntil) return
-                val task = tasks[row]
-                timer = Timer(hoverPopupDelayMs) { showTaskSummaryPopup(task, row) }.apply {
-                    isRepeats = false
-                    start()
-                }
-            }
-        })
-        // 点击（选中加载参数）后 1.2s 抑制：刚点完立刻悬停不再弹同一张卡
-        taskTable.addMouseListener(object : java.awt.event.MouseAdapter() {
-            override fun mouseClicked(e: java.awt.event.MouseEvent) {
-                hoverSuppressUntil = System.currentTimeMillis() + 1200
-                timer?.stop()
-            }
-
-            override fun mouseExited(e: java.awt.event.MouseEvent) {
-                timer?.stop()
-                hoverRow = -1
-            }
-        })
-    }
 
     /** 显示悬停弹层（单实例互斥：先取消上一个） */
     private fun showHoverPopup(builder: () -> com.intellij.openapi.ui.popup.JBPopup) {
@@ -957,8 +837,9 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     /** 任务摘要弹层：kind / 参数改动量 / schema 错误（只读，无交互按钮）。
-     *  [row] 用于把弹层锚在悬停行上，而不是固定在表格左上角。 */
-    private fun showTaskSummaryPopup(task: TaskLauncherService.TaskInfo, row: Int) {
+     *  [anchorCard] 为悬停的任务卡，弹层锚在卡片左侧。参数不能叫 anchor ——
+     *  会遮蔽下方 GridBagConstraints.apply{} 的 anchor 字段（与 sectionCard 的 fill 同款坑）。 */
+    private fun showTaskSummaryPopup(task: TaskLauncherService.TaskInfo, anchorCard: JComponent) {
         val key = taskKeyOf(task)
         val schema = schemas[key]
         val content = JPanel(GridBagLayout())
@@ -996,7 +877,7 @@ class TaskLauncherPanel(private val project: Project) {
         }
         showHoverPopup {
             JBPopupFactory.getInstance()
-                .createComponentPopupBuilder(content, taskTable)
+                .createComponentPopupBuilder(content, anchorCard)
                 .setTitle(task.displayName)
                 .setRequestFocus(false)
                 .setResizable(false)
@@ -1004,17 +885,19 @@ class TaskLauncherPanel(private val project: Project) {
                 .setCancelOnClickOutside(true)
                 .createPopup()
                 .also { popup ->
-                    val anchorRow = if (row in 0 until taskTable.rowCount) row else 1
-                    val rect = taskTable.getCellRect(anchorRow, 0, true)
-                    val anchor = java.awt.Point(rect.x, rect.y)
-                    javax.swing.SwingUtilities.convertPointToScreen(anchor, taskTable)
-                    val bounds = taskTable.graphicsConfiguration?.bounds
-                    val titleWidth = taskTable.getFontMetrics(taskTable.font).stringWidth(task.displayName) + 72
-                    val popupWidth = maxOf(popup.content.preferredSize.width + 40, titleWidth)
-                    if (bounds == null || anchor.x - bounds.x < popupWidth + 12) {
-                        popup.cancel() // 没有左侧空间时保留点击详情入口，不遮住任务行
+                    // 弹层放在卡片左侧（对齐 webview：绝不压到卡片）；左侧空间不足时直接不弹
+                    val bounds = anchorCard.graphicsConfiguration?.bounds
+                    val onScreen = try {
+                        anchorCard.locationOnScreen
+                    } catch (_: java.awt.IllegalComponentStateException) {
+                        popup.cancel()
+                        return@also
+                    }
+                    val popupWidth = popup.content.preferredSize.width + 40
+                    if (bounds == null || onScreen.x - bounds.x < popupWidth + 12) {
+                        popup.cancel() // 没有左侧空间时保留点击详情入口，不遮住任务卡
                     } else {
-                        popup.show(RelativePoint(taskTable, java.awt.Point(rect.x - popupWidth - 12, rect.y)))
+                        popup.show(RelativePoint(anchorCard, java.awt.Point(-popupWidth - 12, 0)))
                     }
                 }
         }
@@ -1369,39 +1252,26 @@ class TaskLauncherPanel(private val project: Project) {
             enabledTriggers.clear()
             enabledTriggers.addAll(taskService.loadEnabledTriggers(sourceProjectDir))
 
-            // 刷新后尽量保住原来的选中项（按 module::Class 找回）
-            val previousSelection = detailTask?.let { taskKeyOf(it) }
-            updatingTableModel = true
-            try {
-                taskTableModel.rowCount = 0
-                rowKinds.clear()
-                rowTones.clear()
-                for (task in tasks) {
-                    val kind = taskKindOf(task)
-                    rowKinds.add(kind)
-                    rowTones.add(TaskRowState.TONE_NEUTRAL)
-                    taskTableModel.addRow(
-                        // 显式 Any? 元素类型：混合 Boolean / String 时 arrayOf 会推导出
-                        // Comparable<...> & Serializable 交叉类型并触发告警。
-                        // 第一格走 TaskRowState.checkboxValue：触发任务得到 Boolean，
-                        // 一次性任务得到 null —— 由 TaskActionRenderer 按行类型决定
-                        // 画复选框还是运行按钮。
-                        arrayOf<Any?>(
-                            TaskRowState.checkboxValue(kind, enabledTriggers.contains(taskKeyOf(task))),
-                            task.displayName,
-                            "",
-                        ),
-                    )
-                }
-            } finally {
-                updatingTableModel = false
-            }
-            // 别的项目的触发集合不能 adopt（会写进本项目的 tasks.json）；状态列用净化快照
+            // 折叠状态随项目根切换（tasks.json uiState；对齐 VS Code uiState 的复用语义）
+            uiCollapseState = taskService.loadUiState(sourceProjectDir)
+
+            // 重建卡片列表（触发/一次性分组 + groupName 二级分组 + 搜索过滤都在 TaskListGrouping）
+            taskCardList.setTasks(tasks)
+
+            // 别的项目的触发集合不能 adopt（会写进本项目的 tasks.json）；卡片状态用净化快照
             if (executorMatchesProject() && taskRunner.currentState().status == "running") {
                 syncTriggerCheckboxes(taskRunner.currentState())
             }
             renderTaskStatuses(runnerStateForDisplay())
-            restoreSelection(previousSelection)
+
+            // 参数面板开着时跟随刷新（对齐 VS Code：重渲染后 refreshDrawer 重挂新表单）
+            val previousSelection = detailTask?.let { taskKeyOf(it) }
+            if (previousSelection != null && tasks.any { taskKeyOf(it) == previousSelection }) {
+                loadTaskParams(detailTask!!)
+            } else {
+                detailTask = null
+                showDetailPlaceholder()
+            }
 
             statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.loaded", tasks.size)
 
@@ -2446,29 +2316,6 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     /**
-     * 运行第 [row] 行的任务。
-     *
-     * 入口只有操作列那枚运行按钮（[installActionColumnClick]）—— 工具栏上原来那个
-     * 「运行」按钮已删除：它和「启动执行器」用的是**同一个图标**，两个挨着的按钮长得一模一样，
-     * 而且操作列有了运行按钮之后就多余了。
-     *
-     * 触发行不该走到这里（那一格是复选框）；真到了就给出明确提示，而不是静默忽略。
-     */
-    private fun runTaskAt(row: Int) {
-        val task = tasks.getOrNull(row) ?: return
-        if (taskKindOf(task) == TaskRowState.TRIGGER) {
-            JOptionPane.showMessageDialog(
-                mainPanel,
-                OkScriptToolkitBundle.message("taskLauncher.triggerUsesCheckbox"),
-                "Warning",
-                JOptionPane.WARNING_MESSAGE,
-            )
-            return
-        }
-        enqueueTask(task)
-    }
-
-    /**
      * 工具栏「启动执行器」：显式拉起常驻执行器。已勾选的触发任务会按启用集合入列轮询。
      * 环境不满足时 [ensureExecutor] 会自己弹错误提示。
      */
@@ -2640,51 +2487,26 @@ class TaskLauncherPanel(private val project: Project) {
     private fun taskKindOf(task: TaskLauncherService.TaskInfo): String =
         task.kind ?: schemas[taskKeyOf(task)]?.kind ?: TaskRowState.ONETIME
 
-    /** 刷新列表后恢复原选中行（按 module::Class 找回）；找不到就回到占位提示 */
-    private fun restoreSelection(taskKey: String?) {
-        val index = if (taskKey == null) -1 else tasks.indexOfFirst { taskKeyOf(it) == taskKey }
-        if (index >= 0) {
-            taskTable.selectionModel.setSelectionInterval(index, index)
-        } else {
-            taskTable.clearSelection()
-            showDetailPlaceholder()
-        }
-    }
-
-    /** 勾选列与持久化集合对齐；执行器运行中以它的快照为准 */
+    /** 勾选集合与执行器快照对齐（执行器运行中它为准）；卡片勾选框经 refreshStatuses 同步 */
     private fun syncTriggerCheckboxes(state: TaskRunnerService.ExecutorState) {
         if (state.status != "idle" && enabledTriggers.toList() != state.enabledTriggers) {
             enabledTriggers.clear()
             enabledTriggers.addAll(state.enabledTriggers)
             persistEnabledTriggers()
         }
-        if (updatingTableModel) return
-        updatingTableModel = true
-        try {
-            for (row in tasks.indices) {
-                if (rowKinds.getOrElse(row) { TaskRowState.ONETIME } != TaskRowState.TRIGGER) continue
-                val want = enabledTriggers.contains(taskKeyOf(tasks[row]))
-                if (taskTableModel.getValueAt(row, 0) != want) taskTableModel.setValueAt(want, row, 0)
-            }
-        } finally {
-            updatingTableModel = false
-        }
+        taskCardList.refreshStatuses()
     }
 
-    /** 状态单元格：文案 + 语义色调（色调给状态列渲染器与详情区 chip 共用） */
-    private data class StatusCell(val text: String, val tone: Int)
-
-    /** 状态列：触发任务看入列 / 轮询，一次性任务看排队 / 执行 / schema 健康度 */
+    /** 状态刷新：逐卡原地更新 + 队列条（对齐 webview 的 updateRunningState + renderQueueStrip） */
     private fun renderTaskStatuses(state: TaskRunnerService.ExecutorState) {
-        while (rowTones.size < tasks.size) rowTones.add(TaskRowState.TONE_NEUTRAL)
-        if (rowTones.size > tasks.size) rowTones.subList(tasks.size, rowTones.size).clear()
-        for (row in tasks.indices) {
-            val cell = statusCellFor(tasks[row], state)
-            rowTones[row] = cell.tone
-            if (taskTableModel.getValueAt(row, 2) != cell.text) taskTableModel.setValueAt(cell.text, row, 2)
-        }
+        taskCardList.refreshStatuses()
+        renderQueueStrip(state)
     }
 
+    /** 状态单元格：文案 + 语义色调 + 徽标/启动按钮的可用性（卡片与详情区 chip 共用） */
+    private data class StatusCell(val text: String, val tone: Int, val badge: Boolean, val launchEnabled: Boolean)
+
+    /** 状态：触发任务看入列 / 轮询，一次性任务看排队 / 执行 / schema 健康度 */
     private fun statusCellFor(
         task: TaskLauncherService.TaskInfo,
         state: TaskRunnerService.ExecutorState,
@@ -2692,6 +2514,7 @@ class TaskLauncherPanel(private val project: Project) {
         val key = taskKeyOf(task)
         val isTrigger = taskKindOf(task) == TaskRowState.TRIGGER
         val schema = schemas[key]
+        val readyText = OkScriptToolkitBundle.message("taskLauncher.statusReady")
         val text = when {
             state.current == key -> OkScriptToolkitBundle.message(
                 if (isTrigger) "taskLauncher.triggerPolling" else "taskLauncher.taskExecuting",
@@ -2710,8 +2533,13 @@ class TaskLauncherPanel(private val project: Project) {
             state.onetimeQueue.contains(key) -> OkScriptToolkitBundle.message("taskLauncher.taskQueued")
             schema?.broken == true -> OkScriptToolkitBundle.message("taskLauncher.schemaBroken")
             schema?.error != null -> OkScriptToolkitBundle.message("taskLauncher.schemaError")
-            else -> OkScriptToolkitBundle.message("taskLauncher.statusReady")
+            else -> readyText
         }
+        // 徽标语义对齐 webview：一次性任务没有事件（就绪）时不画徽标，其余状态都画
+        val badge = text != readyText
+        // ▶启动按钮：执行器属于别的项目 / 该任务正排队或执行中时禁用（对齐 webview launch.disabled）
+        val launchEnabled = !taskRunner.isActive() && executorMatchesProject() &&
+            state.current != key && !state.onetimeQueue.contains(key)
         return StatusCell(
             text = text,
             tone = TaskRowState.statusTone(
@@ -2722,6 +2550,8 @@ class TaskLauncherPanel(private val project: Project) {
                 schemaBroken = schema?.broken == true,
                 schemaError = schema?.error != null,
             ),
+            badge = badge,
+            launchEnabled = launchEnabled,
         )
     }
 
@@ -2772,6 +2602,174 @@ class TaskLauncherPanel(private val project: Project) {
                     .notify(project)
                 false
             }
+        }
+    }
+
+    // ── 任务卡列表宿主（TaskCardHost 实现）───────────────────────────
+
+    private inner class CardHost : TaskCardHost {
+        override fun taskList(): List<TaskLauncherService.TaskInfo> = tasks
+
+        override fun schemaOf(task: TaskLauncherService.TaskInfo): TaskLauncherService.TaskSchema? =
+            schemas[taskKeyOf(task)]
+
+        override fun kindOf(task: TaskLauncherService.TaskInfo): String = taskKindOf(task)
+
+        override fun isTriggerEnabled(taskKey: String): Boolean = enabledTriggers.contains(taskKey)
+
+        override fun cardStatusOf(task: TaskLauncherService.TaskInfo): TaskCardStatus {
+            val cell = statusCellFor(task, runnerStateForDisplay())
+            return TaskCardStatus(cell.text, cell.tone, cell.badge, cell.launchEnabled)
+        }
+
+        override fun hasParamOverrides(taskKey: String): Boolean = snapshotDiffersFromFactory(taskKey)
+
+        override fun isCollapsed(foldKey: String): Boolean = uiCollapseState[foldKey] == true
+
+        override fun onCollapseChanged(foldKey: String, collapsed: Boolean) {
+            hoverSuppressUntil = System.currentTimeMillis() + 1200
+            uiCollapseState = uiCollapseState + (foldKey to collapsed)
+            // 折叠是低频操作：同步落盘（saveUiStateValue 内部有 storeLock，与其它写路径互不交错）
+            try {
+                taskService.saveUiStateValue(foldKey, collapsed, taskDataRoot())
+            } catch (e: Exception) {
+                LOG.warn("Failed to persist UI collapse state", e)
+            }
+        }
+
+        override fun onTaskActivated(task: TaskLauncherService.TaskInfo) {
+            hoverSuppressUntil = System.currentTimeMillis() + 1200
+            cancelTaskHover()
+            loadTaskParams(task)
+        }
+
+        override fun onOpenParams(task: TaskLauncherService.TaskInfo) {
+            hoverSuppressUntil = System.currentTimeMillis() + 1200
+            loadTaskParams(task)
+        }
+
+        override fun onToggleTrigger(task: TaskLauncherService.TaskInfo, enabled: Boolean) {
+            hoverSuppressUntil = System.currentTimeMillis() + 1200
+            setTriggerEnabled(task, enabled)
+        }
+
+        override fun onRunTask(task: TaskLauncherService.TaskInfo) {
+            hoverSuppressUntil = System.currentTimeMillis() + 1200
+            enqueueTask(task)
+        }
+
+        override fun onSyncDefault(task: TaskLauncherService.TaskInfo) = syncTaskDefault(task)
+
+        override fun onResetDefault(task: TaskLauncherService.TaskInfo) = resetTaskDefault(task)
+
+        override fun onTaskHover(task: TaskLauncherService.TaskInfo, anchor: JComponent) {
+            scheduleTaskHover(task, anchor)
+        }
+
+        override fun onTaskHoverEnd() {
+            cancelTaskHover()
+        }
+    }
+
+    /**
+     * 覆盖徽标（对齐 webview snapshotDiffersFromFactory）：任一键快照值 ≠ 出厂值
+     * （default 显式声明且不相等），或存在孤儿键（default_config 已删）。全量接管后
+     * params 恒非空，旧的「非空即亮」判断会失去意义。
+     */
+    private fun snapshotDiffersFromFactory(taskKey: String): Boolean {
+        val params = taskService.getTaskConfig(taskKey, taskDataRoot()).params ?: return false
+        if (params.isEmpty()) return false
+        val known = HashSet<String>()
+        schemas[taskKey]?.fields?.forEach { f ->
+            known.add(f.key)
+            if (f.hasDefault && params.containsKey(f.key) && params[f.key] != f.default) return true
+        }
+        return params.keys.any { it !in known }
+    }
+
+    /**
+     * 卡片上的快照操作（⇄ / ⟲）公共骨架：守卫 schema、先提交防抖中的表单编辑，
+     * 再在最新快照上应用 [mutation]，落盘并推送执行器。返回键变更数；schema 不就绪时返回 null。
+     */
+    private fun mutateTaskSnapshot(
+        task: TaskLauncherService.TaskInfo,
+        mutation: (params: LinkedHashMap<String, Any?>, schema: TaskLauncherService.TaskSchema) -> Int,
+    ): Int? {
+        val key = taskKeyOf(task)
+        val schema = schemas[key] ?: return null
+        if (schema.broken || schema.fields.isEmpty()) return null
+        // 防抖中的表单编辑先落盘：卡面操作必须基于最新快照，且不能被随后的 flush 覆盖
+        saveTimer.stop()
+        flushPendingSave().join()
+        val root = taskDataRoot()
+        return try {
+            val existing = taskService.getTaskConfig(key, root)
+            val params = LinkedHashMap<String, Any?>(existing.params.orEmpty())
+            val changed = mutation(params, schema)
+            if (changed > 0) {
+                // 探针 JSON 允许显式 null；与 GlobalSnapshotRules 同款强转
+                @Suppress("UNCHECKED_CAST")
+                taskService.saveTaskConfig(key, existing.copy(params = params as Map<String, Any>), root)
+                // 执行器是常驻进程：快照变化必须即时推送，否则要重启才生效
+                pushParamOverrides(root)
+                // 参数面板开着时跟随刷新（对齐 VS Code snapshotUpdated → refreshDrawer）
+                if (detailTask?.let { taskKeyOf(it) } == key) loadTaskParams(task)
+                renderTaskStatuses(runnerStateForDisplay())
+            }
+            changed
+        } catch (e: Exception) {
+            LOG.warn("Failed to mutate task snapshot for $key", e)
+            com.intellij.notification.NotificationGroupManager.getInstance()
+                .getNotificationGroup("okScriptToolkit")
+                .createNotification(
+                    OkScriptToolkitBundle.message("taskLauncher.saveFailed", e.message ?: "unknown"),
+                    com.intellij.notification.NotificationType.ERROR,
+                )
+                .notify(project)
+            null
+        }
+    }
+
+    /**
+     * ⇄ 同步 default（对齐 VS Code syncDefaultToSnapshot 决议 1：并集扩张）——
+     * 补缺键（取出厂值 default ?? value），已有键值不动，孤儿键保留。
+     */
+    private fun syncTaskDefault(task: TaskLauncherService.TaskInfo) {
+        val added = mutateTaskSnapshot(task) { params, schema ->
+            var count = 0
+            for (f in schema.fields) {
+                if (params.containsKey(f.key)) continue
+                params[f.key] = f.defaultOrValue()
+                count++
+            }
+            count
+        } ?: return
+        statusLabel.text = if (added > 0) {
+            OkScriptToolkitBundle.message("taskLauncher.syncDefaultDone", added)
+        } else {
+            OkScriptToolkitBundle.message("taskLauncher.syncDefaultNoop")
+        }
+    }
+
+    /**
+     * ⟲ 恢复默认（对齐 VS Code resetSnapshotToDefault 决议 2：出厂值）——
+     * 快照里 default 仍存在的键重置为出厂值（显式 null 也算）；孤儿键保留。
+     */
+    private fun resetTaskDefault(task: TaskLauncherService.TaskInfo) {
+        val reset = mutateTaskSnapshot(task) { params, schema ->
+            var count = 0
+            for (f in schema.fields) {
+                if (!f.hasDefault) continue
+                if (params[f.key] == f.default) continue
+                params[f.key] = f.default
+                count++
+            }
+            count
+        } ?: return
+        statusLabel.text = if (reset > 0) {
+            OkScriptToolkitBundle.message("taskLauncher.resetDefaultDone", reset)
+        } else {
+            OkScriptToolkitBundle.message("taskLauncher.resetDefaultNoop")
         }
     }
 

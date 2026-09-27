@@ -168,4 +168,20 @@ internal object TaskConfigMerge {
         projects[projectRoot] = projectConfig.copy(globalConfigs = snapshots)
         return store.copy(projects = projects)
     }
+
+    /**
+     * 写入单个 UI 折叠键，保留任务参数、勾选集合与全局快照（第四条独立写入路径，
+     * 与前三条同样互不干扰）。已有键被替换，其余键原样保留。
+     */
+    fun withUiState(
+        store: TaskConfigStore,
+        projectRoot: String,
+        key: String,
+        value: Boolean,
+    ): TaskConfigStore {
+        val projects = store.projects.toMutableMap()
+        val projectConfig = projects[projectRoot] ?: TaskConfigStore.ProjectConfig()
+        projects[projectRoot] = projectConfig.copy(uiState = projectConfig.uiState + (key to value))
+        return store.copy(projects = projects)
+    }
 }

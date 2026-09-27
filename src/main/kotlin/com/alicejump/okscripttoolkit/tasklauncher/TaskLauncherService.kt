@@ -79,6 +79,13 @@ class TaskLauncherService(private val project: Project) {
         val description: String? = null,
         val kind: String? = null,
         val showInTaskTab: Boolean = true,
+        /**
+         * 一次性任务的业务分组（BaseTask.group_name 的源文案 key，探针原样给出、未翻译）。
+         * VS Code 侧 webview 用它把任务列表分成若干可折叠小节（缺省归「未分组」）；
+         * 这里同样在任务卡列表里落组 —— 之前 parseSchemas 直接把它丢了，是两边
+         * 任务编排对不齐的根因。探针输出见 probe_task_schemas.py 的 schemas 段。
+         */
+        val groupName: String? = null,
         val configGroups: Map<String, List<String>>? = null,
         val groupLabels: Map<String, String>? = null,
         val groupSelector: String? = null,
@@ -149,6 +156,11 @@ class TaskLauncherService(private val project: Project) {
              * 物化规则见 [GlobalSnapshotRules]（首建继承当前值、重探针新键取默认、孤儿键保留）。
              */
             val globalConfigs: Map<String, Map<String, Any?>> = emptyMap(),
+            /**
+             * UI 折叠状态：{键: 是否折叠}（任务卡列表的分组折叠，对齐 VS Code 侧
+             * uiState 的 taskGroupCollapsed::* 键）。重开工具窗 / 重启 IDE 后复用。
+             */
+            val uiState: Map<String, Boolean> = emptyMap(),
         )
     }
 
@@ -321,6 +333,7 @@ class TaskLauncherService(private val project: Project) {
                 description = schemaNode.get("description")?.asText(null),
                 kind = schemaNode.get("kind")?.asText(null),
                 showInTaskTab = schemaNode.get("showInTaskTab")?.asBoolean() ?: true,
+                groupName = schemaNode.get("groupName")?.asText(null),
                 configGroups = schemaNode.get("configGroups")?.takeIf { !it.isNull }?.let {
                     @Suppress("UNCHECKED_CAST")
                     objectMapper.convertValue(it, Map::class.java) as? Map<String, List<String>>
@@ -497,6 +510,7 @@ class TaskLauncherService(private val project: Project) {
                     ?.mapNotNull { it.asText(null) }
                     ?: emptyList(),
                 globalConfigs = parseGlobalConfigsNode(projectNode.get("globalConfigs")),
+                uiState = parseUiStateNode(projectNode.get("uiState")),
             )
         }
         return TaskConfigStore(projects = projects)
@@ -559,6 +573,25 @@ class TaskLauncherService(private val project: Project) {
         }
     }
 
+    // ── UI 折叠状态（任务卡列表分组折叠，对齐 VS Code 侧 uiState） ────
+
+    /** 当前项目的 UI 折叠状态：{taskGroupCollapsed::* 键: 是否折叠} */
+    fun loadUiState(root: String = getTargetRoot()): Map<String, Boolean> =
+        loadTaskConfigs().projects[root]?.uiState ?: emptyMap()
+
+    /**
+     * 写入单个折叠键。折叠切换是低频用户操作，直接在调用线程（EDT）落盘 ——
+     * 与 [saveGlobalConfigGroup] 的同步写先例一致；storeLock 保证与参数/勾选
+     * 写入路径互不交错。
+     */
+    fun saveUiStateValue(key: String, value: Boolean, root: String = getTargetRoot()) {
+        synchronized(storeLock) {
+            val updated = TaskConfigMerge.withUiState(loadTaskConfigsLocked(), root, key, value)
+            saveTaskConfigs(updated)
+            configStoreCache = updated
+        }
+    }
+
     // ── 全局配置快照（#7 配置接管） ───────────────────────────────────
 
     /** 当前项目的全局配置快照：{组名: {配置键: 值}} */
@@ -605,6 +638,16 @@ class TaskLauncherService(private val project: Project) {
             if (values != null) groups[groupName] = values
         }
         return groups
+    }
+
+    /** 解析 tasks.json 里的 uiState：{键: 布尔}。非布尔值跳过（旧版本或手改文件容错）。 */
+    private fun parseUiStateNode(node: JsonNode?): Map<String, Boolean> {
+        if (node == null || !node.isObject) return emptyMap()
+        val state = linkedMapOf<String, Boolean>()
+        node.forEachField { key, value ->
+            if (value.isBoolean) state[key] = value.asBoolean()
+        }
+        return state
     }
 
     // ── Schema cache ──────────────────────────────────────────────────

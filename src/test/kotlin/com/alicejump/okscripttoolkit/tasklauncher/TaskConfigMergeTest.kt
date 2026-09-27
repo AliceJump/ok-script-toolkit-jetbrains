@@ -417,4 +417,64 @@ class TaskConfigMergeTest {
                 "所以正确的修法不是改 copy 的写法，而是给读-改-写序列上锁 + 把合并规则收敛到本对象",
         )
     }
+
+    // ── withUiState（任务卡分组折叠，对齐 VS Code uiState）────────────
+
+    /** 折叠键写入：只换自己的键，任务参数 / 勾选 / 全局快照都不得被带走 */
+    @Test
+    fun `writing a ui collapse key keeps tasks, triggers and global configs`() {
+        val original = storeWith(
+            mapOf(
+                "/proj" to TaskConfigStore.ProjectConfig(
+                    tasks = mapOf("m::A" to config("x" to 1)),
+                    enabledTriggers = listOf("m::T1"),
+                    globalConfigs = mapOf("战斗配置" to mapOf("dps" to 9)),
+                ),
+            ),
+        )
+
+        val updated = TaskConfigMerge.withUiState(original, "/proj", "taskGroupCollapsed::trigger", true)
+
+        assertEquals(true, updated.projects["/proj"]?.uiState?.get("taskGroupCollapsed::trigger"))
+        assertEquals(
+            mapOf("x" to 1),
+            updated.projects["/proj"]?.tasks?.get("m::A")?.params,
+            "写折叠键不得动任务参数",
+        )
+        assertEquals(listOf("m::T1"), updated.projects["/proj"]?.enabledTriggers, "写折叠键不得动勾选集合")
+        assertEquals(
+            mapOf("dps" to 9),
+            updated.projects["/proj"]?.globalConfigs?.get("战斗配置"),
+            "写折叠键不得动全局快照",
+        )
+    }
+
+    /** 同一折叠键重复写（切换多次）以最后一次为准；别的折叠键原样保留 */
+    @Test
+    fun `rewriting a collapse key overwrites it and keeps sibling keys`() {
+        val original = storeWith(
+            mapOf(
+                "/proj" to TaskConfigStore.ProjectConfig(
+                    uiState = mapOf(
+                        "taskGroupCollapsed::trigger" to true,
+                        "taskGroupCollapsed::onetime::战斗" to true,
+                    ),
+                ),
+            ),
+        )
+
+        val updated = TaskConfigMerge.withUiState(original, "/proj", "taskGroupCollapsed::trigger", false)
+
+        assertEquals(false, updated.projects["/proj"]?.uiState?.get("taskGroupCollapsed::trigger"))
+        assertEquals(true, updated.projects["/proj"]?.uiState?.get("taskGroupCollapsed::onetime::战斗"))
+    }
+
+    /** 首次写折叠键：项目根尚不存在时应新建 */
+    @Test
+    fun `writing a collapse key into an unseen project root creates it`() {
+        val updated = TaskConfigMerge.withUiState(storeWith(), "/fresh", "taskGroupCollapsed::onetime", true)
+
+        assertEquals(mapOf("taskGroupCollapsed::onetime" to true), updated.projects["/fresh"]?.uiState)
+        assertEquals(emptyMap<String, TaskConfig>(), updated.projects["/fresh"]?.tasks)
+    }
 }
