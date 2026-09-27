@@ -222,6 +222,8 @@ class TaskLauncherPanel(private val project: Project) {
     /** 防抖写盘仍要保持用户操作顺序；commonPool 的独立任务可能倒序完成。 */
     private var taskSaveTail: CompletableFuture<Boolean> = CompletableFuture.completedFuture(true)
     private var triggerSaveTail: CompletableFuture<Boolean> = CompletableFuture.completedFuture(true)
+    /** Latest failed trigger selection for each project, retained until a write succeeds. */
+    private val failedTriggerSaves = java.util.concurrent.ConcurrentHashMap<String, List<String>>()
     @Volatile
     private var lastTaskSaveError = ""
     @Volatile
@@ -1752,7 +1754,12 @@ class TaskLauncherPanel(private val project: Project) {
             progressBar.isVisible = false
             return
         }
-        triggerSaveTail.join()
+        if (!awaitTriggerSaves()) {
+            statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.saveFailed", lastTriggerSaveError)
+            progressBar.isIndeterminate = false
+            progressBar.isVisible = false
+            return
+        }
         val projectDir = checkedProjectPath(statusLabel, "taskLauncher.noProject") ?: run {
             val failure = statusLabel.text
             clearDisplayedProject()
@@ -1937,6 +1944,12 @@ class TaskLauncherPanel(private val project: Project) {
             statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.saveFailed", lastTaskSaveError)
             return
         }
+        if (!awaitTriggerSaves()) {
+            progressBar.isIndeterminate = false
+            progressBar.isVisible = false
+            statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.saveFailed", lastTriggerSaveError)
+            return
+        }
         if (finished) {
             progressBar.isIndeterminate = false
             progressBar.isVisible = false
@@ -1969,7 +1982,6 @@ class TaskLauncherPanel(private val project: Project) {
             }
 
             // 勾选集合来自插件自己的持久化文件；执行器运行中则以它的快照为准
-            triggerSaveTail.join()
             enabledTriggers.clear()
             enabledTriggers.addAll(taskService.loadEnabledTriggers(sourceProjectDir))
 
@@ -3136,7 +3148,7 @@ class TaskLauncherPanel(private val project: Project) {
             statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.saveFailed", lastTaskSaveError)
             return false
         }
-        if (!triggerSaveTail.join()) {
+        if (!awaitTriggerSaves()) {
             statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.saveFailed", lastTriggerSaveError)
             return false
         }
@@ -3350,12 +3362,18 @@ class TaskLauncherPanel(private val project: Project) {
     private fun persistEnabledTriggers() {
         val root = taskDataRoot()
         val keys = enabledTriggers.toList()
+        queueTriggerSave(root, keys)
+    }
+
+    private fun queueTriggerSave(root: String, keys: List<String>) {
         triggerSaveTail = triggerSaveTail.thenApplyAsync { _ ->
             try {
                 taskService.saveEnabledTriggers(keys, root)
-                lastTriggerSaveError = ""
+                failedTriggerSaves.remove(root)
+                if (failedTriggerSaves.isEmpty()) lastTriggerSaveError = ""
                 true
             } catch (e: Exception) {
+                failedTriggerSaves[root] = keys
                 LOG.warn("Failed to save enabled triggers", e)
                 lastTriggerSaveError = e.message.orEmpty()
                 com.intellij.notification.NotificationGroupManager.getInstance()
@@ -3368,6 +3386,15 @@ class TaskLauncherPanel(private val project: Project) {
                 false
             }
         }
+    }
+
+    /** Wait for newer clicks first, then retry only the latest failed selection per root. */
+    private fun awaitTriggerSaves(): Boolean {
+        triggerSaveTail.join()
+        for ((root, keys) in failedTriggerSaves.entries.toList()) {
+            if (failedTriggerSaves.remove(root, keys)) queueTriggerSave(root, keys)
+        }
+        return triggerSaveTail.join() && failedTriggerSaves.isEmpty()
     }
 
     // ── 任务卡列表宿主（TaskCardHost 实现）───────────────────────────
@@ -3548,7 +3575,7 @@ class TaskLauncherPanel(private val project: Project) {
         loadGeneration++
         saveTimer.stop()
         flushPendingSave().join()
-        triggerSaveTail.join()
+        awaitTriggerSaves()
         globalSaveTimer.stop()
         flushPendingGlobalSave()
         toolboxService.removeStateListener(toolboxStateListener)
