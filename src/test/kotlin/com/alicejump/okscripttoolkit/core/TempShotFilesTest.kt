@@ -71,13 +71,40 @@ class TempShotFilesTest {
     }
 
     @Test
+    fun `imported images keep their extension and exact bytes`() {
+        val source = File(TestTmp.create("ok-temp-source"), "sample.JPEG")
+        val bytes = byteArrayOf(1, 2, 3, 4)
+        source.writeBytes(bytes)
+        val store = newStore()
+
+        val imported = store.addFile(source)
+
+        assertTrue(imported != null)
+        assertTrue(imported.name.endsWith(".jpeg"))
+        assertEquals(bytes.toList(), imported.file.readBytes().toList())
+        assertEquals(imported.id, store.list().single().id)
+    }
+
+    @Test
+    fun `invalid or unsupported files are not registered`() {
+        val dir = TestTmp.create("ok-temp-source")
+        val missing = File(dir, "missing.png")
+        val unsupported = File(dir, "notes.txt").apply { writeText("text") }
+        val store = newStore()
+
+        assertNull(store.addFile(missing))
+        assertNull(store.addFile(unsupported))
+        assertTrue(store.list().isEmpty())
+    }
+
+    @Test
     fun `unrelated files in the directory are ignored`() {
         val dir = TestTmp.create("ok-temp-shots")
         val store = TempShotFiles(dir)
         File(dir, "screenshot_20250101_000000.png").writeBytes(byteArrayOf())
         File(dir, "notes.txt").writeBytes(byteArrayOf())
         store.writeImage(image())
-        assertEquals(1, store.list().size, "只认 shot_<13 位时间戳>_<3 位序号>.png")
+        assertEquals(1, store.list().size, "只认受支持扩展名的 shot_<13 位时间戳>_<3 位序号>")
         assertEquals(false, TempShotFiles.isShotName("screenshot_20250101_000000.png"))
         assertEquals(true, TempShotFiles.isShotName(TempShotFiles.nextName()))
     }

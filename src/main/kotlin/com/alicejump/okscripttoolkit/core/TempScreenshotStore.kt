@@ -61,6 +61,8 @@ class TempScreenshotStore(private val project: Project) : Disposable {
 
     fun newFilePath(): File = files.newFilePath()
 
+    fun addFile(source: File): TempShot? = files.addFile(source)?.also { notifyChanged() }
+
     fun register(file: File): TempShot? = files.register(file)?.also { notifyChanged() }
 
     fun writeImage(image: BufferedImage): TempShot? = files.writeImage(image)?.also { notifyChanged() }

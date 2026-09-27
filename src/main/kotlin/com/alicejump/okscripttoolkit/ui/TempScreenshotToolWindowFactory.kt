@@ -43,7 +43,6 @@ import java.awt.event.MouseEvent
 import java.awt.event.MouseWheelEvent
 import java.awt.image.BufferedImage
 import java.io.File
-import java.nio.file.Files
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import javax.imageio.ImageIO
@@ -97,9 +96,6 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
         private const val ZOOM_STEP = 1.1
         /** 坐标框手柄的命中半径（像素） */
         private const val HANDLE_PX = 8
-
-        /** 拖入文件允许的图片扩展名（ImageIO 可解码集合） */
-        private val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "bmp", "gif")
 
         private val COORD_COLOR = JBColor(0xE8A33D, 0xFFB454)
     }
@@ -358,7 +354,9 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
             null
         }
         if (files != null) {
-            for (file in files) importShotFile(file)
+            val images = files.filter(TempShotFiles::isSupportedImageFile)
+            if (images.isEmpty()) notify("tempShots.pasteNoImage", NotificationType.WARNING)
+            for (file in images) importShotFile(file)
             return
         }
         notify("tempShots.pasteNoImage", NotificationType.WARNING)
@@ -375,16 +373,14 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
         return buffered
     }
 
-    /** 把外部图片文件复制进临时截图区 */
-    private fun importShotFile(file: File) {
-        if (!file.isFile) return
-        val target = store.newFilePath()
-        try {
-            Files.copy(file.toPath(), target.toPath())
-            store.register(target)
-        } catch (_: Exception) {
+    /** 把外部图片文件复制进临时截图区，返回是否真正写入并登记。 */
+    private fun importShotFile(file: File): Boolean {
+        if (!TempShotFiles.isSupportedImageFile(file)) return false
+        if (store.addFile(file) == null) {
             notify("tempShots.saveFailed", NotificationType.ERROR)
+            return false
         }
+        return true
     }
 
     /**
@@ -408,10 +404,9 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
                 } ?: return false
                 var imported = false
                 for (file in files) {
-                    // 只收 ImageIO 能解码的图片格式（对齐 VS Code 的 image/* 过滤）
-                    if (file.isFile && file.extension.lowercase() in IMAGE_EXTENSIONS) {
-                        importShotFile(file)
-                        imported = true
+                    // 保留受支持图片的原格式；只有复制和登记都成功才报告已处理。
+                    if (TempShotFiles.isSupportedImageFile(file)) {
+                        if (importShotFile(file)) imported = true
                     }
                 }
                 return imported

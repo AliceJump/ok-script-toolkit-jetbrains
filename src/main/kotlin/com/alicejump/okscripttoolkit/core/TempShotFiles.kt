@@ -2,6 +2,7 @@ package com.alicejump.okscripttoolkit.core
 
 import java.awt.image.BufferedImage
 import java.io.File
+import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicInteger
 import javax.imageio.ImageIO
 
@@ -14,7 +15,8 @@ data class TempShot(val id: String, val file: File) {
  * 临时截图的磁盘存储（纯文件逻辑，不依赖 IDE，便于单测）。
  *
  * 对齐 VSCode 版 tempScreenshotStore.ts：
- * - 文件名 `shot_<13 位毫秒时间戳>_<3 位序号>.png`，字典序即时间序，因此
+ * - 截图文件名 `shot_<13 位毫秒时间戳>_<3 位序号>.png`；外部图片保留原扩展名。
+ *   相同的定宽前缀使字典序仍是时间序，因此
  *   **列表直接从目录派生，无需额外索引文件**；
  * - 最多保留 [MAX_SHOTS] 张，超出淘汰最早的一张；
  * - 升序列出即为轮播播放顺序。
@@ -26,11 +28,17 @@ class TempShotFiles(private val dir: File) {
         const val MAX_SHOTS = 10
 
         private val seq = AtomicInteger(0)
-        private val NAME_RE = Regex("""^shot_\d{13}_\d{3}\.png$""")
+        private val IMAGE_EXTENSIONS = setOf("png", "jpg", "jpeg", "bmp", "gif")
+        private val NAME_RE = Regex("""^shot_\d{13}_\d{3}\.(png|jpe?g|bmp|gif)$""")
 
         /** 时间戳定宽 + 自增序号，保证同一毫秒内多次写入也有稳定顺序 */
-        fun nextName(): String =
-            "shot_%013d_%03d.png".format(System.currentTimeMillis(), seq.getAndIncrement() % 1000)
+        fun nextName(extension: String = "png"): String {
+            require(extension in IMAGE_EXTENSIONS) { "Unsupported image extension" }
+            return "shot_%013d_%03d.%s".format(System.currentTimeMillis(), seq.getAndIncrement() % 1000, extension)
+        }
+
+        fun isSupportedImageFile(file: File): Boolean =
+            file.isFile && file.extension.lowercase() in IMAGE_EXTENSIONS
 
         /** 是否是本存储生成的临时截图文件名（过滤目录里的无关文件） */
         fun isShotName(name: String): Boolean = NAME_RE.matches(name)
@@ -52,9 +60,25 @@ class TempShotFiles(private val dir: File) {
     fun get(id: String): TempShot? = list().firstOrNull { it.id == id }
 
     /** 为外部写入者（截图脚本）预留落盘路径，随后调用 [register] 生效 */
-    fun newFilePath(): File {
+    fun newFilePath(extension: String = "png"): File {
         ensureDir()
-        return File(dir, nextName())
+        return File(dir, nextName(extension))
+    }
+
+    /** 保留外部文件的真实扩展名；复制失败时清理可能留下的半成品。 */
+    fun addFile(source: File): TempShot? {
+        if (!isSupportedImageFile(source)) return null
+        val target = newFilePath(source.extension.lowercase())
+        return try {
+            Files.copy(source.toPath(), target.toPath())
+            register(target) ?: run {
+                target.delete()
+                null
+            }
+        } catch (_: Exception) {
+            target.delete()
+            null
+        }
     }
 
     /** 外部写入完成后登记：执行数量淘汰。文件不存在返回 null。 */
