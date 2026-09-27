@@ -25,6 +25,7 @@ import javax.swing.JTextField
 import javax.swing.ListSelectionModel
 import javax.swing.Scrollable
 import javax.swing.SpinnerNumberModel
+import javax.swing.text.JTextComponent
 
 /** An editor for the same global config snapshot that is injected into run_executor.py. */
 internal object GlobalConfigEditor {
@@ -337,7 +338,11 @@ internal object GlobalConfigEditor {
             when (component) {
                 is JCheckBox -> component.addActionListener { onChanged() }
                 is JComboBox<*> -> component.addActionListener { onChanged() }
-                is JSpinner -> component.addChangeListener { onChanged() }
+                is JSpinner -> {
+                    component.addChangeListener { onChanged() }
+                    (component.editor as? JSpinner.DefaultEditor)?.textField?.document
+                        ?.addDocumentListener(changeHookDocumentListener(onChanged))
+                }
                 is JList<*> -> component.addListSelectionListener { onChanged() }
                 is JTextArea -> component.document.addDocumentListener(changeHookDocumentListener(onChanged))
                 is JTextField -> component.document.addDocumentListener(changeHookDocumentListener(onChanged))
@@ -347,6 +352,18 @@ internal object GlobalConfigEditor {
         }
         wire(component)
         return this
+    }
+
+    /** Raw editor text is needed to keep an incomplete JSON or number across a form rebuild. */
+    internal fun editableText(control: FieldControl): JTextComponent? {
+        fun find(component: JComponent): JTextComponent? = when (component) {
+            is JSpinner -> (component.editor as? JSpinner.DefaultEditor)?.textField
+            is JTextComponent -> component
+            is JScrollPane -> (component.viewport?.view as? JComponent)?.let { find(it) }
+            is JPanel -> component.components.filterIsInstance<JComponent>().firstNotNullOfOrNull { find(it) }
+            else -> null
+        }
+        return find(control.component)
     }
 
     private fun changeHookDocumentListener(onChanged: () -> Unit) = object : javax.swing.event.DocumentListener {

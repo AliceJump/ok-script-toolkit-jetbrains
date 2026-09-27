@@ -11,6 +11,8 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class GlobalConfigEditorTest {
@@ -68,6 +70,27 @@ class GlobalConfigEditorTest {
         val spinner = assertIs<JSpinner>(control.component)
         (spinner.editor as JSpinner.DefaultEditor).textField.text = "7"
         assertEquals(7, control.read())
+    }
+
+    @Test
+    fun `incomplete numeric and JSON text can be restored after a form rebuild`() {
+        var changes = 0
+        val number = GlobalConfigEditor.makeControl(
+            TaskLauncherService.TaskParamField(key = "count"), 3, onChanged = { changes++ },
+        )
+        val numericText = assertNotNull(GlobalConfigEditor.editableText(number))
+        numericText.text = "not a number"
+        assertTrue(changes > 0)
+        assertFailsWith<IllegalArgumentException> { number.read() }
+
+        val field = TaskLauncherService.TaskParamField(key = "payload")
+        val json = GlobalConfigEditor.makeControl(field, mapOf("enabled" to true))
+        val draft = assertNotNull(GlobalConfigEditor.editableText(json))
+        draft.text = "{"
+        assertFailsWith<IllegalArgumentException> { json.read() }
+        val rebuilt = GlobalConfigEditor.makeControl(field, mapOf("enabled" to true))
+        assertNotNull(GlobalConfigEditor.editableText(rebuilt)).text = draft.text
+        assertEquals("{", GlobalConfigEditor.editableText(rebuilt)?.text)
     }
 
     @Test

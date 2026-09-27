@@ -231,6 +231,9 @@ class TaskLauncherPanel(private val project: Project) {
     private var disposed = false
     /** 当前表格/参数面板所属的项目根；设置切换后异步保存仍须写回原项目。 */
     private var displayedProjectDir = ""
+    /** 同一项目刷新时可复用内存中的完整探针结果，避免缓存失效后退回类名桩。 */
+    private var fullSchemaProjectDir = ""
+    private var fullSchemaLocale: String? = null
 
     // ── 右侧详情区（选中谁就显示谁）──
     private val detailTitle = EllipsizingLabel()
@@ -261,6 +264,7 @@ class TaskLauncherPanel(private val project: Project) {
     /** 全局配置内联卡片「改动即存」的防抖（对齐任务参数的 400ms 自动保存语义） */
     private val globalSaveTimer = javax.swing.Timer(400, null).apply { isRepeats = false }
     private val pendingGlobalSaves = linkedMapOf<Pair<String, String>, PendingGlobalSave>()
+    private val globalTextDrafts = mutableMapOf<Pair<String, String>, MutableMap<String, String>>()
     private var flushingGlobalSaves = false
 
     /** 配置页宿主：探针结果到达、全局组折叠切换时整页重建（用原生 UI DSL 构建） */
@@ -1405,6 +1409,9 @@ class TaskLauncherPanel(private val project: Project) {
             }
         }
         for (control in controls) initialValues[control.field.key] = runCatching { control.read() }.getOrNull()
+        globalTextDrafts[root to group.name]?.forEach { (key, draft) ->
+            controls.firstOrNull { it.field.key == key }?.let { GlobalConfigEditor.editableText(it)?.text = draft }
+        }
         val form = JPanel(GridBagLayout())
         form.isOpaque = false
         var rowIndex = 0
@@ -1459,7 +1466,7 @@ class TaskLauncherPanel(private val project: Project) {
 
     /** 全局组 ⟲ 恢复出厂默认（只作用于 schema 已知键，孤儿键保留） */
     private fun resetGlobalGroup(group: TaskLauncherService.GlobalConfigGroup) {
-        val reset = mutateGlobalSnapshot(group) { existing ->
+        val reset = mutateGlobalSnapshot(group, discardTextDrafts = true) { existing ->
             GlobalSnapshotRules.resetToDefaults(existing, group.fields) to
                 group.fields.count { existing[it.key] != it.defaultOrValue() }
         } ?: return
@@ -1477,6 +1484,7 @@ class TaskLauncherPanel(private val project: Project) {
      */
     private fun mutateGlobalSnapshot(
         group: TaskLauncherService.GlobalConfigGroup,
+        discardTextDrafts: Boolean = false,
         mutation: (Map<String, Any?>) -> Pair<Map<String, Any?>, Int>,
     ): Int? {
         globalSaveTimer.stop()
@@ -1485,9 +1493,13 @@ class TaskLauncherPanel(private val project: Project) {
         return try {
             val existing = taskService.loadGlobalConfigs(root)[group.name].orEmpty()
             val (updated, changed) = mutation(existing)
+            val hadDraft = discardTextDrafts && globalTextDrafts.containsKey(root to group.name)
             if (changed > 0) {
                 taskService.saveGlobalConfigGroup(group.name, updated, root)
                 pushGlobalSnapshot(taskService.loadGlobalConfigs(root), root)
+            }
+            if (discardTextDrafts) globalTextDrafts.remove(root to group.name)
+            if (changed > 0 || hadDraft) {
                 renderConfigPage()
             }
             changed
@@ -1544,6 +1556,7 @@ class TaskLauncherPanel(private val project: Project) {
         try {
             for (pending in saves) {
                 val name = pending.group.displayName ?: pending.group.name
+                val groupKey = pending.root to pending.group.name
                 val controlsByKey = pending.controls.associateBy { it.field.key }
                 val readings = linkedMapOf<String, Any?>()
                 var invalid: String? = null
@@ -1553,20 +1566,25 @@ class TaskLauncherPanel(private val project: Project) {
                         readings[key] = control.read()
                     } catch (_: IllegalArgumentException) {
                         invalid = control.field.displayKey ?: key
-                        break
+                        GlobalConfigEditor.editableText(control)?.text?.let { draft ->
+                            globalTextDrafts.getOrPut(groupKey) { linkedMapOf() }[key] = draft
+                        }
                     }
                 }
-                if (invalid != null) {
-                    statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.gconfigInvalidValue", invalid)
-                    continue
-                }
                 try {
-                    val current = taskService.loadGlobalConfigs(pending.root)[pending.group.name].orEmpty()
-                    val values = GlobalSnapshotRules.mergeEdited(current, pending.initialValues, readings)
-                    if (values == current) continue
-                    taskService.saveGlobalConfigGroup(pending.group.name, values, pending.root)
-                    pushGlobalSnapshot(taskService.loadGlobalConfigs(pending.root), pending.root)
-                    statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.gconfigSaved", name)
+                    if (readings.isNotEmpty()) {
+                        val current = taskService.loadGlobalConfigs(pending.root)[pending.group.name].orEmpty()
+                        val values = GlobalSnapshotRules.mergeEdited(current, pending.initialValues, readings)
+                        if (values != current) {
+                            taskService.saveGlobalConfigGroup(pending.group.name, values, pending.root)
+                            pushGlobalSnapshot(taskService.loadGlobalConfigs(pending.root), pending.root)
+                            statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.gconfigSaved", name)
+                        }
+                        globalTextDrafts[groupKey]?.let { drafts ->
+                            readings.keys.forEach { drafts.remove(it) }
+                            if (drafts.isEmpty()) globalTextDrafts.remove(groupKey)
+                        }
+                    }
                 } catch (e: Exception) {
                     LOG.warn("Failed to save global configuration", e)
                     JOptionPane.showMessageDialog(
@@ -1575,6 +1593,9 @@ class TaskLauncherPanel(private val project: Project) {
                         name,
                         JOptionPane.ERROR_MESSAGE,
                     )
+                }
+                if (invalid != null) {
+                    statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.gconfigInvalidValue", invalid)
                 }
             }
         } finally {
@@ -1718,6 +1739,17 @@ class TaskLauncherPanel(private val project: Project) {
             progressBar.isVisible = false
             return
         }
+        val livePreview = if (displayedProjectDir == projectDir && fullSchemaProjectDir == projectDir) {
+            TaskLauncherService.SchemaProbeResult(
+                ok = true,
+                schemas = schemas.toMap(),
+                projectDir = projectDir,
+                locale = fullSchemaLocale,
+                configModule = configModule,
+                globalConfigGroups = globalConfigGroups.toList(),
+                multiAccount = multiAccountInfo,
+            )
+        } else null
         statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.loading")
         schemaWarningLabel.isVisible = false
         schemaWarningLabel.toolTipText = null
@@ -1735,12 +1767,13 @@ class TaskLauncherPanel(private val project: Project) {
             // 可能来自 okScriptProjectPath 设置，两者不同时会去错的目录找 config.py。
             val parseResult = taskService.parseConfigTasks(pythonPath, locale, projectDir)
 
-            // ① 先用「缓存 + 解析出的新任务桩」渲染一次，避免对着空白等全量 import。
+            // ① 同项目优先沿用内存里的完整 schema，其次磁盘缓存，最后才退到类名桩。
             val cached = taskService.loadSchemaCache(projectDir, locale)
-            val immediate = if (cached.ok && cached.schemas != null) {
-                cached.copy(
-                    schemas = mergeTaskLists(cached.schemas!!, parseResult),
-                    configModule = parseResult.configModule.takeIf { parseResult.ok } ?: cached.configModule,
+            val previewSource = TaskSchemaMerge.selectPreviewSource(livePreview, cached, projectDir, locale)
+            val immediate = if (previewSource != null) {
+                previewSource.copy(
+                    schemas = mergeTaskLists(previewSource.schemas!!, parseResult),
+                    configModule = parseResult.configModule.takeIf { parseResult.ok } ?: previewSource.configModule,
                 )
             } else {
                 parseOnlyResult(parseResult, projectDir, locale)
@@ -1761,6 +1794,7 @@ class TaskLauncherPanel(private val project: Project) {
             if (probeResult.ok && probeResult.schemas != null) {
                 val withConfigModule = probeResult.copy(
                     configModule = probeResult.configModule ?: parseResult.configModule.takeIf { parseResult.ok },
+                    locale = locale,
                 )
                 runCatching { taskService.saveSchemaCache(projectDir, locale, withConfigModule) }
                     .onFailure { LOG.warn("Task schemas loaded but cache could not be saved", it) }
@@ -1770,11 +1804,15 @@ class TaskLauncherPanel(private val project: Project) {
                 // 原先直接返回 immediate，最终状态仍显示「已加载」，把退化伪装成成功。
                 val reason = probeResult.error ?: OkScriptToolkitBundle.message("taskLauncher.schemaScanUnknownError")
                 LOG.warn("Task schema scan failed for $projectDir: $reason")
-                TaskLoadOutcome(immediate, reason, cached.ok && cached.schemas != null)
+                TaskLoadOutcome(immediate, reason, previewSource != null)
             }
         }.thenAccept { outcome ->
             SwingUtilities.invokeLater {
                 if (disposed || generation != loadGeneration || projectDir != detectProjectPath()) return@invokeLater
+                if (outcome.probeError == null && outcome.result.ok && outcome.result.schemas != null) {
+                    fullSchemaProjectDir = projectDir
+                    fullSchemaLocale = outcome.result.locale
+                }
                 applyProbeResult(outcome.result, finished = true, sourceProjectDir = projectDir)
                 if (outcome.probeError != null) {
                     schemaWarningLabel.text = OkScriptToolkitBundle.message(
@@ -1844,6 +1882,9 @@ class TaskLauncherPanel(private val project: Project) {
         }
 
         if (result.ok && result.schemas != null) {
+            val previousProjectDir = displayedProjectDir
+            val previousGroups = globalConfigGroups
+            val previousUiState = uiCollapseState
             displayedProjectDir = sourceProjectDir
             schemas = result.schemas
             if (result.configModule != null) {
@@ -1877,8 +1918,12 @@ class TaskLauncherPanel(private val project: Project) {
             // 重建卡片列表（触发/一次性分组 + groupName 二级分组 + 搜索过滤都在 TaskListGrouping）
             taskCardList.setTasks(tasks)
             refreshEnvironmentInfo()
-            // 配置页最后建：它要读刚刷新的只读值，也要读刚加载的折叠状态（uiCollapseState）
-            renderConfigPage()
+            // 只读值已原地刷新；组/项目/折叠不变时保留正在编辑的配置控件与焦点。
+            if (previousProjectDir != sourceProjectDir || previousGroups != globalConfigGroups ||
+                previousUiState != uiCollapseState
+            ) {
+                renderConfigPage()
+            }
 
             // 别的项目的触发集合不能 adopt（会写进本项目的 tasks.json）；卡片状态用净化快照
             if (executorMatchesProject() && taskRunner.currentState().status == "running") {
@@ -3411,6 +3456,7 @@ class TaskLauncherPanel(private val project: Project) {
         taskRunner.removeStateListener(runnerStateListener)
         accountEditors.values.forEach { it.close() }
         accountEditors.clear()
+        globalTextDrafts.clear()
     }
 }
 
