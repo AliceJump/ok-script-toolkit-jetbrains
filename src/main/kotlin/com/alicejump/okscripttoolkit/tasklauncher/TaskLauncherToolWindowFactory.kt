@@ -3204,6 +3204,9 @@ class TaskLauncherPanel(private val project: Project) {
             statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.saveFailed", lastTriggerSaveError)
             return false
         }
+        // A click within the global form's debounce window must launch with the edited snapshot.
+        globalSaveTimer.stop()
+        if (!flushPendingGlobalSave()) return false
         taskService.taskConfigReadError()?.let { error ->
             statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.configReadFailed", error)
             return false
