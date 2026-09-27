@@ -11,6 +11,8 @@ import com.alicejump.okscripttoolkit.ui.openCharacterManager
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.intellij.ui.JBColor
+import com.intellij.ui.dsl.builder.AlignX
+import com.intellij.ui.dsl.builder.panel
 import com.intellij.ui.dsl.listCellRenderer.textListCellRenderer
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.ActionUpdateThread
@@ -96,17 +98,8 @@ class TaskLauncherPanel(private val project: Project) {
          */
         private const val TASK_PAGE_STACK_WIDTH = 560
 
-        /** 配置页二级导航宽度（px）：放得下中文导航项，又不至于白占宽窗的地方 */
-        private const val CONFIG_NAV_WIDTH = 118
-
         /** 全局配置组折叠状态在 uiState 里的键前缀（与任务卡折叠共用一套持久化） */
         private const val GLOBAL_GROUP_FOLD_PREFIX = "globalGroup:"
-
-        /** 配置页二级导航：CardLayout 的键（顺序与导航列表一一对应） */
-        private const val NAV_GLOBAL = "config.global"
-        private const val NAV_ACCOUNT = "config.account"
-        private const val NAV_PROJECT = "config.project"
-        private val NAV_KEYS = listOf(NAV_GLOBAL, NAV_ACCOUNT, NAV_PROJECT)
     }
 
     val mainPanel: JPanel
@@ -261,13 +254,10 @@ class TaskLauncherPanel(private val project: Project) {
     private val globalSaveTimer = javax.swing.Timer(400, null)
     private var pendingGlobalSave: PendingGlobalSave? = null
 
-    /** 「全局配置」区宿主：探针结果到达后整块重建（组数与字段都可能变） */
-    private val globalConfigHost = JPanel().apply {
-        layout = BoxLayout(this, BoxLayout.Y_AXIS)
-        isOpaque = false
-    }
+    /** 配置页宿主：探针结果到达、全局组折叠切换时整页重建（用原生 UI DSL 构建） */
+    private var configPageHost: JPanel? = null
     /** 「账号覆盖」摘要：账号数 / 带覆盖的账号数 */
-    private val accountSummaryLabel = JBLabel()
+    private val accountSummaryLabel = JBLabel().apply { foreground = UIUtil.getContextHelpForeground() }
     /** 「项目配置」只读值（与执行环境卡同源，只是另一处展示） */
     private val projectRootValue = wrappingValueLabel()
     private val projectPythonValue = wrappingValueLabel()
@@ -1078,49 +1068,78 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     /**
-     * 配置页：全局配置 / 账号覆盖 / 项目配置，左侧二级导航 + 右侧内容（CardLayout）。
+     * 配置页：**一页到底**，用平台 UI DSL 的原生分组（`panel { group { row } }`）。
      *
-     * 全局配置改成**内联卡片 + 改动即存**（400ms 防抖，与任务参数同一套自动保存语义）——
-     * 旧路径是「点组行弹对话框」，多一层操作、也看不到别的组。
+     * 之前是「JList 当二级导航 + 右侧 CardLayout」：JList 在工具窗里是没样式的裸列表
+     * （默认蓝选中态、无内边距），还白占 118px 宽。现在照 IDE 设置页的样式来 ——
+     * 平台的分组头、行距、注释字体，一页滚到底，窄窗也不用左右分栏。
+     *
+     * 全局配置组沿用**改动即存**（400ms 防抖，与任务参数同一套自动保存语义）。
      */
     private fun buildConfigPage(): JPanel {
-        val cards = JPanel(java.awt.CardLayout())
-        cards.isOpaque = false
-        cards.add(buildGlobalConfigSection(), NAV_GLOBAL)
-        cards.add(buildAccountSection(), NAV_ACCOUNT)
-        cards.add(buildProjectSection(), NAV_PROJECT)
-
-        val nav = JList(
-            arrayOf(
-                OkScriptToolkitBundle.message("taskLauncher.configNavGlobal"),
-                OkScriptToolkitBundle.message("taskLauncher.configNavAccount"),
-                OkScriptToolkitBundle.message("taskLauncher.configNavProject"),
-            ),
-        )
-        nav.selectionMode = ListSelectionModel.SINGLE_SELECTION
-        nav.selectedIndex = 0
-        nav.border = BorderFactory.createEmptyBorder(8, 6, 8, 6)
-        nav.addListSelectionListener { event ->
-            if (event.valueIsAdjusting) return@addListSelectionListener
-            val index = nav.selectedIndex.coerceIn(NAV_KEYS.indices)
-            (cards.layout as java.awt.CardLayout).show(cards, NAV_KEYS[index])
-        }
-        // 固定宽度的二级导航，不用比例分栏：比例在窄工具窗里会把导航压到 90px 以下
-        // （中文导航项放不下），在宽窗里又会白占几百像素；固定宽度两头都合适。
-        val navScroll = JBScrollPane(nav)
-        navScroll.border = BorderFactory.createMatteBorder(0, 0, 0, 1, JBColor.border())
-        navScroll.preferredSize = Dimension(CONFIG_NAV_WIDTH, 0)
-        val navHost = JPanel(BorderLayout())
-        navHost.isOpaque = false
-        navHost.add(navScroll, BorderLayout.CENTER)
-
         val page = JPanel(BorderLayout())
         page.isOpaque = false
-        page.add(navHost, BorderLayout.WEST)
-        page.add(cards, BorderLayout.CENTER)
+        configPageHost = page
+        // 先把只读值填好再建页面：否则首屏是一排空标签
+        refreshEnvironmentInfo()
+        refreshAccountSummary()
+        renderConfigPage()
         return page
     }
 
+    /**
+     * 重建配置页。探针结果变化、全局组折叠切换都走这里 ——
+     * 折叠用「重建」而不是 DSL 的可见性开关：字段行是手写的 GridBag 表单，
+     * 收起时干脆不建出来，也不会与显隐规则打架。
+     */
+    private fun renderConfigPage() {
+        val host = configPageHost ?: return
+        host.removeAll()
+        host.add(scrollablePage(buildConfigPanel()), BorderLayout.CENTER)
+        host.revalidate()
+        host.repaint()
+    }
+
+    private fun buildConfigPanel(): JComponent = panel {
+        group(OkScriptToolkitBundle.message("taskLauncher.configNavGlobal")) {
+            row { comment(OkScriptToolkitBundle.message("taskLauncher.configGlobalHint")) }
+            if (globalConfigGroups.isEmpty()) {
+                row { comment(OkScriptToolkitBundle.message("taskLauncher.configGlobalEmpty")) }
+            } else {
+                for (group in globalConfigGroups) {
+                    row { cell(buildGlobalGroupHeader(group)).align(AlignX.FILL) }
+                    if (!isGlobalGroupCollapsed(group)) {
+                        row { cell(buildGlobalGroupForm(group)).align(AlignX.FILL) }
+                    }
+                }
+            }
+        }
+        group(OkScriptToolkitBundle.message("taskLauncher.configNavAccount")) {
+            row { comment(OkScriptToolkitBundle.message("taskLauncher.configAccountHint")) }
+            row { cell(accountSummaryLabel) }
+            row {
+                button(OkScriptToolkitBundle.message("taskLauncher.accounts")) { openAccountEditor() }
+            }
+        }
+        group(OkScriptToolkitBundle.message("taskLauncher.configNavProject")) {
+            row { comment(OkScriptToolkitBundle.message("taskLauncher.configProjectHint")) }
+            row(OkScriptToolkitBundle.message("taskLauncher.envProjectRoot")) {
+                cell(projectRootValue).align(AlignX.FILL)
+            }
+            row(OkScriptToolkitBundle.message("taskLauncher.envPython")) {
+                cell(projectPythonValue).align(AlignX.FILL)
+            }
+            row(OkScriptToolkitBundle.message("taskLauncher.envSandbox")) {
+                cell(projectSandboxValue).align(AlignX.FILL)
+            }
+            row {
+                button(OkScriptToolkitBundle.message("taskLauncher.openSettings")) { openSettings() }
+            }
+        }
+    }
+
+    private fun isGlobalGroupCollapsed(group: TaskLauncherService.GlobalConfigGroup): Boolean =
+        uiCollapseState[GLOBAL_GROUP_FOLD_PREFIX + group.name] == true
     /**
      * 工具页：各独立编辑器标签页 / 工具窗口的入口清单。
      *
@@ -1211,9 +1230,27 @@ class TaskLauncherPanel(private val project: Project) {
         return scrollablePage(column)
     }
 
-    /** 内容装进滚动面板（页签内容超过窗口高度时可滚，横向永不出现滚动条） */
+    /**
+     * 内容装进滚动面板（页签内容超过窗口高度时可滚，横向永不出现滚动条）。
+     *
+     * ⚠️ 中间那层 `Scrollable` 包装是**必须**的：`DialogPanel` 与 `GridBagLayout` 面板都
+     * 不实现 `Scrollable`，直接放进滚动面板时会按自己的**首选宽度**布局 —— 窄工具窗里
+     * 超出视口的部分**直接被裁掉**（横向滚动条又是禁用的），又是一次「东西看不到」。
+     * 包一层 `getScrollableTracksViewportWidth() = true`，让滚动面板把内容强制拉成视口宽度，
+     * 里面的网格再在这个宽度里分配。
+     */
     private fun scrollablePage(content: JComponent): JPanel {
-        val scroll = JBScrollPane(content)
+        val widthTracker = object : JPanel(BorderLayout()), Scrollable {
+            override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
+            override fun getScrollableUnitIncrement(visibleRect: java.awt.Rectangle, orientation: Int, direction: Int) = 16
+            override fun getScrollableBlockIncrement(visibleRect: java.awt.Rectangle, orientation: Int, direction: Int) =
+                (visibleRect.height - 16).coerceAtLeast(16)
+            override fun getScrollableTracksViewportWidth() = true
+            override fun getScrollableTracksViewportHeight() = false
+        }
+        widthTracker.isOpaque = false
+        widthTracker.add(content, BorderLayout.CENTER)
+        val scroll = JBScrollPane(widthTracker)
         scroll.border = BorderFactory.createEmptyBorder()
         scroll.horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
         val page = JPanel(BorderLayout())
@@ -1227,7 +1264,7 @@ class TaskLauncherPanel(private val project: Project) {
         font = Font(Font.MONOSPACED, Font.PLAIN, font.size)
     }
 
-    /** 「键 + 值」行（执行环境 / 项目配置用）：键弱化小字在上，值可换行在下 */
+    /** 「键 + 值」行（运行器页的执行环境卡用）：键弱化小字在上，值可换行在下 */
     private fun envRow(key: String, value: JTextArea): JPanel {
         val row = JPanel(BorderLayout(0, 2))
         row.isOpaque = false
@@ -1277,121 +1314,33 @@ class TaskLauncherPanel(private val project: Project) {
 
     // ── 配置页：全局配置（内联卡片 + 改动即存）──────────────────────
 
-    /** 「全局配置」区整块重建：每组一张卡片（组数与字段都可能随探针结果变化） */
-    private fun renderGlobalConfig() {
-        globalConfigHost.removeAll()
-        if (globalConfigGroups.isEmpty()) {
-            globalConfigHost.add(mutedHint(OkScriptToolkitBundle.message("taskLauncher.configGlobalEmpty")))
-        } else {
-            for (group in globalConfigGroups) globalConfigHost.add(globalConfigCard(group))
-        }
-        for (child in globalConfigHost.components) {
-            (child as? JComponent)?.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT)
-        }
-        globalConfigHost.revalidate()
-        globalConfigHost.repaint()
-    }
+    // ── 配置页：全局配置组（原生 DSL 分组 + 改动即存）────────────────
 
     /**
-     * 「全局配置」区：每组一张卡片，直接进单列页面。
+     * 全局配置组头：折叠箭头（**平台图标**，不是文字 ▸）+ 组名 + 项目 store 标记 + 字段数
+     * …… 本组自己的 ⇄ / ⟲。
      *
-     * 不再套一层「全局配置」外壳卡 —— 主仓库里一张组卡就是一层，套两层框在窄工具窗里
-     * 白白吃掉左右各十几像素宽度。
+     * ⇄/⟲ 用**图标按钮**：语言包里那两条文案是整句（「Sync default_config (add missing keys)」），
+     * 在窄卡里会把组名挤没；整句挪到 tooltip。
      */
-    private fun buildGlobalConfigSection(): JPanel {
-        renderGlobalConfig()
-        return singleColumnPage(listOf(globalConfigHost))
-    }
-
-    /**
-     * 全局配置组卡片（对齐主仓库 consolePanel/webview 的 buildGlobalCard）：
-     * 组头（折叠箭头 + 显示名 + 项目 store 标记 + 字段数 + **本组自己的 ⇄/⟲**）+ 说明 + 字段表单。
-     *
-     * - 折叠状态落 uiState（与任务卡折叠同一套持久化），重开面板按上次状态；
-     * - 字段控件「改动即存」（400ms 防抖），可见性复用对话框路径的
-     *   [GlobalConfigEditor.installVisibility]（布尔子项跟随父级）—— 两条路径不该有两套显隐规则。
-     */
-    private fun globalConfigCard(group: TaskLauncherService.GlobalConfigGroup): JPanel {
-        val foldKey = GLOBAL_GROUP_FOLD_PREFIX + group.name
-        val collapsed = uiCollapseState[foldKey] == true
-        val existing = taskService.loadGlobalConfigs(taskDataRoot())[group.name].orEmpty()
-
-        // 控件列表要先建好才能被自己的回调捕获（回调触发时列表已填满），故用可变列表分两步填
-        val controls = mutableListOf<GlobalConfigEditor.FieldControl>()
-        for (field in group.fields) {
-            val value = if (existing.containsKey(field.key)) existing[field.key] else field.value ?: field.default
-            controls += GlobalConfigEditor.makeControl(field, value, project) {
-                scheduleGlobalSave(group, controls, existing)
-            }
-        }
-        val form = JPanel(GridBagLayout())
-        form.isOpaque = false
-        val rowsByKey = linkedMapOf<String, JPanel>()
-        var rowIndex = 0
-        for (control in controls) {
-            val row = SchemaFieldUi.row(control.field, control.component)
-            rowsByKey[control.field.key] = row
-            form.add(row, GridBagConstraints().apply {
-                gridx = 0
-                gridy = rowIndex++
-                weightx = 1.0
-                fill = GridBagConstraints.HORIZONTAL
-                anchor = GridBagConstraints.NORTHWEST
-                insets = Insets(1, 8, 1, 8)
-            })
-        }
-        GlobalConfigEditor.installVisibility(controls, rowsByKey, form)
-
-        val body = JPanel(BorderLayout())
-        body.isOpaque = false
-        body.isVisible = !collapsed
-        body.add(form, BorderLayout.NORTH)
-
-        val card = JPanel()
-        card.layout = BoxLayout(card, BoxLayout.Y_AXIS)
-        card.isOpaque = false
-        card.border = BorderFactory.createCompoundBorder(
-            BorderFactory.createLineBorder(JBColor.border(), 1, true),
-            BorderFactory.createEmptyBorder(6, 10, 8, 10),
-        )
-        card.add(buildGlobalGroupHeader(group, foldKey, collapsed, body))
-        if (!group.description.isNullOrBlank()) {
-            val desc = mutedHint(group.description)
-            desc.alignmentX = java.awt.Component.LEFT_ALIGNMENT
-            card.add(desc)
-        }
-        body.alignmentX = java.awt.Component.LEFT_ALIGNMENT
-        card.add(body)
-        return card
-    }
-
-    /** 组头：折叠箭头 + 显示名 + 项目 store 标记 + 字段数 …… 本组 ⇄ / ⟲ */
-    private fun buildGlobalGroupHeader(
-        group: TaskLauncherService.GlobalConfigGroup,
-        foldKey: String,
-        collapsed: Boolean,
-        body: JComponent,
-    ): JPanel {
-        val chevron = JBLabel(if (collapsed) "\u25b8" else "\u25be")
+    private fun buildGlobalGroupHeader(group: TaskLauncherService.GlobalConfigGroup): JPanel {
+        val collapsed = isGlobalGroupCollapsed(group)
+        val arrow = JBLabel(if (collapsed) AllIcons.General.ArrowRight else AllIcons.General.ArrowDown)
         val title = JBLabel(group.displayName ?: group.name)
         title.font = title.font.deriveFont(Font.BOLD)
         val left = JPanel(WrapLayout(FlowLayout.LEFT, 6, 0))
         left.isOpaque = false
-        left.add(chevron)
+        left.add(arrow)
         left.add(title)
         if (group.source == "project_store") {
             left.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.gconfigSourceProject")))
         }
         left.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.itemsCount", group.fields.size)))
 
-        val sync = JButton(OkScriptToolkitBundle.message("taskLauncher.syncDefaultBtn"))
-        sync.addActionListener { syncGlobalGroup(group) }
-        val reset = JButton(OkScriptToolkitBundle.message("taskLauncher.resetDefaultBtn"))
-        reset.addActionListener { resetGlobalGroup(group) }
-        val right = JPanel(WrapLayout(FlowLayout.RIGHT, 4, 0))
+        val right = JPanel(FlowLayout(FlowLayout.RIGHT, 2, 0))
         right.isOpaque = false
-        right.add(sync)
-        right.add(reset)
+        right.add(iconButton(AllIcons.Actions.Refresh, "taskLauncher.syncDefaultBtn") { syncGlobalGroup(group) })
+        right.add(iconButton(AllIcons.Actions.Rollback, "taskLauncher.resetDefaultBtn") { resetGlobalGroup(group) })
 
         val header = JPanel(BorderLayout(8, 0))
         header.isOpaque = false
@@ -1402,22 +1351,70 @@ class TaskLauncherPanel(private val project: Project) {
         // 折叠切换：Swing 事件不冒泡，箭头与标题各自挂（⇄/⟲ 在 EAST，自己消费事件）
         val toggle = object : java.awt.event.MouseAdapter() {
             override fun mouseClicked(e: java.awt.event.MouseEvent) {
-                val open = !body.isVisible
-                body.isVisible = open
-                chevron.text = if (open) "\u25be" else "\u25b8"
-                setGlobalGroupCollapsed(foldKey, !open)
-                header.revalidate()
-                header.repaint()
-                header.parent?.revalidate()
+                setGlobalGroupCollapsed(GLOBAL_GROUP_FOLD_PREFIX + group.name, !collapsed)
             }
         }
         header.addMouseListener(toggle)
-        chevron.addMouseListener(toggle)
+        arrow.addMouseListener(toggle)
         title.addMouseListener(toggle)
         return header
     }
 
-    /** 折叠状态落 uiState（与任务卡折叠同一套持久化；失败只记日志，不影响交互） */
+    /** 无边框图标按钮（语言包里的整句文案进 tooltip） */
+    private fun iconButton(icon: javax.swing.Icon, tipKey: String, action: () -> Unit): JButton =
+        JButton(icon).apply {
+            isFocusable = false
+            // 平台无边框样式；后三条是兜底 —— 属性不被识别时也还是紧凑按钮
+            putClientProperty("JButton.buttonType", "borderless")
+            isBorderPainted = false
+            isContentAreaFilled = false
+            margin = Insets(0, 0, 0, 0)
+            toolTipText = OkScriptToolkitBundle.message(tipKey)
+            addActionListener { action() }
+        }
+
+    /** 组内字段表单（手写 GridBag：与任务参数面板同一套行渲染与显隐规则） */
+    private fun buildGlobalGroupForm(group: TaskLauncherService.GlobalConfigGroup): JPanel {
+        val existing = taskService.loadGlobalConfigs(taskDataRoot())[group.name].orEmpty()
+        // 控件列表要先建好才能被自己的回调捕获（回调触发时列表已填满），故用可变列表分两步填
+        val controls = mutableListOf<GlobalConfigEditor.FieldControl>()
+        for (field in group.fields) {
+            val value = if (existing.containsKey(field.key)) existing[field.key] else field.value ?: field.default
+            controls += GlobalConfigEditor.makeControl(field, value, project) {
+                scheduleGlobalSave(group, controls, existing)
+            }
+        }
+        val form = JPanel(GridBagLayout())
+        form.isOpaque = false
+        var rowIndex = 0
+        if (!group.description.isNullOrBlank()) {
+            form.add(mutedHint(group.description), GridBagConstraints().apply {
+                gridx = 0
+                gridy = rowIndex++
+                weightx = 1.0
+                fill = GridBagConstraints.HORIZONTAL
+                anchor = GridBagConstraints.NORTHWEST
+                insets = Insets(0, 0, 6, 0)
+            })
+        }
+        val rowsByKey = linkedMapOf<String, JPanel>()
+        for (control in controls) {
+            val row = SchemaFieldUi.row(control.field, control.component)
+            rowsByKey[control.field.key] = row
+            form.add(row, GridBagConstraints().apply {
+                gridx = 0
+                gridy = rowIndex++
+                weightx = 1.0
+                fill = GridBagConstraints.HORIZONTAL
+                anchor = GridBagConstraints.NORTHWEST
+                insets = Insets(0, 0, 0, 0)
+            })
+        }
+        GlobalConfigEditor.installVisibility(controls, rowsByKey, form)
+        return form
+    }
+
+    /** 折叠状态落 uiState（与任务卡折叠同一套持久化）并重建页面；失败只记日志，不影响交互 */
     private fun setGlobalGroupCollapsed(foldKey: String, collapsed: Boolean) {
         uiCollapseState = uiCollapseState + (foldKey to collapsed)
         try {
@@ -1425,8 +1422,8 @@ class TaskLauncherPanel(private val project: Project) {
         } catch (e: Exception) {
             LOG.warn("Failed to persist global group collapse state", e)
         }
+        renderConfigPage()
     }
-
     /** 全局组 ⇄ 同步 default（补缺键；已有键不动、孤儿键保留）—— 与任务快照同规则 */
     private fun syncGlobalGroup(group: TaskLauncherService.GlobalConfigGroup) {
         val added = mutateGlobalSnapshot(group) { existing ->
@@ -1470,7 +1467,7 @@ class TaskLauncherPanel(private val project: Project) {
             if (changed > 0) {
                 taskService.saveGlobalConfigGroup(group.name, updated, root)
                 pushGlobalSnapshot(taskService.loadGlobalConfigs(root), root)
-                renderGlobalConfig()
+                renderConfigPage()
             }
             changed
         } catch (e: Exception) {
@@ -1534,35 +1531,6 @@ class TaskLauncherPanel(private val project: Project) {
                 JOptionPane.ERROR_MESSAGE,
             )
         }
-    }
-
-    // ── 配置页：账号覆盖 / 项目配置 ─────────────────────────────────
-
-    /** 账号覆盖区：账号注册表摘要 + 打开账号编辑器（多账号存储由 AccountEditorDialog 承载） */
-    private fun buildAccountSection(): JPanel {
-        val openButton = JButton(OkScriptToolkitBundle.message("taskLauncher.accounts"))
-        openButton.addActionListener { openAccountEditor() }
-        accountSummaryLabel.foreground = UIUtil.getContextHelpForeground()
-        val card = pageCard(OkScriptToolkitBundle.message("taskLauncher.configNavAccount")) { body ->
-            body.add(mutedHint(OkScriptToolkitBundle.message("taskLauncher.configAccountHint")))
-            body.add(accountSummaryLabel)
-            body.add(openButton)
-        }
-        return singleColumnPage(listOf(card))
-    }
-
-    /** 项目配置区：只读摘要（值来自设置 / 探针）+ 打开设置入口 */
-    private fun buildProjectSection(): JPanel {
-        val settingsButton = JButton(OkScriptToolkitBundle.message("taskLauncher.openSettings"))
-        settingsButton.addActionListener { openSettings() }
-        val card = pageCard(OkScriptToolkitBundle.message("taskLauncher.configNavProject")) { body ->
-            body.add(mutedHint(OkScriptToolkitBundle.message("taskLauncher.configProjectHint")))
-            body.add(envRow(OkScriptToolkitBundle.message("taskLauncher.envProjectRoot"), projectRootValue))
-            body.add(envRow(OkScriptToolkitBundle.message("taskLauncher.envPython"), projectPythonValue))
-            body.add(envRow(OkScriptToolkitBundle.message("taskLauncher.envSandbox"), projectSandboxValue))
-            body.add(settingsButton)
-        }
-        return singleColumnPage(listOf(card))
     }
 
     /** 执行环境卡与项目配置区的只读取值（设置 / 探针变化后刷新） */
@@ -1836,7 +1804,6 @@ class TaskLauncherPanel(private val project: Project) {
             globalConfigGroups = result.globalConfigGroups
             multiAccountInfo = result.multiAccount
             accountEditor?.takeIf { it.isOpen() }?.updateMetadata(result.multiAccount, result.schemas, result.globalConfigGroups)
-            renderGlobalConfig()
             refreshAccountSummary()
 
             tasks = result.schemas.map { (key, schema) ->
@@ -1860,6 +1827,8 @@ class TaskLauncherPanel(private val project: Project) {
             // 重建卡片列表（触发/一次性分组 + groupName 二级分组 + 搜索过滤都在 TaskListGrouping）
             taskCardList.setTasks(tasks)
             refreshEnvironmentInfo()
+            // 配置页最后建：它要读刚刷新的只读值，也要读刚加载的折叠状态（uiCollapseState）
+            renderConfigPage()
 
             // 别的项目的触发集合不能 adopt（会写进本项目的 tasks.json）；卡片状态用净化快照
             if (executorMatchesProject() && taskRunner.currentState().status == "running") {
