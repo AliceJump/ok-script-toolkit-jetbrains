@@ -2,6 +2,8 @@ package com.alicejump.okscripttoolkit.tasklauncher
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 /**
  * 任务状态色调判定的回归保护。
@@ -72,5 +74,18 @@ class TaskRowStateTest {
             TaskRowState.TONE_NEUTRAL,
             TaskRowState.statusTone(TaskRowState.ONETIME, false, false, false, false, false),
         )
+    }
+
+    @Test
+    fun `one-time task remains launchable while another task runs or executor connects`() {
+        assertTrue(TaskRowState.canLaunchOnetime(true, "task-b", "task-a", emptyList()))
+        assertTrue(TaskRowState.canLaunchOnetime(true, "task-b", "", emptyList()))
+    }
+
+    @Test
+    fun `one-time task is disabled for mismatched project current task or queue`() {
+        assertFalse(TaskRowState.canLaunchOnetime(false, "task-b", "", emptyList()))
+        assertFalse(TaskRowState.canLaunchOnetime(true, "task-b", "task-b", emptyList()))
+        assertFalse(TaskRowState.canLaunchOnetime(true, "task-b", "task-a", listOf("task-b")))
     }
 }

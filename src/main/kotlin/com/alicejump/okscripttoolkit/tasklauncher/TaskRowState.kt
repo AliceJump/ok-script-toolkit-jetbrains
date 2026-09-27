@@ -53,4 +53,12 @@ internal object TaskRowState {
         schemaBroken || schemaError -> TONE_BAD
         else -> TONE_NEUTRAL
     }
+
+    /** Running and connecting executors can accept another one-time task. */
+    fun canLaunchOnetime(
+        projectMatches: Boolean,
+        taskKey: String,
+        currentTask: String,
+        queuedTasks: Collection<String>,
+    ): Boolean = projectMatches && currentTask != taskKey && taskKey !in queuedTasks
 }

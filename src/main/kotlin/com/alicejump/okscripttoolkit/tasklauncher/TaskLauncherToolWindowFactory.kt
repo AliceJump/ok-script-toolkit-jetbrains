@@ -949,6 +949,7 @@ class TaskLauncherPanel(private val project: Project) {
         )
         val cell = statusCellFor(task, state)
         styleChip(detailStateChip, colorForTone(cell.tone), cell.text)
+        detailActionButton.isEnabled = isTrigger || cell.launchEnabled
         detailActionButton.text = when {
             !isTrigger -> OkScriptToolkitBundle.message("taskLauncher.run")
             enabledTriggers.contains(taskKeyOf(task)) -> OkScriptToolkitBundle.message("taskLauncher.disableTrigger")
@@ -3153,8 +3154,12 @@ class TaskLauncherPanel(private val project: Project) {
             else -> readyText
         }
         // ▶启动按钮：执行器属于别的项目 / 该任务正排队或执行中时禁用（对齐 webview launch.disabled）
-        val launchEnabled = !taskRunner.isActive() && executorMatchesProject() &&
-            state.current != key && !state.onetimeQueue.contains(key)
+        val launchEnabled = TaskRowState.canLaunchOnetime(
+            projectMatches = executorMatchesProject(),
+            taskKey = key,
+            currentTask = state.current,
+            queuedTasks = state.onetimeQueue,
+        )
         return StatusCell(
             text = text,
             tone = TaskRowState.statusTone(
