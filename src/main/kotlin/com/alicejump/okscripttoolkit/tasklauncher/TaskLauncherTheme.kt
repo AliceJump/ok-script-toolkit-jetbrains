@@ -46,6 +46,9 @@ internal object TaskLauncherTheme {
     /** JSON 字段校验描边：解析非法（沿用迁移前字面量，视觉零变化） */
     val BORDER_ERR = JBColor(0xB42828, 0xEF5350)
 
+    /** 选中态描边（任务卡选中 = 聚焦色；取平台 Component.focusColor，随主题） */
+    val SELECTION = JBColor.namedColor("Component.focusColor", JBColor(0x3574F0, 0x548AF7))
+
     // ── 行级可点击区（#10 两层语义之二：无描边浅底，hover 增强） ────────
 
     /**

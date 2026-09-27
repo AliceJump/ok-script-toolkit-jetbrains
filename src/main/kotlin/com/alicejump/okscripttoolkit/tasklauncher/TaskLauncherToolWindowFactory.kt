@@ -26,6 +26,7 @@ import com.intellij.ui.awt.RelativePoint
 import com.intellij.ui.SearchTextField
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.components.JBTabbedPane
 import com.intellij.util.ui.UIUtil
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.content.ContentManagerEvent
@@ -83,6 +84,16 @@ class TaskLauncherPanel(private val project: Project) {
         private val COLOR_TRIGGER = TaskLauncherTheme.TRIGGER
 
         private fun colorForTone(tone: Int): JBColor = TaskLauncherTheme.colorForTone(tone)
+
+        /** 一级页签下标（tabbedPane.addTab 的添加顺序） */
+        private const val TAB_TASKS = 0
+        private const val TAB_RUNNER = 2
+
+        /** 配置页二级导航：CardLayout 的键（顺序与导航列表一一对应） */
+        private const val NAV_GLOBAL = "config.global"
+        private const val NAV_ACCOUNT = "config.account"
+        private const val NAV_PROJECT = "config.project"
+        private val NAV_KEYS = listOf(NAV_GLOBAL, NAV_ACCOUNT, NAV_PROJECT)
     }
 
     val mainPanel: JPanel
@@ -107,15 +118,6 @@ class TaskLauncherPanel(private val project: Project) {
         isOpaque = false
         isVisible = false
     }
-    private val refreshAction = ToolbarAction(AllIcons.Actions.Refresh, OkScriptToolkitBundle.message("taskLauncher.refresh")) { loadTasks() }
-    private val accountEditorAction = ToolbarAction(AllIcons.Actions.Edit, OkScriptToolkitBundle.message("taskLauncher.accounts")) { openAccountEditor() }
-    /** 显式启动执行器：勾选触发任务不再隐式拉起，启动行为集中在这里 */
-    private val startExecutorAction = ToolbarAction(AllIcons.Actions.Execute, OkScriptToolkitBundle.message("taskLauncher.startExecutor")) { startExecutorManual() }
-    private val stopCurrentAction = ToolbarAction(AllIcons.Actions.Suspend, OkScriptToolkitBundle.message("taskLauncher.stopCurrent")) { stopCurrentTask() }
-    private val closeExecutorAction = ToolbarAction(AllIcons.Actions.Cancel, OkScriptToolkitBundle.message("taskLauncher.closeExecutor")) { closeExecutor() }
-    private val pauseAction = ToolbarAction(AllIcons.Actions.Pause, OkScriptToolkitBundle.message("taskLauncher.pause")) { sendControlCommand("pause") }
-    private val resumeAction = ToolbarAction(AllIcons.Actions.Play_forward, OkScriptToolkitBundle.message("taskLauncher.resume")) { sendControlCommand("resume") }
-    private lateinit var actionToolbar: com.intellij.openapi.actionSystem.ActionToolbar
     private val statusLabel = JBLabel()
     private val schemaWarningLabel = JBLabel().apply {
         foreground = TaskLauncherTheme.WARN
@@ -123,22 +125,42 @@ class TaskLauncherPanel(private val project: Project) {
     }
     private val progressBar = JProgressBar()
 
-    // ── 健康度条（#9 rc-health 的 Swing 等价物）──────────────────────
-    // 健康点 = 状态色的最小可视化单元，与状态文字同源同色；当前任务 chip 揭示
-    // 「此刻在跑什么」，触发/一次性用不同描边色（复用 detailKindChip 的色语义）。
+    // ── 健康点（#9 rc-health 的 Swing 等价物）────────────────────────
+    // 健康点 = 状态色的最小可视化单元，与状态文字同源同色（状态栏常驻；
+    // 运行器页的执行器状态卡用同一套取色规则，见 syncHealthBar）。
     private val healthDot = TaskLauncherTheme.HealthDot()
-    private val currentTaskChip = JBLabel()
-    private var lastRunnerStatus = ""
 
-    // ── 运行中心（#9 rc-queue / gpop 的 Swing 等价物）────────────────
-    // ⚠️ 必须声明在 init 块之前：Kotlin 按文本顺序执行初始化器，init → initUI()
-    // → showDetailPlaceholder() → renderRunCenter() 会读下面这些字段；
-    // 声明在 init 之后 = 构造期读 JVM 默认值（NPE），且初始化器随后把
-    // showDetailPlaceholder() 设的 runCenterVisible=true 覆盖回 false。
-    /** 详情区当前渲染的是运行中心（无选中任务）——syncRunnerState 时跟随刷新 */
-    private var runCenterVisible = false
+    // ── 一级页签（IA 重设计）：任务 / 配置 / 运行器 / 工具 ───────────
+    // 之前执行器启停、全局配置、账号、游戏连接、角色入口全挂在任务页四周，
+    // 页面越堆越臃肿。现在按「先分页面、再分组、再展示内容」拆成四个一级页签：
+    // 任务页只管选任务看参数；运行态归运行器；全局配置/账号/项目归配置；
+    // 各独立编辑器入口归工具。
+    private lateinit var tabbedPane: JBTabbedPane
 
-    /** 探针采集到的全局配置组（运行中心「全局配置」区数据源；applyProbeResult 更新） */
+    /** 任务页顶部的执行器状态胶囊：点击跳运行器页（运行态完整视图在那边） */
+    private val executorPillDot = TaskLauncherTheme.HealthDot()
+    private val executorPillLabel = JBLabel()
+
+    // ── 运行器页（执行器状态 / 队列与轮询 / 执行环境 / 游戏连接）─────
+    // ⚠️ 必须声明在 init 块之前：Kotlin 按文本顺序执行初始化器，
+    // init → initUI() → showDetailPlaceholder() 会读下面的控件字段。
+    private val runnerDot = TaskLauncherTheme.HealthDot()
+    private val runnerStatusLabel = JBLabel().apply { font = font.deriveFont(Font.BOLD) }
+    private val runnerCurrentChip = JBLabel().apply { isVisible = false }
+    private val runnerStartButton = JButton(OkScriptToolkitBundle.message("taskLauncher.startExecutor"))
+    private val runnerPauseButton = JButton(OkScriptToolkitBundle.message("taskLauncher.pause"))
+    private val runnerResumeButton = JButton(OkScriptToolkitBundle.message("taskLauncher.resume"))
+    private val runnerStopCurrentButton = JButton(OkScriptToolkitBundle.message("taskLauncher.stopCurrent"))
+    private val runnerCloseButton = JButton(OkScriptToolkitBundle.message("taskLauncher.closeExecutor"))
+    private val runnerQueuePanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 1))
+    private val runnerPollingPanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 1))
+    /** 执行环境卡取值（长路径不截断，见 [wrappingValueLabel]） */
+    private val envProjectRootValue = wrappingValueLabel()
+    private val envPythonValue = wrappingValueLabel()
+    private val envSandboxValue = wrappingValueLabel()
+    private val envSnapshotsValue = wrappingValueLabel()
+
+    /** 探针采集到的全局配置组（配置页「全局配置」卡片数据源；applyProbeResult 更新） */
     private var globalConfigGroups: List<TaskLauncherService.GlobalConfigGroup> = emptyList()
     private var multiAccountInfo = TaskLauncherService.MultiAccountInfo()
     private var accountEditor: AccountEditorDialog? = null
@@ -189,8 +211,53 @@ class TaskLauncherPanel(private val project: Project) {
     private val detailKindChip = JBLabel()
     private val detailStateChip = JBLabel()
     private val detailActionButton = JButton()
+    /** 类名·模块（详情区第二行，等宽字体弱化色） */
+    private val detailClassLine = JBLabel().apply { foreground = UIUtil.getContextHelpForeground() }
+    /** 任务描述：完整换行展示（IA 重设计：描述给足空间，不再单行截断） */
+    private val detailDescription = JTextArea().apply {
+        isEditable = false
+        isFocusable = false
+        lineWrap = true
+        wrapStyleWord = true
+        isOpaque = false
+        border = null
+    }
+    /** 详情页脚的快照操作（IA 重设计：⇄/⟲ 从卡片挪到这里，属于「当前任务详情」） */
+    private val detailSyncButton = JButton(OkScriptToolkitBundle.message("taskLauncher.syncDefaultBtn"))
+    private val detailResetButton = JButton(OkScriptToolkitBundle.message("taskLauncher.resetDefaultBtn"))
     /** 详情区当前展示的任务；null = 未选中，显示占位提示 */
     private var detailTask: TaskLauncherService.TaskInfo? = null
+
+    /** 详情头部已渲染过描述的任务：状态推送高频调 renderDetailHeader，描述只在任务切换时重设 */
+    private var detailDescriptionFor: TaskLauncherService.TaskInfo? = null
+
+    // ── 配置页（全局配置 / 账号覆盖 / 项目配置）─────────────────────
+    /** 全局配置内联卡片「改动即存」的防抖（对齐任务参数的 400ms 自动保存语义） */
+    private val globalSaveTimer = javax.swing.Timer(400, null)
+    private var pendingGlobalSave: PendingGlobalSave? = null
+
+    /** 「全局配置」区宿主：探针结果到达后整块重建（组数与字段都可能变） */
+    private val globalConfigHost = JPanel().apply {
+        layout = BoxLayout(this, BoxLayout.Y_AXIS)
+        isOpaque = false
+    }
+    /** 「账号覆盖」摘要：账号数 / 带覆盖的账号数 */
+    private val accountSummaryLabel = JBLabel()
+    /** 「项目配置」只读值（与执行环境卡同源，只是另一处展示） */
+    private val projectRootValue = wrappingValueLabel()
+    private val projectPythonValue = wrappingValueLabel()
+    private val projectSandboxValue = wrappingValueLabel()
+
+    /**
+     * 待落盘的全局配置组：控件列表 + 基线快照。
+     * 读值推迟到防抖到期时做 —— 输入过程中的中间态（比如 JSON 还没补完括号）
+     * 不该在每次按键时就判为非法。
+     */
+    private class PendingGlobalSave(
+        val group: TaskLauncherService.GlobalConfigGroup,
+        val controls: List<GlobalConfigEditor.FieldControl>,
+        val base: Map<String, Any?>,
+    )
 
     /** 状态栏右侧的「查看日志」入口：把 Run 工具窗口的控制台拉到前台 */
     private val viewLogButton = JButton(OkScriptToolkitBundle.message("taskLauncher.viewLog"))
@@ -198,9 +265,7 @@ class TaskLauncherPanel(private val project: Project) {
     /** 任务进程与运行状态由项目级服务持有：工具窗关闭不影响后台任务 */
     private val taskRunner = TaskRunnerService.getInstance(project)
 
-    // ── Toolbox（游戏连接 + 调试浮层，状态由 ToolboxService 持有）──
-    /** 角色管理入口按钮，见 buildCharactersEntry()。 */
-    private val charactersButton = JButton(OkScriptToolkitBundle.message("characterManager.open"))
+    // ── Toolbox（游戏连接 + 调试浮层，状态由 ToolboxService 持有；控件住运行器页）──
     private val connectGameButton = JButton(OkScriptToolkitBundle.message("toolbox.connectGame"))
     private val disconnectGameButton = JButton(OkScriptToolkitBundle.message("toolbox.disconnect"))
     private val gameStatusLabel = JBLabel()
@@ -250,7 +315,7 @@ class TaskLauncherPanel(private val project: Project) {
         return state.copy(current = "", currentIsTrigger = false, onetimeQueue = emptyList(), paused = false)
     }
 
-    /** 按执行器状态刷新工具栏按钮、状态栏与勾选列（EDT） */
+    /** 按执行器状态刷新状态栏、任务页胶囊、运行器页卡片与卡片列表（EDT） */
     private fun syncRunnerState(state: TaskRunnerService.ExecutorState) {
         // 跨项目防护（对齐 VS Code pushExecutorState / applySnapshot）：执行器属于
         // 别的项目时，它的当前任务 / 队列 / 触发集合 / 暂停态一律不进本窗口 ——
@@ -258,14 +323,6 @@ class TaskLauncherPanel(private val project: Project) {
         // projectMismatch 横幅 + 置空 current/queue/paused）。
         val mismatched = !executorMatchesProject()
         val visible = if (mismatched) runnerStateForDisplay() else state
-        val active = visible.status == "running" || visible.status == "connecting"
-        // 显式启动：执行器起来之前才可用，起来后让位给暂停/停止（对齐 VSCode 端按钮显隐）
-        startExecutorAction.isEnabled2 = !active
-        stopCurrentAction.isEnabled2 = visible.current.isNotEmpty()
-        closeExecutorAction.isEnabled2 = active
-        pauseAction.isEnabled2 = visible.status == "running" && !visible.paused
-        resumeAction.isEnabled2 = visible.status == "running" && visible.paused
-        actionToolbar.updateActionsAsync()
         statusLabel.text = if (mismatched) {
             OkScriptToolkitBundle.message("taskLauncher.projectMismatch")
         } else {
@@ -289,15 +346,15 @@ class TaskLauncherPanel(private val project: Project) {
         renderTaskStatuses(visible)
         // 状态 chip 与「启用/停用轮询」按钮文案跟着执行器状态走
         renderDetailHeader(detailTask, visible)
-        // 运行中心在详情区挂着时跟随状态刷新（无选中任务 = 运行中心可见）
-        if (detailTask == null && runCenterVisible) {
-            renderRunCenter(visible)
-        }
     }
 
-    /** 健康点取色 + 当前任务 chip（#9 rc-health）：与状态文字同源，一次状态一条视觉线 */
+    /**
+     * 状态 → 各处健康点取色 + 运行器页状态卡 + 任务页胶囊（三处同源同色一次成线）。
+     * [statusLabel] 承载瞬时消息（加载/入队/保存错误）；这里的胶囊与运行器状态文字
+     * 只讲执行器本身的稳定状态，互不覆盖。
+     */
     private fun syncHealthBar(state: TaskRunnerService.ExecutorState) {
-        healthDot.color = when {
+        val dotColor = when {
             state.controlError != null -> TaskLauncherTheme.ERR
             state.status == "running" && state.paused -> TaskLauncherTheme.PAUSE
             state.status == "running" || state.status == "connecting" -> TaskLauncherTheme.RUN
@@ -306,21 +363,86 @@ class TaskLauncherPanel(private val project: Project) {
             state.finishMessage != null -> TaskLauncherTheme.ERR
             else -> UIUtil.getLabelDisabledForeground()
         }
+        healthDot.color = dotColor
+        executorPillDot.color = dotColor
+        runnerDot.color = dotColor
+
+        val statusText = when {
+            !executorMatchesProject() -> OkScriptToolkitBundle.message("taskLauncher.projectMismatch")
+            state.status == "connecting" -> OkScriptToolkitBundle.message("taskLauncher.executorConnecting")
+            state.status == "running" && state.paused -> OkScriptToolkitBundle.message("taskLauncher.executorPaused")
+            state.status == "running" -> OkScriptToolkitBundle.message("taskLauncher.executorRunning", state.enabledTriggers.size)
+            else -> OkScriptToolkitBundle.message("taskLauncher.executorIdle")
+        }
+        executorPillLabel.text = statusText
+        runnerStatusLabel.text = statusText
+
+        // 执行器生命周期按钮（运行器页；原工具栏在 IA 重设计后移除）
+        val active = state.status == "running" || state.status == "connecting"
+        runnerStartButton.isEnabled = !active
+        runnerPauseButton.isEnabled = state.status == "running" && !state.paused
+        runnerResumeButton.isEnabled = state.status == "running" && state.paused
+        runnerStopCurrentButton.isEnabled = state.current.isNotEmpty()
+        runnerCloseButton.isEnabled = active
+
+        // 当前任务 chip（运行器状态卡）
         val running = state.status == "running" && state.current.isNotEmpty()
         if (running) {
-            val isTrigger = state.currentIsTrigger
             TaskLauncherTheme.styleChip(
-                currentTaskChip,
-                if (isTrigger) TaskLauncherTheme.TRIGGER else TaskLauncherTheme.ONETIME,
+                runnerCurrentChip,
+                if (state.currentIsTrigger) TaskLauncherTheme.TRIGGER else TaskLauncherTheme.ONETIME,
                 displayNameOf(state.current),
             )
-            currentTaskChip.isVisible = true
-            currentTaskChip.toolTipText = state.current
+            runnerCurrentChip.isVisible = true
+            runnerCurrentChip.toolTipText = state.current
         } else {
-            currentTaskChip.isVisible = false
-            currentTaskChip.toolTipText = null
+            runnerCurrentChip.isVisible = false
+            runnerCurrentChip.toolTipText = null
         }
-        lastRunnerStatus = state.status
+
+        // 队列与轮询清单（chips 可点击 → 跳任务页定位）
+        renderRunListPanel(
+            runnerQueuePanel,
+            state.onetimeQueue,
+            TaskLauncherTheme.ONETIME,
+            OkScriptToolkitBundle.message("taskLauncher.runnerQueueEmpty"),
+        )
+        renderRunListPanel(
+            runnerPollingPanel,
+            state.enabledTriggers,
+            TaskLauncherTheme.TRIGGER,
+            OkScriptToolkitBundle.message("taskLauncher.runnerPollingEmpty"),
+        )
+    }
+
+    /** 运行器页「队列与轮询」的清单面板：chips 显示，点击跳任务页定位 */
+    private fun renderRunListPanel(panel: JPanel, keys: List<String>, color: JBColor, emptyText: String) {
+        panel.removeAll()
+        if (keys.isEmpty()) {
+            panel.add(mutedLabel(emptyText))
+        } else {
+            for (key in keys) {
+                val name = displayNameOf(key)
+                val chip = JBLabel(name)
+                TaskLauncherTheme.styleChip(chip, color, name)
+                chip.toolTipText = OkScriptToolkitBundle.message("taskLauncher.locateInTasks")
+                chip.addMouseListener(object : java.awt.event.MouseAdapter() {
+                    override fun mouseClicked(e: java.awt.event.MouseEvent) {
+                        locateTask(key)
+                    }
+                })
+                panel.add(chip)
+            }
+        }
+        panel.revalidate()
+        panel.repaint()
+    }
+
+    /** 从运行器页跳回任务页：选中卡片并加载右侧详情与参数 */
+    private fun locateTask(taskKey: String) {
+        tabbedPane.selectedIndex = TAB_TASKS
+        taskCardList.selectTask(taskKey)
+        tasks.firstOrNull { taskKeyOf(it) == taskKey }?.let { loadTaskParams(it) }
     }
 
     /** 任务 key（module::Class）→ 显示名；未知任务退回 key 本身 */
@@ -332,28 +454,21 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     /**
-     * 布局：左「主」列表 / 右「详」参数，只有一个水平分隔条。
+     * 布局：一级四页签（任务 / 配置 / 运行器 / 工具）+ 跨页签常驻的状态栏。
      *
-     * 旧版是上（列表）/ 中（参数）/ 下（日志）三段纵向堆叠，列表与参数都被拉满整个
-     * 窗口宽度 —— 一行就是一条又矮又长的条条。现在日志交给 Run 工具窗口
-     * （见 [TaskRunnerService.showConsole]），面板只留列表 + 参数，改成左右分栏。
+     * IA 重设计：此前工具栏（启停/账号）、角色入口、工具箱条全挂在任务页四周，
+     * 所有功能往一个页面堆，页面越来越臃肿。现在：
+     * - 任务页 = 搜索 + 执行器胶囊 + 队列条 + 左列表右详情（描述给足空间、参数自适应）；
+     * - 配置页 = 全局配置（内联卡片）/ 账号覆盖 / 项目配置，左侧二级导航；
+     * - 运行器页 = 执行器状态、队列与轮询、执行环境、游戏连接；
+     * - 工具页 = 各独立编辑器/工具窗口的入口。
+     * 日志仍在 Run 工具窗口（见 [TaskRunnerService.showConsole]），运行器页放入口。
      */
     private fun initUI() {
-        stopCurrentAction.isEnabled2 = false
-        closeExecutorAction.isEnabled2 = false
-        pauseAction.isEnabled2 = false
-        resumeAction.isEnabled2 = false
-        accountEditorAction.isEnabled2 = false
+        globalSaveTimer.isRepeats = false
+        globalSaveTimer.addActionListener { flushPendingGlobalSave() }
 
-        val actionGroup = com.intellij.openapi.actionSystem.DefaultActionGroup(
-            refreshAction, accountEditorAction, startExecutorAction, stopCurrentAction, closeExecutorAction, pauseAction, resumeAction,
-        )
-        actionToolbar = com.intellij.openapi.actionSystem.ActionManager.getInstance()
-            .createActionToolbar("ok-script-tasks", actionGroup, true)
-        actionToolbar.targetComponent = mainPanel
-        val toolbar = actionToolbar.component
-        toolbar.border = BorderFactory.createEmptyBorder(2, 2, 2, 6)
-
+        // ── 任务页 ─────────────────────────────────────────────
         taskSearchField.textEditor.emptyText.setText(OkScriptToolkitBundle.message("taskLauncher.searchTasks"))
         taskSearchField.toolTipText = OkScriptToolkitBundle.message("taskLauncher.searchTasks")
         taskSearchField.addDocumentListener(object : DocumentListener {
@@ -362,24 +477,53 @@ class TaskLauncherPanel(private val project: Project) {
             override fun changedUpdate(e: DocumentEvent?) = applySearch()
         })
 
+        val refreshButton = JButton(AllIcons.Actions.Refresh).apply {
+            toolTipText = OkScriptToolkitBundle.message("taskLauncher.refresh")
+            isFocusable = false
+            addActionListener { loadTasks() }
+        }
+
+        // 执行器状态胶囊：运行态摘要 + 点击跳运行器页（运行态的完整视图在那边）
+        val pill = JPanel(FlowLayout(FlowLayout.LEFT, 6, 2)).apply {
+            isOpaque = false
+            add(executorPillDot)
+            add(executorPillLabel)
+            border = BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(JBColor.border(), 1, true),
+                BorderFactory.createEmptyBorder(2, 10, 2, 10),
+            )
+            cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
+            toolTipText = OkScriptToolkitBundle.message("taskLauncher.runnerTabHint")
+            addMouseListener(object : java.awt.event.MouseAdapter() {
+                override fun mouseClicked(e: java.awt.event.MouseEvent) {
+                    tabbedPane.selectedIndex = TAB_RUNNER
+                }
+            })
+        }
+
+        val taskToolbar = JPanel(BorderLayout(8, 0))
+        taskToolbar.isOpaque = false
+        taskToolbar.border = BorderFactory.createEmptyBorder(8, 8, 4, 8)
+        taskToolbar.add(taskSearchField, BorderLayout.CENTER)
+        val toolbarEast = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0))
+        toolbarEast.isOpaque = false
+        toolbarEast.add(pill)
+        toolbarEast.add(refreshButton)
+        taskToolbar.add(toolbarEast, BorderLayout.EAST)
+
         val listScrollPane = JBScrollPane(taskCardList)
         listScrollPane.border = BorderFactory.createEmptyBorder()
-        // 搜索行 + 队列条 + 卡片列表（#pageTasks 的 search-row / rc-queue / task-list 等价物）
-        val northColumn = JPanel()
-        northColumn.layout = BoxLayout(northColumn, BoxLayout.Y_AXIS)
-        northColumn.isOpaque = false
-        val searchRow = JPanel(BorderLayout())
-        searchRow.isOpaque = false
-        searchRow.border = BorderFactory.createEmptyBorder(6, 6, 2, 6)
-        searchRow.add(taskSearchField, BorderLayout.CENTER)
-        northColumn.add(searchRow)
         queueStrip.border = BorderFactory.createEmptyBorder(0, 8, 2, 8)
-        northColumn.add(queueStrip)
 
-        val leftPane = JPanel(BorderLayout())
-        leftPane.isOpaque = false
-        leftPane.add(northColumn, BorderLayout.NORTH)
-        leftPane.add(listScrollPane, BorderLayout.CENTER)
+        val taskListPane = JPanel(BorderLayout())
+        taskListPane.isOpaque = false
+        taskListPane.add(taskToolbar, BorderLayout.NORTH)
+        taskListPane.add(queueStrip, BorderLayout.SOUTH)
+        // 队列条夹在工具栏与列表之间：外层再套一层 BorderLayout
+        val listHost = JPanel(BorderLayout())
+        listHost.isOpaque = false
+        listHost.add(taskListPane, BorderLayout.NORTH)
+        listHost.add(listScrollPane, BorderLayout.CENTER)
 
         val paramScrollPane = JBScrollPane(paramPanel)
         paramScrollPane.border = BorderFactory.createEmptyBorder()
@@ -387,41 +531,42 @@ class TaskLauncherPanel(private val project: Project) {
         val detailPane = JPanel(BorderLayout())
         detailPane.add(buildDetailHeader(), BorderLayout.NORTH)
         detailPane.add(paramScrollPane, BorderLayout.CENTER)
+        detailPane.add(buildDetailFooter(), BorderLayout.SOUTH)
 
         val splitPane = com.intellij.openapi.ui.Splitter(false, 0.42f)
-        splitPane.firstComponent = leftPane
+        splitPane.firstComponent = listHost
         splitPane.secondComponent = detailPane
 
-        // 健康度条：[健康点] [状态文字] [当前任务 chip] …… [进度条] [查看日志]
-        // 健康点与状态文字同源同色（syncRunnerState 统一驱动）
+        val taskPage = JPanel(BorderLayout())
+        taskPage.isOpaque = false
+        taskPage.add(splitPane, BorderLayout.CENTER)
+
+        // ── 其余页签 ───────────────────────────────────────────
+        tabbedPane = JBTabbedPane()
+        tabbedPane.addTab(OkScriptToolkitBundle.message("taskLauncher.tabTasks"), taskPage)
+        tabbedPane.addTab(OkScriptToolkitBundle.message("taskLauncher.tabConfig"), buildConfigPage())
+        tabbedPane.addTab(OkScriptToolkitBundle.message("taskLauncher.tabRunner"), buildRunnerPage())
+        tabbedPane.addTab(OkScriptToolkitBundle.message("taskLauncher.tabTools"), buildToolsPage())
+
+        // ── 状态栏（跨页签常驻）：[健康点][瞬时消息][schema 警告] …… [进度条] ──
         val healthRow = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
         healthRow.isOpaque = false
         healthRow.add(healthDot)
         healthRow.add(statusLabel)
         healthRow.add(schemaWarningLabel)
-        healthRow.add(currentTaskChip)
-        currentTaskChip.isVisible = false
 
         val statusBar = JPanel(BorderLayout(8, 0))
         statusBar.border = BorderFactory.createEmptyBorder(2, 4, 2, 4)
         statusBar.add(healthRow, BorderLayout.CENTER)
         progressBar.preferredSize = Dimension(120, 20)
         progressBar.isVisible = false
-        viewLogButton.toolTipText = OkScriptToolkitBundle.message("taskLauncher.viewLogHint")
-        viewLogButton.addActionListener { taskRunner.showConsole() }
         val statusEast = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0))
         statusEast.isOpaque = false
         statusEast.add(progressBar)
-        statusEast.add(viewLogButton)
         statusBar.add(statusEast, BorderLayout.EAST)
 
-        val northPane = JPanel(BorderLayout())
-        northPane.add(toolbar, BorderLayout.NORTH)
-        northPane.add(buildCharactersEntry(), BorderLayout.CENTER)
-        northPane.add(buildToolboxBar(), BorderLayout.SOUTH)
-
-        mainPanel.add(northPane, BorderLayout.NORTH)
-        mainPanel.add(splitPane, BorderLayout.CENTER)
+        mainPanel.layout = BorderLayout()
+        mainPanel.add(tabbedPane, BorderLayout.CENTER)
         mainPanel.add(statusBar, BorderLayout.SOUTH)
 
         showDetailPlaceholder()
@@ -472,8 +617,9 @@ class TaskLauncherPanel(private val project: Project) {
     // ── 右详情区：任务头 ──────────────────────────────────────────────
 
     /**
-     * 详情区头部：任务名 + 类型 chip + 状态 chip + 主操作按钮。
-     * 触发任务的主操作是「启用/停用轮询」（等价左侧勾选框），一次性任务是「运行任务」。
+     * 详情区头部：任务名 + 类型 chip + 状态 chip + 主操作按钮，下面是类名·模块与
+     * **完整描述**（IA 重设计：描述从卡片挪进详情区，给足空间完整换行）。
+     * 触发任务的主操作是「启用/停用轮询」（等价卡片勾选框），一次性任务是「运行任务」。
      */
     private fun buildDetailHeader(): JPanel {
         detailTitle.font = detailTitle.font.deriveFont(Font.BOLD)
@@ -488,11 +634,40 @@ class TaskLauncherPanel(private val project: Project) {
         actionRow.isOpaque = false
         actionRow.add(detailActionButton)
 
-        return JPanel(BorderLayout(0, 6)).apply {
+        // 纵向：标题行 → 类名·模块 → 描述（描述随宽度完整换行，高度自适应）
+        val identity = JPanel()
+        identity.layout = BoxLayout(identity, BoxLayout.Y_AXIS)
+        identity.isOpaque = false
+        identity.add(titleRow)
+        detailClassLine.alignmentX = java.awt.Component.LEFT_ALIGNMENT
+        identity.add(detailClassLine)
+        detailDescription.alignmentX = java.awt.Component.LEFT_ALIGNMENT
+        identity.add(detailDescription)
+
+        return JPanel(BorderLayout()).apply {
             isOpaque = false
-            border = BorderFactory.createEmptyBorder(8, 8, 6, 8)
-            add(titleRow, BorderLayout.NORTH)
-            add(actionRow, BorderLayout.CENTER)
+            border = BorderFactory.createEmptyBorder(8, 10, 6, 10)
+            add(identity, BorderLayout.CENTER)
+        }
+    }
+
+    /** 详情页脚：⇄/⟲ 快照操作（IA 重设计后从卡片挪来，作用于当前选中任务）+ 自动保存提示 */
+    private fun buildDetailFooter(): JPanel {
+        detailSyncButton.addActionListener { detailTask?.let { syncTaskDefault(it) } }
+        detailResetButton.addActionListener { detailTask?.let { resetTaskDefault(it) } }
+        val hint = mutedLabel(OkScriptToolkitBundle.message("taskLauncher.autosaveHint"))
+        val row = JPanel(FlowLayout(FlowLayout.LEFT, 6, 4))
+        row.isOpaque = false
+        row.add(detailSyncButton)
+        row.add(detailResetButton)
+        row.add(hint)
+        return JPanel(BorderLayout()).apply {
+            isOpaque = false
+            border = BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(1, 0, 0, 0, JBColor.border()),
+                BorderFactory.createEmptyBorder(2, 10, 6, 10),
+            )
+            add(row, BorderLayout.CENTER)
         }
     }
 
@@ -506,152 +681,38 @@ class TaskLauncherPanel(private val project: Project) {
         )
     }
 
-    /** 未选中任务时渲染运行中心（#9 rc-queue 的 Swing 等价物；右栏不该是空白占位文字） */
+    /** 未选中任务：右栏给一条明确的占位提示（运行态整体视图在「运行器」页） */
     private fun showDetailPlaceholder() {
         paramPanel.removeAll()
         paramFields.clear()
         visibilityRefresher = null
         currentRenderer = null
-        runCenterVisible = true
-        renderRunCenter(taskRunner.currentState())
-        renderDetailHeader(null)
-    }
-
-    // ── 运行中心（#9 rc-queue / gpop 的 Swing 等价物）────────────────
-    // 相关状态字段（runCenterVisible / globalConfigGroups / hoverSuppressUntil /
-    // hoverPopupDelayMs）声明在 init 块之前的字段区 ——
-    // 构造顺序约束，见那里的说明。
-
-    /**
-     * 运行中心：执行器此刻在跑什么 / 排了什么 / 轮询什么 / 全局配置有哪些。
-     * 只读视图 —— 所有的动作（启动/停止/勾选）都在工具栏与任务行上，这里不给第二条入口。
-     */
-    private fun renderRunCenter(state: TaskRunnerService.ExecutorState) {
-        paramPanel.removeAll()
-        val gbc = GridBagConstraints().apply {
+        detailDescriptionFor = null
+        detailDescription.text = ""
+        detailClassLine.text = ""
+        detailSyncButton.isEnabled = false
+        detailResetButton.isEnabled = false
+        val hint = mutedLabel(OkScriptToolkitBundle.message("taskLauncher.detailPlaceholder"))
+        hint.border = BorderFactory.createEmptyBorder(12, 2, 12, 2)
+        paramPanel.add(hint, GridBagConstraints().apply {
             gridx = 0
             gridy = 0
+            gridwidth = 2
             weightx = 1.0
             fill = GridBagConstraints.HORIZONTAL
             anchor = GridBagConstraints.NORTH
-            insets = Insets(8, 12, 0, 12)
-        }
-
-        // 标题行：运行中心 + 健康点（与 statusBar 同源同色，一次状态一条视觉线）
-        val titleRow = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
-        titleRow.isOpaque = false
-        val dot = TaskLauncherTheme.HealthDot()
-        dot.color = healthDot.color
-        val titleLabel = JBLabel(OkScriptToolkitBundle.message("taskLauncher.runCenter.title"))
-        titleLabel.font = titleLabel.font.deriveFont(Font.BOLD)
-        titleRow.add(dot)
-        titleRow.add(titleLabel)
-        paramPanel.add(titleRow, gbc)
-
-        // 当前任务区
-        gbc.gridy++
-        paramPanel.add(
-            sectionCard(OkScriptToolkitBundle.message("taskLauncher.runCenter.current")) { panel ->
-                if (state.current.isEmpty()) {
-                    panel.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.runCenter.idle")))
-                } else {
-                    val chip = JBLabel()
-                    TaskLauncherTheme.styleChip(
-                        chip,
-                        if (state.currentIsTrigger) TaskLauncherTheme.TRIGGER else TaskLauncherTheme.ONETIME,
-                        displayNameOf(state.current),
-                    )
-                    chip.toolTipText = state.current
-                    panel.add(chip)
-                }
-            },
-            gbc,
-        )
-
-        // 一次性队列区：逐行列出，点击选中左侧对应任务行
-        gbc.gridy++
-        paramPanel.add(
-            sectionCard(OkScriptToolkitBundle.message("taskLauncher.runCenter.queue")) { panel ->
-                if (state.onetimeQueue.isEmpty()) {
-                    panel.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.runCenter.queueEmpty")))
-                } else {
-                    for (key in state.onetimeQueue) panel.add(runCenterRow(key))
-                }
-            },
-            gbc,
-        )
-
-        // 触发轮询区
-        gbc.gridy++
-        paramPanel.add(
-            sectionCard(OkScriptToolkitBundle.message("taskLauncher.runCenter.triggers")) { panel ->
-                if (state.enabledTriggers.isEmpty()) {
-                    panel.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.runCenter.queueEmpty")))
-                } else {
-                    for (key in state.enabledTriggers) panel.add(runCenterRow(key))
-                }
-            },
-            gbc,
-        )
-
-        // 全局配置区：点击组行编辑快照，hover 显示只读摘要
-        if (globalConfigGroups.isNotEmpty()) {
-            gbc.gridy++
-            paramPanel.add(
-                sectionCard(OkScriptToolkitBundle.message("taskLauncher.gconfigSection")) { panel ->
-                    for (group in globalConfigGroups) panel.add(globalGroupRow(group))
-                },
-                gbc,
-            )
-        }
-
-        // 底部弹簧：内容顶对齐
-        gbc.gridy++
-        gbc.weighty = 1.0
-        gbc.fill = GridBagConstraints.BOTH
-        gbc.insets = Insets(0, 0, 0, 0)
-        paramPanel.add(JPanel().apply { isOpaque = false }, gbc)
-
+            insets = Insets(8, 4, 4, 4)
+        })
+        paramPanel.add(JPanel().apply { isOpaque = false }, GridBagConstraints().apply {
+            gridx = 0
+            gridy = 1
+            gridwidth = 2
+            weighty = 1.0
+            fill = GridBagConstraints.BOTH
+        })
         paramPanel.revalidate()
         paramPanel.repaint()
-    }
-
-    /**
-     * 运行中心区段：组头（弱化小标题）+ 内容体。行级面语义，不做描边方块墙。
-     * 参数名不能叫 fill —— 会遮蔽 apply{} 里 GridBagConstraints.fill（Kotlin 局部
-     * 作用域优先于隐式 receiver 成员，赋值会命中参数而不是字段）。
-     */
-    private fun sectionCard(title: String, build: (JPanel) -> Unit): JPanel {
-        val section = JPanel(BorderLayout(0, 2))
-        section.isOpaque = false
-        section.add(mutedLabel(title), BorderLayout.NORTH)
-        val body = JPanel(GridBagLayout())
-        body.isOpaque = false
-        val gbc = GridBagConstraints().apply {
-            gridx = 0
-            gridy = 0
-            weightx = 1.0
-            fill = GridBagConstraints.HORIZONTAL
-            anchor = GridBagConstraints.WEST
-        }
-        // 纵向布局：构建器是无约束 panel.add(...)（队列/触发/配置组都是多行循环加），
-        // 若用 BorderLayout 只会保留最后一行（CodeRabbit Major 意见）。
-        // BoxLayout 下子组件默认水平居中，build 后统一左对齐让其占满宽度。
-        val receiver = JPanel().apply {
-            layout = BoxLayout(this, BoxLayout.Y_AXIS)
-            isOpaque = false
-        }
-        build(receiver)
-        for (child in receiver.components) {
-            (child as? javax.swing.JComponent)?.let {
-                // 显式 setter：Component 静态类型上 alignmentX 是只读合成属性
-                it.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT)
-                it.setAlignmentY(java.awt.Component.TOP_ALIGNMENT)
-            }
-        }
-        body.add(receiver, gbc)
-        section.add(body, BorderLayout.CENTER)
-        return section
+        renderDetailHeader(null)
     }
 
     /** 弱化文字（--text-muted 语义：只用于辅助信息，不用于正文） */
@@ -659,84 +720,6 @@ class TaskLauncherPanel(private val project: Project) {
         val label = JBLabel(text)
         label.foreground = UIUtil.getLabelDisabledForeground()
         return label
-    }
-
-    /**
-     * 行级可点击区（#10 两层语义之二）：默认 stripe 浅底、无描边，hover 增强，
-     * 点击选中左侧任务行。**hover 不承担「让用户发现可点击」的职责** ——
-     * 默认底色即与周围内容有色差。
-     */
-    private fun runCenterRow(taskKey: String): JPanel {
-        val row = JPanel(FlowLayout(FlowLayout.LEFT, 6, 1))
-        row.isOpaque = true
-        row.background = TaskLauncherTheme.rowBackground()
-        row.border = BorderFactory.createEmptyBorder(1, 6, 1, 6)
-        row.add(JBLabel(displayNameOf(taskKey)))
-        row.toolTipText = taskKey
-        row.addMouseListener(rowClickAdapter(row) { selectTaskRow(taskKey) })
-        return row
-    }
-
-    /** 全局配置组行：组名 + source 标注 + 字段数，点击编辑、hover 看摘要 */
-    private fun globalGroupRow(group: TaskLauncherService.GlobalConfigGroup): JPanel {
-        val row = JPanel(FlowLayout(FlowLayout.LEFT, 6, 1))
-        row.isOpaque = true
-        row.background = TaskLauncherTheme.rowBackground()
-        row.border = BorderFactory.createEmptyBorder(1, 6, 1, 6)
-        row.add(JBLabel(group.displayName ?: group.name))
-        if (group.source == "project_store") {
-            row.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.gconfigSourceProject")))
-        }
-        row.add(mutedLabel(group.fields.size.toString()))
-        row.toolTipText = group.description
-        val adapter = object : java.awt.event.MouseAdapter() {
-            private var timer: Timer? = null
-
-            override fun mouseEntered(e: java.awt.event.MouseEvent) {
-                row.background = TaskLauncherTheme.rowHoverBackground()
-                if (System.currentTimeMillis() < hoverSuppressUntil) return
-                timer?.stop()
-                timer = Timer(hoverPopupDelayMs) { showGroupSummaryPopup(row, group) }.apply {
-                    isRepeats = false
-                    start()
-                }
-            }
-
-            override fun mouseExited(e: java.awt.event.MouseEvent) {
-                row.background = TaskLauncherTheme.rowBackground()
-                timer?.stop()
-            }
-
-            override fun mouseClicked(e: java.awt.event.MouseEvent) {
-                hoverSuppressUntil = System.currentTimeMillis() + 1200
-                timer?.stop()
-                activeHoverPopup?.cancel()
-                editGlobalConfig(group)
-            }
-        }
-        row.addMouseListener(adapter)
-        row.components.forEach { it.addMouseListener(adapter) }
-        return row
-    }
-
-    private fun editGlobalConfig(group: TaskLauncherService.GlobalConfigGroup) {
-        val root = taskDataRoot()
-        val existing = taskService.loadGlobalConfigs(root)
-        val edited = GlobalConfigEditor.show(mainPanel, group, existing[group.name].orEmpty(), project = project) ?: return
-        if (edited.values == existing[group.name]) return
-        try {
-            taskService.saveGlobalConfigGroup(group.name, edited.values, root)
-            pushGlobalSnapshot(taskService.loadGlobalConfigs(root), root)
-            if (runCenterVisible) renderRunCenter(runnerStateForDisplay())
-        } catch (e: Exception) {
-            LOG.warn("Failed to save global configuration", e)
-            JOptionPane.showMessageDialog(
-                mainPanel,
-                OkScriptToolkitBundle.message("taskLauncher.gconfigSaveFailed", e.message ?: ""),
-                group.displayName ?: group.name,
-                JOptionPane.ERROR_MESSAGE,
-            )
-        }
     }
 
     private fun openAccountEditor() {
@@ -768,62 +751,6 @@ class TaskLauncherPanel(private val project: Project) {
             globalGroups = globalConfigGroups,
             onAccountListSaved = { loadTasks() },
         ).also { it.open() }
-    }
-
-    /** 行级区共用的 hover 背景/点击抑制适配器（点击回调由各行走） */
-    private fun rowClickAdapter(row: JPanel, onClick: () -> Unit): java.awt.event.MouseAdapter =
-        object : java.awt.event.MouseAdapter() {
-            override fun mouseEntered(e: java.awt.event.MouseEvent) {
-                row.background = TaskLauncherTheme.rowHoverBackground()
-            }
-
-            override fun mouseExited(e: java.awt.event.MouseEvent) {
-                row.background = TaskLauncherTheme.rowBackground()
-            }
-
-            override fun mouseClicked(e: java.awt.event.MouseEvent) {
-                hoverSuppressUntil = System.currentTimeMillis() + 1200
-                onClick()
-            }
-        }
-
-    /** 运行中心行点击 → 右栏加载该任务参数（卡片列表无选中行的概念，直接定向打开） */
-    private fun selectTaskRow(taskKey: String) {
-        val task = tasks.firstOrNull { taskKeyOf(it) == taskKey } ?: return
-        loadTaskParams(task)
-    }
-
-    /** 全局配置组摘要弹层：只读、无交互按钮（用户硬规则），最多列 12 个字段。
-     *  参数名不能叫 anchor —— 会遮蔽 apply{} 里 GridBagConstraints.anchor。 */
-    private fun showGroupSummaryPopup(anchorComponent: JComponent, group: TaskLauncherService.GlobalConfigGroup) {
-        val content = JPanel(GridBagLayout())
-        content.isOpaque = false
-        val effective = taskService.loadGlobalConfigs(taskDataRoot())[group.name].orEmpty()
-        val gbc = GridBagConstraints().apply {
-            gridx = 0
-            gridy = 0
-            anchor = GridBagConstraints.WEST
-            insets = Insets(2, 10, 2, 10)
-        }
-        for (field in group.fields.take(12)) {
-            val value = if (effective.containsKey(field.key)) effective[field.key] else field.value ?: field.default
-            content.add(JBLabel("${field.displayKey ?: field.key} = ${formatFieldValue(value)}"), gbc)
-            gbc.gridy++
-        }
-        if (group.fields.size > 12) {
-            content.add(mutedLabel("… +${group.fields.size - 12}"), gbc)
-        }
-        showHoverPopup {
-            JBPopupFactory.getInstance()
-                .createComponentPopupBuilder(content, anchorComponent)
-                .setTitle(group.displayName ?: group.name)
-                .setRequestFocus(false)
-                .setResizable(false)
-                .setMovable(false)
-                .setCancelOnClickOutside(true)
-                .createPopup()
-                .also { it.show(RelativePoint(anchorComponent, java.awt.Point(anchorComponent.width / 2, anchorComponent.height))) }
-        }
     }
 
     /** 任务卡悬停弹出（#9 任务卡 hover 概览）：hover 800ms 弹只读摘要（计时在 scheduleTaskHover）。
@@ -951,22 +878,68 @@ class TaskLauncherPanel(private val project: Project) {
         }
     }
 
-    /**
-     * 角色管理入口：VS Code 里「工具箱」侧边栏的第一行就是「打开角色技能管理面板」
-     * （`toolboxOpenCharacterManager`），下面才是游戏连接与调试浮层。这里同样把
-     * 整行按钮放在工具箱条上方 —— 角色管理已改为编辑器标签页，不再占工具窗。
-     */
-    private fun buildCharactersEntry(): JPanel {
-        charactersButton.toolTipText = OkScriptToolkitBundle.message("characterManager.openDescription")
-        charactersButton.addActionListener { openCharacterManager(project) }
-        val panel = JPanel(BorderLayout())
-        panel.border = BorderFactory.createEmptyBorder(2, 6, 4, 6)
-        panel.add(charactersButton, BorderLayout.CENTER)
-        return panel
-    }
+    // ── 配置页 / 运行器页 / 工具页（IA 重设计）───────────────────────
+    // 原先全挂在任务页四周的执行器启停、全局配置、账号、游戏连接、角色入口，
+    // 按「先分页面、再分组、再展示内容」拆到三个页签。状态来源不变
+    // （TaskRunnerService / ToolboxService / 探针结果），只是换了住处。
 
-    /** 工具箱条：连接/断开游戏、连接状态、调试浮层开关（与 VS Code 侧栏工具箱同源状态） */
-    private fun buildToolboxBar(): JPanel {
+    /**
+     * 运行器页：执行器状态 / 队列与轮询 / 执行环境 / 游戏连接，两列卡片网格。
+     * 执行器生命周期（启动 / 暂停 / 继续 / 停止当前 / 关闭）**只在这里** ——
+     * 任务页只留一枚点击跳转的状态胶囊，避免同一动作出现第二条入口。
+     */
+    private fun buildRunnerPage(): JPanel {
+        runnerStartButton.addActionListener { startExecutorManual() }
+        runnerPauseButton.addActionListener { sendControlCommand("pause") }
+        runnerResumeButton.addActionListener { sendControlCommand("resume") }
+        runnerStopCurrentButton.addActionListener { stopCurrentTask() }
+        runnerCloseButton.addActionListener { closeExecutor() }
+
+        val statusCard = pageCard(OkScriptToolkitBundle.message("taskLauncher.runnerExecStatus")) { body ->
+            val head = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
+            head.isOpaque = false
+            head.add(runnerDot)
+            head.add(runnerStatusLabel)
+            head.add(runnerCurrentChip)
+            body.add(head)
+
+            val buttons = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
+            buttons.isOpaque = false
+            buttons.add(runnerStartButton)
+            buttons.add(runnerPauseButton)
+            buttons.add(runnerResumeButton)
+            buttons.add(runnerStopCurrentButton)
+            buttons.add(runnerCloseButton)
+            viewLogButton.toolTipText = OkScriptToolkitBundle.message("taskLauncher.viewLogHint")
+            viewLogButton.addActionListener { taskRunner.showConsole() }
+            buttons.add(viewLogButton)
+            body.add(buttons)
+        }
+
+        val queueCard = pageCard(OkScriptToolkitBundle.message("taskLauncher.runnerQueuePolling")) { body ->
+            body.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.runCenter.queue")))
+            body.add(runnerQueuePanel)
+            body.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.runCenter.triggers")))
+            body.add(runnerPollingPanel)
+        }
+
+        val settingsButton = JButton(OkScriptToolkitBundle.message("taskLauncher.openSettings"))
+        settingsButton.addActionListener { openSettings() }
+        val rescanButton = JButton(OkScriptToolkitBundle.message("taskLauncher.rescanTasks"))
+        rescanButton.addActionListener { loadTasks() }
+        val envCard = pageCard(OkScriptToolkitBundle.message("taskLauncher.runnerEnv")) { body ->
+            body.add(envRow(OkScriptToolkitBundle.message("taskLauncher.envProjectRoot"), envProjectRootValue))
+            body.add(envRow(OkScriptToolkitBundle.message("taskLauncher.envPython"), envPythonValue))
+            body.add(envRow(OkScriptToolkitBundle.message("taskLauncher.envSandbox"), envSandboxValue))
+            body.add(envRow(OkScriptToolkitBundle.message("taskLauncher.envSnapshots"), envSnapshotsValue))
+            val buttons = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
+            buttons.isOpaque = false
+            buttons.add(settingsButton)
+            buttons.add(rescanButton)
+            body.add(buttons)
+        }
+
+        // 游戏连接：控件与监听器原样搬自旧工具箱条，语义零改动（状态仍由 ToolboxService 持有）
         connectGameButton.addActionListener { connectGame() }
         disconnectGameButton.addActionListener { disconnectGame() }
         overlayCheckBox.toolTipText = OkScriptToolkitBundle.message("toolbox.overlayHint")
@@ -979,26 +952,425 @@ class TaskLauncherPanel(private val project: Project) {
                 updatingOverlayCheckbox = false
                 return@addActionListener
             }
-            val pythonPath = detectPythonPath()
-            toolboxService.setOverlayEnabled(projectDir, pythonPath, overlayCheckBox.isSelected)
+            toolboxService.setOverlayEnabled(projectDir, detectPythonPath(), overlayCheckBox.isSelected)
         }
-        val buttons = JPanel(java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0))
-        buttons.isOpaque = false
-        buttons.add(connectGameButton)
-        buttons.add(disconnectGameButton)
-
-        val bar = JPanel(BorderLayout(8, 0))
-        bar.border = BorderFactory.createEmptyBorder(2, 6, 2, 6)
-        bar.add(buttons, BorderLayout.WEST)
         gameStatusLabel.foreground = UIUtil.getContextHelpForeground()
-        bar.add(gameStatusLabel, BorderLayout.CENTER)
         toolboxStatusLabel.foreground = UIUtil.getContextHelpForeground()
-        val east = JPanel(BorderLayout(8, 0))
-        east.isOpaque = false
-        east.add(toolboxStatusLabel, BorderLayout.CENTER)
-        east.add(overlayCheckBox, BorderLayout.EAST)
-        bar.add(east, BorderLayout.EAST)
-        return bar
+        val gameCard = pageCard(OkScriptToolkitBundle.message("taskLauncher.runnerGame")) { body ->
+            val buttons = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
+            buttons.isOpaque = false
+            buttons.add(connectGameButton)
+            buttons.add(disconnectGameButton)
+            body.add(buttons)
+            body.add(gameStatusLabel)
+            body.add(overlayCheckBox)
+            body.add(toolboxStatusLabel)
+        }
+
+        refreshEnvironmentInfo()
+        return scrollablePage(pageGrid(listOf(statusCard, queueCard, envCard, gameCard)))
+    }
+
+    /**
+     * 配置页：全局配置 / 账号覆盖 / 项目配置，左侧二级导航 + 右侧内容（CardLayout）。
+     *
+     * 全局配置改成**内联卡片 + 改动即存**（400ms 防抖，与任务参数同一套自动保存语义）——
+     * 旧路径是「点组行弹对话框」，多一层操作、也看不到别的组。
+     */
+    private fun buildConfigPage(): JPanel {
+        val cards = JPanel(java.awt.CardLayout())
+        cards.isOpaque = false
+        cards.add(buildGlobalConfigSection(), NAV_GLOBAL)
+        cards.add(buildAccountSection(), NAV_ACCOUNT)
+        cards.add(buildProjectSection(), NAV_PROJECT)
+
+        val nav = JList(
+            arrayOf(
+                OkScriptToolkitBundle.message("taskLauncher.configNavGlobal"),
+                OkScriptToolkitBundle.message("taskLauncher.configNavAccount"),
+                OkScriptToolkitBundle.message("taskLauncher.configNavProject"),
+            ),
+        )
+        nav.selectionMode = ListSelectionModel.SINGLE_SELECTION
+        nav.selectedIndex = 0
+        nav.border = BorderFactory.createEmptyBorder(8, 6, 8, 6)
+        nav.addListSelectionListener { event ->
+            if (event.valueIsAdjusting) return@addListSelectionListener
+            val index = nav.selectedIndex.coerceIn(NAV_KEYS.indices)
+            (cards.layout as java.awt.CardLayout).show(cards, NAV_KEYS[index])
+        }
+        val navScroll = JBScrollPane(nav)
+        navScroll.border = BorderFactory.createEmptyBorder()
+        navScroll.preferredSize = Dimension(170, 0)
+
+        val split = com.intellij.openapi.ui.Splitter(false, 0.24f)
+        split.firstComponent = navScroll
+        split.secondComponent = cards
+        split.setDividerWidth(1)
+
+        val page = JPanel(BorderLayout())
+        page.isOpaque = false
+        page.add(split, BorderLayout.CENTER)
+        return page
+    }
+
+    /**
+     * 工具页：各独立编辑器标签页 / 工具窗口的入口清单。
+     *
+     * 这些功能都**不住**任务启动器工具窗里（角色管理是编辑器标签页，模板 / 临时截图 /
+     * 模板素材各自是独立工具窗口），这里只放入口，不复制它们的界面。
+     */
+    private fun buildToolsPage(): JPanel {
+        val card = pageCard(OkScriptToolkitBundle.message("taskLauncher.tabTools")) { body ->
+            body.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.toolsHint")))
+            body.add(
+                toolRow(
+                    OkScriptToolkitBundle.message("taskLauncher.toolCharacterTitle"),
+                    OkScriptToolkitBundle.message("taskLauncher.toolCharacterDesc"),
+                ) { openCharacterManager(project) },
+            )
+            body.add(
+                toolRow(
+                    OkScriptToolkitBundle.message("taskLauncher.toolTemplatesTitle"),
+                    OkScriptToolkitBundle.message("taskLauncher.toolTemplatesDesc"),
+                ) { showToolWindow("ok-script Templates") },
+            )
+            body.add(
+                toolRow(
+                    OkScriptToolkitBundle.message("taskLauncher.toolTempShotsTitle"),
+                    OkScriptToolkitBundle.message("taskLauncher.toolTempShotsDesc"),
+                ) { showToolWindow("ok-script Temp Shots") },
+            )
+            body.add(
+                toolRow(
+                    OkScriptToolkitBundle.message("taskLauncher.toolAssetsTitle"),
+                    OkScriptToolkitBundle.message("taskLauncher.toolAssetsDesc"),
+                ) { showToolWindow("ok-script Assets") },
+            )
+        }
+        return singleColumnPage(listOf(card))
+    }
+
+    // ── 页签布局小件 ────────────────────────────────────────────────
+
+    /** 页签内的卡片（IA 重设计的 rcard / gcard 等价物）：圆角描边 + 加粗标题 + 纵向内容体 */
+    private fun pageCard(title: String, build: (body: JPanel) -> Unit): JPanel {
+        val body = JPanel()
+        body.layout = BoxLayout(body, BoxLayout.Y_AXIS)
+        body.isOpaque = false
+        build(body)
+        for (child in body.components) {
+            (child as? JComponent)?.let {
+                // 显式 setter：Component 静态类型上 alignmentX 是只读合成属性
+                it.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT)
+                it.setAlignmentY(java.awt.Component.TOP_ALIGNMENT)
+            }
+        }
+        val titleLabel = JBLabel(title)
+        titleLabel.font = titleLabel.font.deriveFont(Font.BOLD)
+        return JPanel(BorderLayout(0, 6)).apply {
+            isOpaque = false
+            border = BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(JBColor.border(), 1, true),
+                BorderFactory.createEmptyBorder(8, 12, 10, 12),
+            )
+            add(titleLabel, BorderLayout.NORTH)
+            add(body, BorderLayout.CENTER)
+        }
+    }
+
+    /** 两列卡片网格：宽度均分、卡片高度随内容；内容超高时由外层滚动条接管 */
+    private fun pageGrid(cards: List<JPanel>): JPanel {
+        val grid = JPanel(GridBagLayout())
+        grid.isOpaque = false
+        grid.border = BorderFactory.createEmptyBorder(12, 14, 12, 14)
+        cards.forEachIndexed { index, card ->
+            grid.add(card, GridBagConstraints().apply {
+                gridx = index % 2
+                gridy = index / 2
+                weightx = 0.5
+                fill = GridBagConstraints.HORIZONTAL
+                anchor = GridBagConstraints.NORTHWEST
+                insets = Insets(0, 0, 12, 12)
+            })
+        }
+        // 底部弹簧：卡片顶对齐，不被纵向拉伸
+        grid.add(JPanel().apply { isOpaque = false }, GridBagConstraints().apply {
+            gridx = 0
+            gridy = (cards.size + 1) / 2
+            gridwidth = 2
+            weighty = 1.0
+            fill = GridBagConstraints.BOTH
+        })
+        return grid
+    }
+
+    /** 单列页面（配置页 / 工具页用）：卡片纵向排列 + 外边距，内容超高时可滚 */
+    private fun singleColumnPage(cards: List<JPanel>): JPanel {
+        val column = JPanel(GridBagLayout())
+        column.isOpaque = false
+        column.border = BorderFactory.createEmptyBorder(12, 14, 12, 14)
+        cards.forEachIndexed { index, card ->
+            column.add(card, GridBagConstraints().apply {
+                gridx = 0
+                gridy = index
+                weightx = 1.0
+                fill = GridBagConstraints.HORIZONTAL
+                anchor = GridBagConstraints.NORTHWEST
+                insets = Insets(0, 0, 10, 0)
+            })
+        }
+        column.add(JPanel().apply { isOpaque = false }, GridBagConstraints().apply {
+            gridx = 0
+            gridy = cards.size
+            weighty = 1.0
+            fill = GridBagConstraints.BOTH
+        })
+        return column
+    }
+
+    /** 内容装进滚动面板（页签内容超过窗口高度时可滚，横向永不出现滚动条） */
+    private fun scrollablePage(content: JComponent): JPanel {
+        val scroll = JBScrollPane(content)
+        scroll.border = BorderFactory.createEmptyBorder()
+        scroll.horizontalScrollBarPolicy = ScrollPaneConstants.HORIZONTAL_SCROLLBAR_NEVER
+        val page = JPanel(BorderLayout())
+        page.isOpaque = false
+        page.add(scroll, BorderLayout.CENTER)
+        return page
+    }
+
+    /** 可换行的弱化值标签：长路径不截断，等宽字体便于逐字符比对 */
+    private fun wrappingValueLabel(): JTextArea = SchemaFieldUi.WrappingDescription("").apply {
+        font = Font(Font.MONOSPACED, Font.PLAIN, font.size)
+    }
+
+    /** 「键 + 值」行（执行环境 / 项目配置用）：键弱化小字在上，值可换行在下 */
+    private fun envRow(key: String, value: JTextArea): JPanel {
+        val row = JPanel(BorderLayout(0, 2))
+        row.isOpaque = false
+        row.add(mutedLabel(key), BorderLayout.NORTH)
+        row.add(value, BorderLayout.CENTER)
+        return row
+    }
+
+    private fun setEnvValue(area: JTextArea, text: String) {
+        area.text = text
+        area.toolTipText = text
+    }
+
+    /** 工具页入口行：标题 + 说明 + 右侧「打开」按钮 */
+    private fun toolRow(title: String, description: String, action: () -> Unit): JPanel {
+        val titleLabel = JBLabel(title)
+        titleLabel.font = titleLabel.font.deriveFont(Font.BOLD)
+        val text = JPanel()
+        text.layout = BoxLayout(text, BoxLayout.Y_AXIS)
+        text.isOpaque = false
+        text.add(titleLabel)
+        text.add(mutedLabel(description))
+
+        val open = JButton(OkScriptToolkitBundle.message("taskLauncher.toolOpen"))
+        open.addActionListener { action() }
+        return JPanel(BorderLayout(8, 0)).apply {
+            isOpaque = false
+            border = BorderFactory.createCompoundBorder(
+                BorderFactory.createMatteBorder(1, 0, 0, 0, JBColor.border()),
+                BorderFactory.createEmptyBorder(6, 2, 6, 2),
+            )
+            add(text, BorderLayout.CENTER)
+            add(open, BorderLayout.EAST)
+        }
+    }
+
+    /** 打开本插件的设置页（执行环境卡与项目配置区的「打开设置…」共用） */
+    private fun openSettings() {
+        com.intellij.openapi.options.ShowSettingsUtil.getInstance()
+            .showSettingsDialog(project, com.alicejump.okscripttoolkit.settings.OkScriptToolkitConfigurable::class.java)
+    }
+
+    /** 把某个独立工具窗口拉到前台（工具页入口用；窗口不存在时静默忽略） */
+    private fun showToolWindow(id: String) {
+        com.intellij.openapi.wm.ToolWindowManager.getInstance(project).getToolWindow(id)?.show()
+    }
+
+    // ── 配置页：全局配置（内联卡片 + 改动即存）──────────────────────
+
+    /** 「全局配置」区整块重建：每组一张卡片（组数与字段都可能随探针结果变化） */
+    private fun renderGlobalConfig() {
+        globalConfigHost.removeAll()
+        if (globalConfigGroups.isEmpty()) {
+            globalConfigHost.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.configGlobalEmpty")))
+        } else {
+            for (group in globalConfigGroups) globalConfigHost.add(globalConfigCard(group))
+        }
+        for (child in globalConfigHost.components) {
+            (child as? JComponent)?.setAlignmentX(java.awt.Component.LEFT_ALIGNMENT)
+        }
+        globalConfigHost.revalidate()
+        globalConfigHost.repaint()
+    }
+
+    private fun buildGlobalConfigSection(): JPanel {
+        renderGlobalConfig()
+        val card = pageCard(OkScriptToolkitBundle.message("taskLauncher.configNavGlobal")) { body ->
+            body.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.configGlobalHint")))
+            body.add(globalConfigHost)
+        }
+        return singleColumnPage(listOf(card))
+    }
+
+    /**
+     * 全局配置组内联卡片：字段控件 + 「改动即存」。
+     * 可见性规则复用对话框路径的 [GlobalConfigEditor.installVisibility]（布尔子项跟随父级），
+     * 与任务参数面板同款语义 —— 两条路径不该有两套显隐规则。
+     */
+    private fun globalConfigCard(group: TaskLauncherService.GlobalConfigGroup): JPanel {
+        val existing = taskService.loadGlobalConfigs(taskDataRoot())[group.name].orEmpty()
+        // 控件列表要先建好才能被自己的回调捕获（回调触发时列表已填满），故用可变列表分两步填
+        val controls = mutableListOf<GlobalConfigEditor.FieldControl>()
+        for (field in group.fields) {
+            val value = if (existing.containsKey(field.key)) existing[field.key] else field.value ?: field.default
+            controls += GlobalConfigEditor.makeControl(field, value, project) {
+                scheduleGlobalSave(group, controls, existing)
+            }
+        }
+        val form = JPanel(GridBagLayout())
+        form.isOpaque = false
+        val rowsByKey = linkedMapOf<String, JPanel>()
+        var rowIndex = 0
+        for (control in controls) {
+            val row = SchemaFieldUi.row(control.field, control.component)
+            rowsByKey[control.field.key] = row
+            form.add(row, GridBagConstraints().apply {
+                gridx = 0
+                gridy = rowIndex++
+                weightx = 1.0
+                fill = GridBagConstraints.HORIZONTAL
+                anchor = GridBagConstraints.NORTHWEST
+                insets = Insets(1, 8, 1, 8)
+            })
+        }
+        GlobalConfigEditor.installVisibility(controls, rowsByKey, form)
+        return pageCard(group.displayName ?: group.name) { body -> body.add(form) }
+    }
+
+    /** 内联卡片改动：登记待存快照并重启 400ms 防抖（连续输入只落一次盘） */
+    private fun scheduleGlobalSave(
+        group: TaskLauncherService.GlobalConfigGroup,
+        controls: List<GlobalConfigEditor.FieldControl>,
+        base: Map<String, Any?>,
+    ) {
+        pendingGlobalSave = PendingGlobalSave(group, controls, base)
+        globalSaveTimer.restart()
+    }
+
+    /**
+     * 防抖到期：读控件 → 校验 → 落盘 → 推送执行器。
+     * 读值推迟到这一刻才做 —— 输入过程中的中间态（比如 JSON 还没补完括号）
+     * 不该在每次按键时就判为非法。值非法时不落盘，只在状态栏提示。
+     */
+    private fun flushPendingGlobalSave() {
+        val pending = pendingGlobalSave ?: return
+        pendingGlobalSave = null
+        val name = pending.group.displayName ?: pending.group.name
+
+        val values = pending.base.toMutableMap()
+        var invalid: String? = null
+        for (control in pending.controls) {
+            try {
+                values[control.field.key] = control.read()
+            } catch (_: IllegalArgumentException) {
+                invalid = control.field.displayKey ?: control.field.key
+                break
+            }
+        }
+        if (invalid != null) {
+            statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.gconfigInvalidValue", invalid)
+            return
+        }
+
+        val root = taskDataRoot()
+        if (values == taskService.loadGlobalConfigs(root)[pending.group.name].orEmpty()) return
+        try {
+            taskService.saveGlobalConfigGroup(pending.group.name, values, root)
+            pushGlobalSnapshot(taskService.loadGlobalConfigs(root), root)
+            statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.gconfigSaved", name)
+        } catch (e: Exception) {
+            LOG.warn("Failed to save global configuration", e)
+            JOptionPane.showMessageDialog(
+                mainPanel,
+                OkScriptToolkitBundle.message("taskLauncher.gconfigSaveFailed", e.message ?: ""),
+                name,
+                JOptionPane.ERROR_MESSAGE,
+            )
+        }
+    }
+
+    // ── 配置页：账号覆盖 / 项目配置 ─────────────────────────────────
+
+    /** 账号覆盖区：账号注册表摘要 + 打开账号编辑器（多账号存储由 AccountEditorDialog 承载） */
+    private fun buildAccountSection(): JPanel {
+        val openButton = JButton(OkScriptToolkitBundle.message("taskLauncher.accounts"))
+        openButton.addActionListener { openAccountEditor() }
+        accountSummaryLabel.foreground = UIUtil.getContextHelpForeground()
+        val card = pageCard(OkScriptToolkitBundle.message("taskLauncher.configNavAccount")) { body ->
+            body.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.configAccountHint")))
+            body.add(accountSummaryLabel)
+            body.add(openButton)
+        }
+        return singleColumnPage(listOf(card))
+    }
+
+    /** 项目配置区：只读摘要（值来自设置 / 探针）+ 打开设置入口 */
+    private fun buildProjectSection(): JPanel {
+        val settingsButton = JButton(OkScriptToolkitBundle.message("taskLauncher.openSettings"))
+        settingsButton.addActionListener { openSettings() }
+        val card = pageCard(OkScriptToolkitBundle.message("taskLauncher.configNavProject")) { body ->
+            body.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.configProjectHint")))
+            body.add(envRow(OkScriptToolkitBundle.message("taskLauncher.envProjectRoot"), projectRootValue))
+            body.add(envRow(OkScriptToolkitBundle.message("taskLauncher.envPython"), projectPythonValue))
+            body.add(envRow(OkScriptToolkitBundle.message("taskLauncher.envSandbox"), projectSandboxValue))
+            body.add(settingsButton)
+        }
+        return singleColumnPage(listOf(card))
+    }
+
+    /** 执行环境卡与项目配置区的只读取值（设置 / 探针变化后刷新） */
+    private fun refreshEnvironmentInfo() {
+        val projectDir = detectProjectPath()
+        val unset = OkScriptToolkitBundle.message("taskLauncher.envUnset")
+        val python = detectPythonPath()
+        val sandbox = if (projectDir.isBlank()) unset else RunDir.forProject(projectDir)
+        val snapshots = if (tasks.isEmpty()) {
+            unset
+        } else {
+            OkScriptToolkitBundle.message(
+                "taskLauncher.envSnapshotsSummary",
+                tasks.size,
+                tasks.count { snapshotDiffersFromFactory(taskKeyOf(it)) },
+            )
+        }
+        setEnvValue(envProjectRootValue, projectDir.ifBlank { unset })
+        setEnvValue(envPythonValue, python)
+        setEnvValue(envSandboxValue, sandbox)
+        setEnvValue(envSnapshotsValue, snapshots)
+        setEnvValue(projectRootValue, projectDir.ifBlank { unset })
+        setEnvValue(projectPythonValue, python)
+        setEnvValue(projectSandboxValue, sandbox)
+    }
+
+    /** 账号覆盖区摘要：账号总数 / 带覆盖的账号数（探针完成后刷新） */
+    private fun refreshAccountSummary() {
+        val info = multiAccountInfo
+        accountSummaryLabel.text = when {
+            !info.hasStoreModule -> OkScriptToolkitBundle.message("taskLauncher.configAccountUnavailable")
+            info.accountCount == null -> OkScriptToolkitBundle.message("taskLauncher.configAccountHint")
+            else -> OkScriptToolkitBundle.message(
+                "taskLauncher.configAccountSummary",
+                info.accountCount,
+                info.overrideAccounts ?: 0,
+            )
+        }
     }
 
     /** 当前工具箱状态渲染到工具箱条（EDT 调用） */
@@ -1230,12 +1602,12 @@ class TaskLauncherPanel(private val project: Project) {
             if (result.configModule != null) {
                 configModule = result.configModule
             }
-            // 运行中心「全局配置」区数据源（#7）
+            // 配置页「全局配置」区数据源（#7）
             globalConfigGroups = result.globalConfigGroups
             multiAccountInfo = result.multiAccount
-            accountEditorAction.isEnabled2 = result.multiAccount.available || result.multiAccount.hasStoreModule
-            actionToolbar.updateActionsAsync()
             accountEditor?.takeIf { it.isOpen() }?.updateMetadata(result.multiAccount, result.schemas, result.globalConfigGroups)
+            renderGlobalConfig()
+            refreshAccountSummary()
 
             tasks = result.schemas.map { (key, schema) ->
                 val parts = key.split("::")
@@ -1257,6 +1629,7 @@ class TaskLauncherPanel(private val project: Project) {
 
             // 重建卡片列表（触发/一次性分组 + groupName 二级分组 + 搜索过滤都在 TaskListGrouping）
             taskCardList.setTasks(tasks)
+            refreshEnvironmentInfo()
 
             // 别的项目的触发集合不能 adopt（会写进本项目的 tasks.json）；卡片状态用净化快照
             if (executorMatchesProject() && taskRunner.currentState().status == "running") {
@@ -1358,8 +1731,6 @@ class TaskLauncherPanel(private val project: Project) {
         currentRenderer = null
         // 右栏头部跟着选中项走：名称 / 类型 chip / 状态 chip / 主操作按钮
         renderDetailHeader(task)
-        // 已选中任务 → 详情区不再是运行中心，状态刷新不再驱动它
-        runCenterVisible = false
 
         val taskKey = "${task.module}::${task.className}"
         val schema = schemas[taskKey]
@@ -2622,8 +2993,6 @@ class TaskLauncherPanel(private val project: Project) {
             return TaskCardStatus(cell.text, cell.tone, cell.badge, cell.launchEnabled)
         }
 
-        override fun hasParamOverrides(taskKey: String): Boolean = snapshotDiffersFromFactory(taskKey)
-
         override fun isCollapsed(foldKey: String): Boolean = uiCollapseState[foldKey] == true
 
         override fun onCollapseChanged(foldKey: String, collapsed: Boolean) {
@@ -2643,11 +3012,6 @@ class TaskLauncherPanel(private val project: Project) {
             loadTaskParams(task)
         }
 
-        override fun onOpenParams(task: TaskLauncherService.TaskInfo) {
-            hoverSuppressUntil = System.currentTimeMillis() + 1200
-            loadTaskParams(task)
-        }
-
         override fun onToggleTrigger(task: TaskLauncherService.TaskInfo, enabled: Boolean) {
             hoverSuppressUntil = System.currentTimeMillis() + 1200
             setTriggerEnabled(task, enabled)
@@ -2657,10 +3021,6 @@ class TaskLauncherPanel(private val project: Project) {
             hoverSuppressUntil = System.currentTimeMillis() + 1200
             enqueueTask(task)
         }
-
-        override fun onSyncDefault(task: TaskLauncherService.TaskInfo) = syncTaskDefault(task)
-
-        override fun onResetDefault(task: TaskLauncherService.TaskInfo) = resetTaskDefault(task)
 
         override fun onTaskHover(task: TaskLauncherService.TaskInfo, anchor: JComponent) {
             scheduleTaskHover(task, anchor)
@@ -2793,6 +3153,8 @@ class TaskLauncherPanel(private val project: Project) {
         saveTimer.stop()
         flushPendingSave().join()
         triggerSaveTail.join()
+        globalSaveTimer.stop()
+        flushPendingGlobalSave()
         toolboxService.removeStateListener(toolboxStateListener)
         toolboxService.removeStatusListener(toolboxStatusListener)
         taskRunner.removeStateListener(runnerStateListener)

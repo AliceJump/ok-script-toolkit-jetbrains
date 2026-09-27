@@ -18,6 +18,7 @@ import javax.swing.JComponent
 import javax.swing.JList
 import javax.swing.JOptionPane
 import javax.swing.JPanel
+import javax.swing.JScrollPane
 import javax.swing.JSpinner
 import javax.swing.JTextArea
 import javax.swing.JTextField
@@ -199,6 +200,7 @@ internal object GlobalConfigEditor {
         field: TaskLauncherService.TaskParamField,
         value: Any?,
         project: Project? = null,
+        onChanged: (() -> Unit)? = null,
     ): FieldControl {
         val typeName = field.type?.get("type")?.toString().orEmpty()
         val options = field.type?.get("options") as? List<*>
@@ -240,7 +242,7 @@ internal object GlobalConfigEditor {
                 add(groupCombo, BorderLayout.WEST)
                 add(leafCombo, BorderLayout.CENTER)
             }
-            return FieldControl(field, panel, { leafCombo.selectedItem })
+            return FieldControl(field, panel, { leafCombo.selectedItem }).withChangeHook(onChanged)
         }
         if (!options.isNullOrEmpty() && (typeName == "drop_down" || (typeName.isEmpty() && value !is List<*>))) {
             val combo = JComboBox<Any?>()
@@ -253,11 +255,11 @@ internal object GlobalConfigEditor {
                 val index = options.indexOfFirst { it == option || it?.toString() == option?.toString() }
                 labels.getOrNull(index)?.toString() ?: option?.toString().orEmpty()
             }
-            return FieldControl(field, combo, { combo.selectedItem })
+            return FieldControl(field, combo, { combo.selectedItem }).withChangeHook(onChanged)
         }
         if (typeName == "bool" || value is Boolean) {
             val check = JCheckBox().apply { isSelected = value == true }
-            return FieldControl(field, check, { check.isSelected }, check)
+            return FieldControl(field, check, { check.isSelected }, check).withChangeHook(onChanged)
         }
         if (typeName == "multi_selection" || (value is List<*> && !options.isNullOrEmpty())) {
             val values = options.orEmpty()
@@ -272,19 +274,19 @@ internal object GlobalConfigEditor {
                 selected.any { it == values[index] || it?.toString() == values[index]?.toString() }
             }.toIntArray()
             val scroll = JBScrollPane(list).apply { preferredSize = Dimension(240, 112) }
-            return FieldControl(field, scroll, { list.selectedValuesList.toList() })
+            return FieldControl(field, scroll, { list.selectedValuesList.toList() }).withChangeHook(onChanged)
         }
         if (value is Int) {
             val spinner = JSpinner(SpinnerNumberModel(value, Int.MIN_VALUE, Int.MAX_VALUE, 1))
-            return FieldControl(field, spinner, { committedSpinnerValue(spinner).toInt() })
+            return FieldControl(field, spinner, { committedSpinnerValue(spinner).toInt() }).withChangeHook(onChanged)
         }
         if (value is Long) {
             val spinner = JSpinner(SpinnerNumberModel(value, Long.MIN_VALUE, Long.MAX_VALUE, 1L))
-            return FieldControl(field, spinner, { committedSpinnerValue(spinner).toLong() })
+            return FieldControl(field, spinner, { committedSpinnerValue(spinner).toLong() }).withChangeHook(onChanged)
         }
         if (value is Number) {
             val spinner = JSpinner(SpinnerNumberModel(value.toDouble(), -Double.MAX_VALUE, Double.MAX_VALUE, 0.1))
-            return FieldControl(field, spinner, { committedSpinnerValue(spinner).toDouble() })
+            return FieldControl(field, spinner, { committedSpinnerValue(spinner).toDouble() }).withChangeHook(onChanged)
         }
         if (value is List<*> || value is Map<*, *> || typeName == "cond_sequence_editor") {
             if (value is List<*> && value.none { it is Map<*, *> } && typeName != "cond_sequence_editor") {
@@ -293,7 +295,8 @@ internal object GlobalConfigEditor {
                     dialogTitle = field.displayKey ?: field.key,
                     typeMeta = field.type,
                     initialValue = value.toList(),
-                    onChanged = {},
+                    // 列表编辑器自带 onChanged（签名是 (List<Any?>) -> Unit），在创建点直接接
+                    onChanged = { onChanged?.invoke() },
                 )
                 return FieldControl(field, editor, { editor.value })
             }
@@ -308,7 +311,7 @@ internal object GlobalConfigEditor {
                 if ((value is List<*> || typeName == "cond_sequence_editor") && !parsed.isArray) throw IllegalArgumentException()
                 if (value is Map<*, *> && !parsed.isObject) throw IllegalArgumentException()
                 mapper.convertValue(parsed, Any::class.java)
-            })
+            }).withChangeHook(onChanged)
         }
         val text = value?.toString().orEmpty()
         val input = if (typeName == "text_edit" || text.contains('\n') || text.length > 80) {
@@ -319,7 +322,37 @@ internal object GlobalConfigEditor {
         val component = if (input is JTextArea) {
             JBScrollPane(input).apply { preferredSize = Dimension(240, 96) }
         } else input
-        return FieldControl(field, component, { input.text })
+        return FieldControl(field, component, { input.text }).withChangeHook(onChanged)
+    }
+
+    /**
+     * 给控件挂「值变了」回调（配置页内联卡片「改动即存」用；对话框路径传 null 不挂）。
+     * 按组件类型套对应的监听器；容器（JPanel/JScrollPane）递归下钻 ——
+     * 级联下拉、多选列表等都包在容器里。[ListEditorComponent] 自带 onChanged
+     * 构造参数，在创建点直接接，不走这里。
+     */
+    private fun FieldControl.withChangeHook(onChanged: (() -> Unit)?): FieldControl {
+        if (onChanged == null) return this
+        fun wire(component: JComponent) {
+            when (component) {
+                is JCheckBox -> component.addActionListener { onChanged() }
+                is JComboBox<*> -> component.addActionListener { onChanged() }
+                is JSpinner -> component.addChangeListener { onChanged() }
+                is JList<*> -> component.addListSelectionListener { onChanged() }
+                is JTextArea -> component.document.addDocumentListener(changeHookDocumentListener(onChanged))
+                is JTextField -> component.document.addDocumentListener(changeHookDocumentListener(onChanged))
+                is JScrollPane -> (component.viewport?.view as? JComponent)?.let { wire(it) }
+                is JPanel -> component.components.filterIsInstance<JComponent>().forEach { wire(it) }
+            }
+        }
+        wire(component)
+        return this
+    }
+
+    private fun changeHookDocumentListener(onChanged: () -> Unit) = object : javax.swing.event.DocumentListener {
+        override fun insertUpdate(e: javax.swing.event.DocumentEvent?) = onChanged()
+        override fun removeUpdate(e: javax.swing.event.DocumentEvent?) = onChanged()
+        override fun changedUpdate(e: javax.swing.event.DocumentEvent?) = onChanged()
     }
 
     private fun labeledRenderer(label: (Any?) -> String) = object : DefaultListCellRenderer() {

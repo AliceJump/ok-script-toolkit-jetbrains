@@ -48,16 +48,12 @@ internal interface TaskCardHost {
     fun kindOf(task: TaskInfo): String
     fun isTriggerEnabled(taskKey: String): Boolean
     fun cardStatusOf(task: TaskInfo): TaskCardStatus
-    fun hasParamOverrides(taskKey: String): Boolean
     fun isCollapsed(foldKey: String): Boolean
     fun onCollapseChanged(foldKey: String, collapsed: Boolean)
-    /** 卡片主体点击（表格时代的「选中 → 右栏加载参数」的等价物） */
+    /** 卡片点击 = 选中该任务（右栏显示详情与参数 —— 卡片即入口，没有独立的「参数」按钮） */
     fun onTaskActivated(task: TaskInfo)
-    fun onOpenParams(task: TaskInfo)
     fun onToggleTrigger(task: TaskInfo, enabled: Boolean)
     fun onRunTask(task: TaskInfo)
-    fun onSyncDefault(task: TaskInfo)
-    fun onResetDefault(task: TaskInfo)
     /** 悬停 800ms 后弹只读摘要（宿主持有弹层单例与抑制窗口） */
     fun onTaskHover(task: TaskInfo, anchor: JComponent)
     fun onTaskHoverEnd()
@@ -66,14 +62,13 @@ internal interface TaskCardHost {
 /**
  * 任务卡列表 —— VS Code 任务页编排的 Swing 等价物。
  *
- * 之前这里是「操作 / 任务 / 状态」三列的平铺 JTable：probe 什么顺序就什么顺序
- * （一次性任务整段压在触发任务后面），无分组、无搜索、无折叠。现在对齐
- * VS Code 侧 media/console/taskCard.js 的编排（规则见 [TaskListGrouping]）：
+ * 对齐 VS Code 侧 media/console/taskCard.js 的编排（规则见 [TaskListGrouping]）：
  *
  * - 顶层「触发任务」「一次性任务」两个可折叠组头（带计数，状态落 tasks.json 的 uiState）；
  * - 一次性任务按 schema.groupName 二级分组（组头 = 组名 + 计数，缺省归「未分组」）；
- * - 每个任务是一张卡：状态点 + 名称 + 类型 chip + 状态徽标 + 类名·模块 + 描述，
- *   右侧动作 = ⚙参数 / ⇄同步 default / ⟲恢复默认 /（触发）启用勾选 /（一次性）▶启动；
+ * - 每个任务是一张**精简**卡：状态点 + 名称 + 类名·模块 + 类型 chip + 状态徽标，
+ *   以及类型动作（触发 = 启用勾选 / 一次性 = ▶启动）。参数与快照操作不在卡上 ——
+ *   点击卡片即选中，右栏显示详情与参数（信息架构重设计：卡片即入口）；
  * - 搜索框过滤（命中显示名/类名/模块/描述/分组名），搜索激活时无视折叠；
  * - 收起的组不建卡片 DOM（对齐 webview 的伸缩性处理）；
  * - 执行器状态推送走 [refreshStatuses] 原地更新，不整列重建。
@@ -93,6 +88,9 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
 
     /** 任务 key → 卡片；refreshStatuses 据此原地更新，不重建列表 */
     private val cardsByKey = LinkedHashMap<String, TaskCard>()
+
+    /** 当前选中（右栏详情对应）的任务 key */
+    private var selectedKey: String? = null
 
     /** 程序化改写勾选框时抑制回调（表格时代 updatingTableModel 的等价物） */
     private var programmaticToggle = false
@@ -118,6 +116,20 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
             card.refresh(host.cardStatusOf(card.task))
         }
     }
+
+    /**
+     * 选中并定位任务（运行器页「队列与轮询」行点击跳回任务列表用）：
+     * 高亮卡片并滚动到可见；任务不在当前过滤结果里时只清空高亮。
+     */
+    fun selectTask(taskKey: String) {
+        selectedKey = taskKey
+        for ((key, card) in cardsByKey) {
+            card.setSelected(key == taskKey)
+        }
+        cardsByKey[taskKey]?.scrollRectToVisible(cardRectOf(cardsByKey.getValue(taskKey)))
+    }
+
+    private fun cardRectOf(card: TaskCard) = java.awt.Rectangle(0, card.y, width, card.height)
 
     private fun rebuild() {
         removeAll()
@@ -261,11 +273,11 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
     // ── 任务卡 ────────────────────────────────────────────────────────
 
     /**
-     * 一张任务卡（article.task-card 的 Swing 等价物）。
+     * 一张精简任务卡（article.task-card 的 Swing 等价物，IA 重设计后瘦身）。
      *
-     * 布局：左身份区（状态点 + 名称 + 类型 chip + 状态徽标，下一行类名·模块与描述），
-     * 右动作区（⚙参数 / ⇄⟲ 快照 / 启用勾选或 ▶启动）。卡片主体可点 —— 点一下
-     * 右栏加载该任务参数（表格时代「选中行 → 参数」的等价交互）。
+     * 状态点 + 名称 + 类型 chip + 状态徽标 + 类名·模块；类型动作（启用勾选 / ▶启动）
+     * 是唯一常驻控件。参数表单与 ⇄/⟲ 快照操作全部移到右栏详情页 ——
+     * 点击卡片主体 = 选中（高亮描边）+ 右栏加载详情。
      */
     private inner class TaskCard(val task: TaskInfo) : JPanel(BorderLayout(8, 0)) {
 
@@ -280,13 +292,10 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
         }
         private val kindChip = JBLabel()
         private val statusBadge = JBLabel().apply { isVisible = false }
+        private val classLine: JBLabel = JBLabel("${task.className} · ${task.module}").apply {
+            foreground = UIUtil.getContextHelpForeground()
+        }
 
-        private val paramsButton = JButton(
-            OkScriptToolkitBundle.message("taskLauncher.parameters"),
-            AllIcons.General.Settings,
-        )
-        private val syncButton = JButton("⇄")
-        private val resetButton = JButton("⟲")
         private val triggerCheckbox = if (isTrigger) JCheckBox(OkScriptToolkitBundle.message("taskLauncher.enableTrigger")) else null
         private val runButton = if (!isTrigger) {
             JButton(OkScriptToolkitBundle.message("taskLauncher.run"), AllIcons.RunConfigurations.TestState.Run)
@@ -296,15 +305,8 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
 
         init {
             isOpaque = false
-            border = BorderFactory.createCompoundBorder(
-                BorderFactory.createEmptyBorder(3, 3, 3, 3),
-                BorderFactory.createCompoundBorder(
-                    BorderFactory.createLineBorder(JBColor.border(), 1, true),
-                    BorderFactory.createEmptyBorder(6, 8, 6, 8),
-                ),
-            )
+            border = cardBorder(selected = false)
 
-            val schema = host.schemaOf(task)
             TaskLauncherTheme.styleChip(
                 kindChip,
                 if (isTrigger) TaskLauncherTheme.TRIGGER else TaskLauncherTheme.ONETIME,
@@ -319,43 +321,10 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
             titleRow.add(nameLabel)
             titleRow.add(kindChip)
             titleRow.add(statusBadge)
-
-            val identity = JPanel()
-            identity.layout = javax.swing.BoxLayout(identity, javax.swing.BoxLayout.Y_AXIS)
-            identity.isOpaque = false
-            identity.add(titleRow)
-            val classLine = mutedLabel("${task.className} · ${task.module}")
-            classLine.alignmentX = java.awt.Component.LEFT_ALIGNMENT
-            identity.add(classLine)
-            schema?.description?.takeIf { it.isNotBlank() }?.let { description ->
-                val line = mutedLabel(description)
-                line.alignmentX = java.awt.Component.LEFT_ALIGNMENT
-                line.toolTipText = description
-                identity.add(line)
-            }
+            titleRow.add(classLine)
 
             val actions = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
             actions.isOpaque = false
-            paramsButton.isFocusable = false
-            paramsButton.addActionListener {
-                host.onOpenParams(task)
-            }
-            actions.add(paramsButton)
-
-            // ⇄ / ⟲ 只在 schema 就绪时出现（对齐 webview buildSnapshotButtons 的守卫）
-            if (schema != null && !schema.broken && schema.fields.isNotEmpty()) {
-                syncButton.isFocusable = false
-                syncButton.margin = Insets(0, 2, 0, 2)
-                syncButton.toolTipText = OkScriptToolkitBundle.message("taskLauncher.syncDefaultBtn")
-                syncButton.addActionListener { host.onSyncDefault(task) }
-                resetButton.isFocusable = false
-                resetButton.margin = Insets(0, 2, 0, 2)
-                resetButton.toolTipText = OkScriptToolkitBundle.message("taskLauncher.resetDefaultBtn")
-                resetButton.addActionListener { host.onResetDefault(task) }
-                actions.add(syncButton)
-                actions.add(resetButton)
-            }
-
             triggerCheckbox?.let { checkbox ->
                 checkbox.isFocusable = false
                 checkbox.addActionListener {
@@ -370,22 +339,26 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
                 actions.add(button)
             }
 
-            add(identity, BorderLayout.CENTER)
+            add(titleRow, BorderLayout.CENTER)
             add(actions, BorderLayout.EAST)
 
             // 悬停高亮 + 悬停弹层 + 主体点击（按钮 / 勾选框消费自己的事件，不会重复触发）
             addMouseListener(object : MouseAdapter() {
                 override fun mouseEntered(e: MouseEvent) {
-                    background = TaskLauncherTheme.rowBackground()
-                    isOpaque = true
-                    repaint()
+                    if (cardKey != selectedKey) {
+                        background = TaskLauncherTheme.rowBackground()
+                        isOpaque = true
+                        repaint()
+                    }
                     host.onTaskHover(task, this@TaskCard)
                 }
 
                 override fun mouseExited(e: MouseEvent) {
-                    background = null
-                    isOpaque = false
-                    repaint()
+                    if (cardKey != selectedKey) {
+                        background = null
+                        isOpaque = false
+                        repaint()
+                    }
                     host.onTaskHoverEnd()
                 }
 
@@ -395,6 +368,32 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
             })
 
             refresh(host.cardStatusOf(task))
+        }
+
+        private fun cardBorder(selected: Boolean): javax.swing.border.Border =
+            BorderFactory.createCompoundBorder(
+                BorderFactory.createEmptyBorder(3, 3, 3, 3),
+                BorderFactory.createCompoundBorder(
+                    BorderFactory.createLineBorder(
+                        if (selected) TaskLauncherTheme.SELECTION else JBColor.border(),
+                        1,
+                        true,
+                    ),
+                    BorderFactory.createEmptyBorder(6, 8, 6, 8),
+                ),
+            )
+
+        /** 选中态：描边用聚焦色 + 常亮底色（运行器页跳转定位也走这里） */
+        fun setSelected(selected: Boolean) {
+            border = cardBorder(selected)
+            if (selected) {
+                background = TaskLauncherTheme.rowHoverBackground()
+                isOpaque = true
+            } else {
+                background = null
+                isOpaque = false
+            }
+            repaint()
         }
 
         private fun displayName(): String =
@@ -416,14 +415,6 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
                 runButton?.isEnabled = status.launchEnabled
             } finally {
                 programmaticToggle = false
-            }
-            // 参数覆盖徽标：快照值 ≠ 出厂值（或存在孤儿键）时高亮 ⚙ 参数（对齐 has-overrides）
-            val overrides = host.hasParamOverrides(cardKey)
-            paramsButton.foreground = if (overrides) TaskLauncherTheme.WARN else UIUtil.getLabelForeground()
-            paramsButton.toolTipText = if (overrides) {
-                OkScriptToolkitBundle.message("taskLauncher.hasOverrides")
-            } else {
-                OkScriptToolkitBundle.message("taskLauncher.parameters")
             }
         }
 
