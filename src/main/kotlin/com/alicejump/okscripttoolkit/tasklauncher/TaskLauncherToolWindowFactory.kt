@@ -156,6 +156,10 @@ class TaskLauncherPanel(private val project: Project) {
     private val resumeAction = ToolbarAction(AllIcons.Actions.Play_forward, OkScriptToolkitBundle.message("taskLauncher.resume")) { sendControlCommand("resume") }
     private lateinit var actionToolbar: com.intellij.openapi.actionSystem.ActionToolbar
     private val statusLabel = JBLabel()
+    private val schemaWarningLabel = JBLabel().apply {
+        foreground = TaskLauncherTheme.WARN
+        isVisible = false
+    }
     private val progressBar = JProgressBar()
 
     // ── 健康度条（#9 rc-health 的 Swing 等价物）──────────────────────
@@ -424,6 +428,7 @@ class TaskLauncherPanel(private val project: Project) {
         healthRow.isOpaque = false
         healthRow.add(healthDot)
         healthRow.add(statusLabel)
+        healthRow.add(schemaWarningLabel)
         healthRow.add(currentTaskChip)
         currentTaskChip.isVisible = false
 
@@ -1207,6 +1212,8 @@ class TaskLauncherPanel(private val project: Project) {
             return
         }
         statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.loading")
+        schemaWarningLabel.isVisible = false
+        schemaWarningLabel.toolTipText = null
         progressBar.isIndeterminate = true
         progressBar.isVisible = true
 
@@ -1248,16 +1255,27 @@ class TaskLauncherPanel(private val project: Project) {
                 val withConfigModule = probeResult.copy(
                     configModule = probeResult.configModule ?: parseResult.configModule.takeIf { parseResult.ok },
                 )
-                taskService.saveSchemaCache(projectDir, locale, withConfigModule)
-                withConfigModule
+                runCatching { taskService.saveSchemaCache(projectDir, locale, withConfigModule) }
+                    .onFailure { LOG.warn("Task schemas loaded but cache could not be saved", it) }
+                TaskLoadOutcome(withConfigModule)
             } else {
-                // 采集失败：保持 ① 的结果 —— 至少任务列表可用（只是没有参数表单）
-                immediate
+                // 采集失败：保留缓存或 AST 列表，同时明确告知用户参数与全局配置可能缺失。
+                // 原先直接返回 immediate，最终状态仍显示「已加载」，把退化伪装成成功。
+                val reason = probeResult.error ?: OkScriptToolkitBundle.message("taskLauncher.schemaScanUnknownError")
+                LOG.warn("Task schema scan failed for $projectDir: $reason")
+                TaskLoadOutcome(immediate, reason, cached.ok && cached.schemas != null)
             }
-        }.thenAccept { result ->
+        }.thenAccept { outcome ->
             SwingUtilities.invokeLater {
                 if (disposed || generation != loadGeneration || projectDir != detectProjectPath()) return@invokeLater
-                applyProbeResult(result, finished = true, sourceProjectDir = projectDir)
+                applyProbeResult(outcome.result, finished = true, sourceProjectDir = projectDir)
+                if (outcome.probeError != null) {
+                    schemaWarningLabel.text = OkScriptToolkitBundle.message(
+                        if (outcome.usedCache) "taskLauncher.schemaScanCached" else "taskLauncher.schemaScanNamesOnly",
+                    )
+                    schemaWarningLabel.toolTipText = outcome.probeError
+                    schemaWarningLabel.isVisible = true
+                }
             }
         }.exceptionally { throwable ->
             SwingUtilities.invokeLater {
@@ -2619,6 +2637,12 @@ class TaskLauncherPanel(private val project: Project) {
         val json = objectMapper.writeValueAsString(allParamOverrides(root))
         taskRunner.pushParams(json, root)
     }
+
+    private data class TaskLoadOutcome(
+        val result: TaskLauncherService.SchemaProbeResult,
+        val probeError: String? = null,
+        val usedCache: Boolean = false,
+    )
 
     /** 历史配置里的 extraArgs / env 在单进程模型下无法按任务生效，启动时提示一次 */
     private fun warnLegacyPerTaskSettings(root: String) {
