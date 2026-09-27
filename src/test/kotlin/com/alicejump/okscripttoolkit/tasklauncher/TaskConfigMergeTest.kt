@@ -147,6 +147,15 @@ class TaskConfigMergeTest {
         assertEquals(mapOf("MODE" to "latest"), saved.projects["/proj"]?.tasks?.get("m::A")?.env)
     }
 
+    @Test
+    fun `pending edits survive a second field change and newer value wins`() {
+        val combined = TaskConfigMerge.combineEdits(
+            config("first" to "draft", "shared" to 1),
+            config("second" to true, "shared" to 2),
+        )
+        assertEquals(mapOf("first" to "draft", "second" to true, "shared" to 2), combined.params)
+    }
+
     private fun storeWith(
         projectEntries: Map<String, TaskConfigStore.ProjectConfig> = emptyMap(),
     ): TaskConfigStore = TaskConfigStore(projects = projectEntries)

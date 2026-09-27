@@ -38,6 +38,13 @@ import com.alicejump.okscripttoolkit.tasklauncher.TaskLauncherService.TaskConfig
  */
 internal object TaskConfigMerge {
 
+    /** Combine edits made before a debounce fires or while an earlier save is being retried. */
+    fun combineEdits(older: TaskConfig, newer: TaskConfig): TaskConfig {
+        val params = LinkedHashMap<String, Any>(older.params.orEmpty())
+        params.putAll(newer.params.orEmpty())
+        return newer.copy(params = params.ifEmpty { null })
+    }
+
     /**
      * 在最新 store 上物化探针字段。首建/重探针的取值也必须在写入锁内判定。
      */

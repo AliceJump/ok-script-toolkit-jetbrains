@@ -217,6 +217,8 @@ class TaskLauncherPanel(private val project: Project) {
     private var schemas = mapOf<String, TaskLauncherService.TaskSchema>()
     private val saveTimer = javax.swing.Timer(400, null)
     private var pendingSave: PendingTaskSave? = null
+    /** Failed writes stay available for retry; their unsaved values must not vanish on refresh. */
+    private val failedTaskSaves = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, PendingTaskSave>()
     /** 防抖写盘仍要保持用户操作顺序；commonPool 的独立任务可能倒序完成。 */
     private var taskSaveTail: CompletableFuture<Boolean> = CompletableFuture.completedFuture(true)
     private var triggerSaveTail: CompletableFuture<Boolean> = CompletableFuture.completedFuture(true)
@@ -467,8 +469,9 @@ class TaskLauncherPanel(private val project: Project) {
     /** 从运行器页跳回任务页：选中卡片并加载右侧详情与参数 */
     private fun locateTask(taskKey: String) {
         tabbedPane.selectedIndex = TAB_TASKS
-        taskCardList.selectTask(taskKey)
-        tasks.firstOrNull { taskKeyOf(it) == taskKey }?.let { loadTaskParams(it) }
+        tasks.firstOrNull { taskKeyOf(it) == taskKey }?.let {
+            if (loadTaskParams(it)) taskCardList.selectTask(taskKey)
+        }
     }
 
     /** 任务 key（module::Class）→ 显示名；未知任务退回 key 本身 */
@@ -1739,12 +1742,17 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     private fun loadTasks() {
+        // 先作废旧探针；即使这次因保存失败无法刷新，旧探针也不能重建正在编辑的表单。
+        val generation = ++loadGeneration
         // 切项目/刷新前先提交旧面板的防抖编辑，避免后续编辑覆盖唯一的 pendingSave。
         saveTimer.stop()
-        flushPendingSave().join()
+        if (!flushPendingSave().join()) {
+            statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.saveFailed", lastTaskSaveError)
+            progressBar.isIndeterminate = false
+            progressBar.isVisible = false
+            return
+        }
         triggerSaveTail.join()
-        // 即使新路径无效，也要先作废仍在后台运行的旧探针。
-        val generation = ++loadGeneration
         val projectDir = checkedProjectPath(statusLabel, "taskLauncher.noProject") ?: run {
             val failure = statusLabel.text
             clearDisplayedProject()
@@ -1922,6 +1930,13 @@ class TaskLauncherPanel(private val project: Project) {
         finished: Boolean,
         sourceProjectDir: String,
     ) {
+        saveTimer.stop()
+        if (!flushPendingSave().join()) {
+            progressBar.isIndeterminate = false
+            progressBar.isVisible = false
+            statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.saveFailed", lastTaskSaveError)
+            return
+        }
         if (finished) {
             progressBar.isIndeterminate = false
             progressBar.isVisible = false
@@ -2068,10 +2083,13 @@ class TaskLauncherPanel(private val project: Project) {
         taskRunner.pushGlobalParams(objectMapper.writeValueAsString(snapshots), root)
     }
 
-    private fun loadTaskParams(task: TaskLauncherService.TaskInfo) {
+    private fun loadTaskParams(task: TaskLauncherService.TaskInfo): Boolean {
         // 切换任务前保存上一张表单；单个 pendingSave 不能被下一张表单覆盖。
         saveTimer.stop()
-        flushPendingSave().join()
+        if (!flushPendingSave().join()) {
+            statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.saveFailed", lastTaskSaveError)
+            return false
+        }
         paramPanel.removeAll()
         paramFields.clear()
         visibilityRefresher = null
@@ -2123,6 +2141,7 @@ class TaskLauncherPanel(private val project: Project) {
 
         paramPanel.revalidate()
         paramPanel.repaint()
+        return true
     }
 
     /** schema 缓存与最新任务列表合并：新增任务补空 schema，消失任务剔除 */
@@ -2950,9 +2969,9 @@ class TaskLauncherPanel(private val project: Project) {
         val config = buildTaskConfig(task, root)
         if (config.params.isNullOrEmpty()) return
         val previous = pendingSave?.takeIf { it.root == root && it.taskKey == taskKey }
-        val changes = LinkedHashMap<String, Any>(previous?.config?.params.orEmpty())
-        changes.putAll(config.params.orEmpty())
-        pendingSave = PendingTaskSave(root, taskKey, config.copy(params = changes.ifEmpty { null }))
+        pendingSave = PendingTaskSave(
+            root, taskKey, if (previous == null) config else TaskConfigMerge.combineEdits(previous.config, config),
+        )
         saveTimer.restart()
     }
 
@@ -2963,28 +2982,44 @@ class TaskLauncherPanel(private val project: Project) {
     )
 
     private fun flushPendingSave(): CompletableFuture<Boolean> {
-        val (root, taskKey, config) = pendingSave ?: return taskSaveTail
+        val saves = linkedMapOf<Pair<String, String>, PendingTaskSave>()
+        for (failed in failedTaskSaves.values.toList()) {
+            val key = failed.root to failed.taskKey
+            if (failedTaskSaves.remove(key, failed)) saves[key] = failed
+        }
+        pendingSave?.let { pending ->
+            val key = pending.root to pending.taskKey
+            val previous = saves[key]
+            saves[key] = if (previous == null) pending else pending.copy(
+                config = TaskConfigMerge.combineEdits(previous.config, pending.config),
+            )
+        }
         pendingSave = null
+        if (saves.isEmpty()) return taskSaveTail
         taskSaveTail = taskSaveTail.thenApplyAsync { _ ->
-            try {
-                taskService.saveTaskConfig(taskKey, config, root)
-                // 执行器是常驻进程：参数覆盖必须即时推送，否则要重启执行器才生效
-                pushParamOverrides(root)
-                lastTaskSaveError = ""
-                true
-            } catch (e: Exception) {
-                LOG.warn("Failed to save task config for $taskKey", e)
-                lastTaskSaveError = e.message.orEmpty()
-                // 静默丢保存 = 参数编辑无声丢失（对齐 VS Code：showErrorMessage + webview 状态条）
-                com.intellij.notification.NotificationGroupManager.getInstance()
-                    .getNotificationGroup("okScriptToolkit")
-                    .createNotification(
-                        OkScriptToolkitBundle.message("taskLauncher.saveFailed", e.message ?: "unknown"),
-                        com.intellij.notification.NotificationType.ERROR,
-                    )
-                    .notify(project)
-                false
+            var allSaved = true
+            for ((key, save) in saves) {
+                try {
+                    taskService.saveTaskConfig(save.taskKey, save.config, save.root)
+                    failedTaskSaves.remove(key)
+                    // 执行器是常驻进程：参数覆盖必须即时推送，否则要重启执行器才生效
+                    pushParamOverrides(save.root)
+                } catch (e: Exception) {
+                    failedTaskSaves[key] = save
+                    allSaved = false
+                    LOG.warn("Failed to save task config for ${save.taskKey}", e)
+                    lastTaskSaveError = e.message.orEmpty()
+                    com.intellij.notification.NotificationGroupManager.getInstance()
+                        .getNotificationGroup("okScriptToolkit")
+                        .createNotification(
+                            OkScriptToolkitBundle.message("taskLauncher.saveFailed", e.message ?: "unknown"),
+                            com.intellij.notification.NotificationType.ERROR,
+                        )
+                        .notify(project)
+                }
             }
+            if (allSaved) lastTaskSaveError = ""
+            allSaved
         }
         return taskSaveTail
     }
@@ -3368,8 +3403,7 @@ class TaskLauncherPanel(private val project: Project) {
         override fun onTaskActivated(task: TaskLauncherService.TaskInfo) {
             hoverSuppressUntil = System.currentTimeMillis() + 1200
             cancelTaskHover()
-            taskCardList.selectTask(taskKeyOf(task))
-            loadTaskParams(task)
+            if (loadTaskParams(task)) taskCardList.selectTask(taskKeyOf(task))
         }
 
         override fun onToggleTrigger(task: TaskLauncherService.TaskInfo, enabled: Boolean) {
