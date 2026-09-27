@@ -7,6 +7,9 @@ import java.lang.reflect.Proxy
 import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class TaskConfigPersistenceTest {
@@ -37,5 +40,40 @@ class TaskConfigPersistenceTest {
         assertEquals("m::T", saved.path("enabledTriggers").first().asText())
         assertTrue(saved.path("uiState").path("taskGroupCollapsed::trigger").asBoolean())
         assertTrue(Files.list(file.parent).use { files -> files.noneMatch { it.fileName.toString().endsWith(".tmp") } })
+    }
+
+    @Test
+    fun `unreadable task config is never replaced by a later save`() {
+        val workspace = TestTmp.create("invalid-task-config")
+        val project = Proxy.newProxyInstance(
+            Project::class.java.classLoader,
+            arrayOf(Project::class.java),
+        ) { _, method, _ -> if (method.name == "getBasePath") workspace.absolutePath else null } as Project
+        val service = TaskLauncherService(project)
+        val file = workspace.toPath().resolve(".idea/ok-script-toolkit-tasks.json")
+
+        service.saveTaskConfig("m::A", TaskLauncherService.TaskConfig(params = mapOf("count" to 4)), workspace.absolutePath)
+        val invalidJson = "{\"projects\":"
+        Files.writeString(file, invalidJson)
+
+        assertEquals(4, service.getTaskConfig("m::A", workspace.absolutePath).params?.get("count"))
+        assertNotNull(service.taskConfigReadError())
+        assertFailsWith<Exception> {
+            service.saveUiStateValue("taskGroupCollapsed::trigger", true, workspace.absolutePath)
+        }
+        assertEquals(invalidJson, Files.readString(file))
+
+        val wrongShape = "{\"tasks\":{}}"
+        Files.writeString(file, wrongShape)
+        assertNotNull(service.taskConfigReadError())
+        assertFailsWith<Exception> {
+            service.saveUiStateValue("taskGroupCollapsed::trigger", true, workspace.absolutePath)
+        }
+        assertEquals(wrongShape, Files.readString(file))
+
+        Files.writeString(file, "{\"projects\":{}}")
+        assertNull(service.taskConfigReadError())
+        service.saveUiStateValue("taskGroupCollapsed::trigger", true, workspace.absolutePath)
+        assertTrue(Files.readString(file).contains("taskGroupCollapsed::trigger"))
     }
 }

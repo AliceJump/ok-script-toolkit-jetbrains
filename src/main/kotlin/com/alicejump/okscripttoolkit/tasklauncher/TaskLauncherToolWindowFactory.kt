@@ -2022,6 +2022,12 @@ class TaskLauncherPanel(private val project: Project) {
 
             statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.loaded", tasks.size)
 
+            // JSON 损坏时保留上次可用快照供查看，但不能物化并写回，否则会覆盖原文件。
+            taskService.taskConfigReadError()?.let { error ->
+                statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.configReadFailed", error)
+                return
+            }
+
             // #7 配置接管：物化全局配置组 + 每个任务的参数快照（新增键 > 0 时覆盖状态提示）。
             // 缓存首屏（finished=false）只物化不提示 —— 对齐 VS Code：状态条消息只在探针完成后出。
             val materialized = materializeTaskSnapshots(result.schemas, sourceProjectDir) +
@@ -3150,6 +3156,10 @@ class TaskLauncherPanel(private val project: Project) {
         }
         if (!awaitTriggerSaves()) {
             statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.saveFailed", lastTriggerSaveError)
+            return false
+        }
+        taskService.taskConfigReadError()?.let { error ->
+            statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.configReadFailed", error)
             return false
         }
         if (taskRunner.isActive()) {

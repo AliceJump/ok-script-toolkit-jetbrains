@@ -464,6 +464,7 @@ class TaskLauncherService(private val project: Project) {
     private var configStoreCache: TaskConfigStore? = null
     private data class ConfigFileStamp(val modified: FileTime, val size: Long)
     private var configStoreStamp: ConfigFileStamp? = null
+    private var configStoreReadError: Exception? = null
 
     private fun configFileStamp(path: Path): ConfigFileStamp? {
         if (!Files.exists(path)) return null
@@ -485,6 +486,11 @@ class TaskLauncherService(private val project: Project) {
 
     fun loadTaskConfigs(): TaskConfigStore = synchronized(storeLock) { loadTaskConfigsLocked() }
 
+    fun taskConfigReadError(): String? = synchronized(storeLock) {
+        loadTaskConfigsLocked()
+        configStoreReadError?.message ?: configStoreReadError?.javaClass?.simpleName
+    }
+
     private fun loadTaskConfigsLocked(): TaskConfigStore {
         val configFile = Paths.get(getWorkspaceRoot(), TASKS_CONFIG_FILE).toFile()
         val stamp = configFileStamp(configFile.toPath())
@@ -496,15 +502,23 @@ class TaskLauncherService(private val project: Project) {
                 parseTaskConfigStore(objectMapper.readTree(configFile))
             } catch (e: Exception) {
                 LOG.warn("Failed to load task configs", e)
-                TaskConfigStore()
+                // 不能把损坏文件当空配置：物化快照或下一次保存会覆盖用户原文件。
+                // 读路径保留上次有效值供界面显示，写路径在文件修复前明确失败。
+                configStoreReadError = e
+                configStoreStamp = stamp
+                return configStoreCache ?: TaskConfigStore().also { configStoreCache = it }
             }
         }
         configStoreCache = store
         configStoreStamp = stamp
+        configStoreReadError = null
         return store
     }
 
     private fun parseTaskConfigStore(node: JsonNode): TaskConfigStore {
+        require(node.isObject && node.get("projects")?.isObject == true) {
+            "Expected an object property named 'projects' in task configuration"
+        }
         val projects = linkedMapOf<String, TaskConfigStore.ProjectConfig>()
         node.get("projects")?.forEachField { projectDir, projectNode ->
             val tasks = linkedMapOf<String, TaskConfig>()
@@ -543,6 +557,7 @@ class TaskLauncherService(private val project: Project) {
     }
 
     private fun saveTaskConfigs(store: TaskConfigStore) {
+        configStoreReadError?.let { throw it }
         val path = Paths.get(getWorkspaceRoot(), TASKS_CONFIG_FILE)
         Files.createDirectories(path.parent)
         val temp = Files.createTempFile(path.parent, "ok-script-toolkit-tasks-", ".tmp")
