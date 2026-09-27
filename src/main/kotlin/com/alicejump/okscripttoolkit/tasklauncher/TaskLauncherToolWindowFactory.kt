@@ -343,21 +343,14 @@ class TaskLauncherPanel(private val project: Project) {
         // projectMismatch 横幅 + 置空 current/queue/paused）。
         val mismatched = !executorMatchesProject()
         val visible = if (mismatched) runnerStateForDisplay() else state
-        statusLabel.text = if (mismatched) {
-            OkScriptToolkitBundle.message("taskLauncher.projectMismatch")
+        // 执行器状态已合并到常驻执行器条（runnerStatusLabel），状态栏只留瞬时消息。
+        // 如果 statusLabel 当前还残留着旧的执行器状态文案，清空它。
+        if (mismatched) {
+            statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.projectMismatch")
         } else {
-            val statusText = when (visible.status) {
-                "connecting" -> OkScriptToolkitBundle.message("taskLauncher.executorConnecting")
-                "running" -> if (visible.paused) {
-                    OkScriptToolkitBundle.message("taskLauncher.executorPaused")
-                } else {
-                    OkScriptToolkitBundle.message("taskLauncher.executorRunning", visible.enabledTriggers.size)
-                }
-                else -> visible.finishMessage ?: OkScriptToolkitBundle.message("taskLauncher.executorIdle")
+            statusLabel.text?.let {
+                if (it.contains("执行器") || it.contains("Executor")) statusLabel.text = ""
             }
-            // 控制命令失败时把错误拼在状态前（run_executor.py 在命令失败后不推状态，
-            // 错误会一直保留到下一条状态快照到达）
-            visible.controlError?.let { "$it — $statusText" } ?: statusText
         }
         // 净化后的快照喂给健康点：跨项目时不显示对方 current，但「有执行器在跑」如实呈现
         syncHealthBar(visible)
@@ -391,7 +384,7 @@ class TaskLauncherPanel(private val project: Project) {
             state.status == "connecting" -> OkScriptToolkitBundle.message("taskLauncher.executorConnecting")
             state.status == "running" && state.paused -> OkScriptToolkitBundle.message("taskLauncher.executorPaused")
             state.status == "running" -> OkScriptToolkitBundle.message("taskLauncher.executorRunning", state.enabledTriggers.size)
-            else -> OkScriptToolkitBundle.message("taskLauncher.executorIdle")
+            else -> state.finishMessage ?: OkScriptToolkitBundle.message("taskLauncher.executorIdle")
         }
         runnerStatusLabel.text = statusText
         runnerStatusLabel.toolTipText = statusText
@@ -989,7 +982,7 @@ class TaskLauncherPanel(private val project: Project) {
      * 空闲时只剩一个「启动」，所以条子永远是窄的。
      */
     private fun buildExecutorBar(): JPanel {
-        val logButton = iconButton(AllIcons.Toolwindows.ToolWindowRun, "taskLauncher.viewLog") { taskRunner.showConsole() }
+        val logButton = iconButton(AllIcons.Toolwindows.ToolWindowMessages, "taskLauncher.viewLog") { taskRunner.showConsole() }
         logButton.toolTipText = OkScriptToolkitBundle.message("taskLauncher.viewLogHint")
 
         // 状态行：状态点 / 状态文字 / 当前任务。用 BorderLayout 而不是 FlowLayout ——
