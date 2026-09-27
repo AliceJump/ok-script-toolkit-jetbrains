@@ -257,6 +257,9 @@ class TaskLauncherPanel(private val project: Project) {
     /** 详情区当前展示的任务；null = 未选中，显示占位提示 */
     private var detailTask: TaskLauncherService.TaskInfo? = null
 
+    /** Invalid or unfinished JSON is not persisted; keep it across probe and task changes. */
+    private val taskJsonDrafts = TaskJsonDrafts()
+
     /** 详情头部已渲染过描述的任务：状态推送高频调 renderDetailHeader，描述只在任务切换时重设 */
     private var detailDescriptionFor: TaskLauncherService.TaskInfo? = null
 
@@ -2885,22 +2888,24 @@ class TaskLauncherPanel(private val project: Project) {
         fieldKey: String,
     ): JComponent {
         val mapper = objectMapper
+        val root = taskDataRoot()
+        val taskKey = taskKeyOf(task)
         // 跟踪最后有效的值，用于 JSON 无效时保留
         var lastValidValue: Any? = currentValue
-        val area = JTextArea(
-            when (val v = currentValue) {
-                null -> ""
-                is String -> v
-                else -> runCatching { mapper.writerWithDefaultPrettyPrinter().writeValueAsString(v) }.getOrDefault(v.toString())
-            },
-        )
+        val savedText = when (val v = currentValue) {
+            null -> ""
+            is String -> v
+            else -> runCatching { mapper.writerWithDefaultPrettyPrinter().writeValueAsString(v) }.getOrDefault(v.toString())
+        }
+        val area = JTextArea(taskJsonDrafts.textOrDefault(root, taskKey, fieldKey, savedText))
         area.rows = 4
         area.lineWrap = true
         area.putClientProperty(OK_JSON_FIELD, true)
-        fun validateJson() {
+        fun validateJson(rememberDraft: Boolean = false) {
             val text = area.text.trim()
             val parsed = if (text.isEmpty()) null else runCatching { mapper.readTree(text) }.getOrNull()
             area.border = BorderFactory.createLineBorder(if (parsed != null || text.isEmpty()) OK_BORDER else BAD_BORDER)
+            if (rememberDraft) taskJsonDrafts.record(root, taskKey, fieldKey, area.text, parsed != null)
             // 解析成功时更新最后有效的值
             if (parsed != null) {
                 lastValidValue = runCatching { mapper.convertValue(parsed, Any::class.java) }.getOrNull()
@@ -2910,17 +2915,17 @@ class TaskLauncherPanel(private val project: Project) {
         area.document.addDocumentListener(object : DocumentListener {
             override fun insertUpdate(e: DocumentEvent?) {
                 currentRenderer?.markEdited(fieldKey, area)
-                validateJson()
+                validateJson(rememberDraft = true)
                 autoSaveTaskConfig(task)
             }
             override fun removeUpdate(e: DocumentEvent?) {
                 currentRenderer?.markEdited(fieldKey, area)
-                validateJson()
+                validateJson(rememberDraft = true)
                 autoSaveTaskConfig(task)
             }
             override fun changedUpdate(e: DocumentEvent?) {
                 currentRenderer?.markEdited(fieldKey, area)
-                validateJson()
+                validateJson(rememberDraft = true)
                 autoSaveTaskConfig(task)
             }
         })
@@ -3399,6 +3404,7 @@ class TaskLauncherPanel(private val project: Project) {
      */
     private fun mutateTaskSnapshot(
         task: TaskLauncherService.TaskInfo,
+        discardJsonDrafts: Boolean = false,
         mutation: (params: LinkedHashMap<String, Any?>, schema: TaskLauncherService.TaskSchema) -> Int,
     ): Int? {
         val key = taskKeyOf(task)
@@ -3406,7 +3412,7 @@ class TaskLauncherPanel(private val project: Project) {
         if (schema.broken || schema.fields.isEmpty()) return null
         // 防抖中的表单编辑先落盘：卡面操作必须基于最新快照，且不能被随后的 flush 覆盖
         saveTimer.stop()
-        flushPendingSave().join()
+        if (!flushPendingSave().join()) return null
         val root = taskDataRoot()
         return try {
             val existing = taskService.getTaskConfig(key, root)
@@ -3419,9 +3425,10 @@ class TaskLauncherPanel(private val project: Project) {
                 // 执行器是常驻进程：快照变化必须即时推送，否则要重启才生效
                 pushParamOverrides(root)
                 // 参数面板开着时跟随刷新（对齐 VS Code snapshotUpdated → refreshDrawer）
-                if (detailTask?.let { taskKeyOf(it) } == key) loadTaskParams(task)
                 renderTaskStatuses(runnerStateForDisplay())
             }
+            val hadDraft = discardJsonDrafts && taskJsonDrafts.clearTask(root, key)
+            if ((changed > 0 || hadDraft) && detailTask?.let { taskKeyOf(it) } == key) loadTaskParams(task)
             changed
         } catch (e: Exception) {
             LOG.warn("Failed to mutate task snapshot for $key", e)
@@ -3462,7 +3469,7 @@ class TaskLauncherPanel(private val project: Project) {
      * 快照里 default 仍存在的键重置为出厂值（显式 null 也算）；孤儿键保留。
      */
     private fun resetTaskDefault(task: TaskLauncherService.TaskInfo) {
-        val reset = mutateTaskSnapshot(task) { params, schema ->
+        val reset = mutateTaskSnapshot(task, discardJsonDrafts = true) { params, schema ->
             var count = 0
             for (f in schema.fields) {
                 if (!f.hasDefault) continue
@@ -3507,6 +3514,7 @@ class TaskLauncherPanel(private val project: Project) {
         accountEditors.values.forEach { it.close() }
         accountEditors.clear()
         globalTextDrafts.clear()
+        taskJsonDrafts.clear()
     }
 }
 
