@@ -133,9 +133,6 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
     /** 当前选中（右栏详情对应）的任务 key */
     private var selectedKey: String? = null
 
-    /** 程序化改写勾选框时抑制回调（表格时代 updatingTableModel 的等价物） */
-    private var programmaticToggle = false
-
     init {
         isOpaque = false
     }
@@ -316,18 +313,20 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
     /**
      * 一张精简任务卡（article.task-card 的 Swing 等价物，IA 重设计后瘦身）。
      *
-     * **卡片不写「触发 / 一次性」与状态文字，全用颜色表达**（用户要求：文字 chip 占地方）：
+     * **卡片上只有两处文字：任务名 + 任务介绍**。类型、状态、类名一律不写：
      * - **外框色 = 任务性质**：触发 = 紫（[TaskLauncherTheme.TRIGGER]），
      *   一次性 = 青（[TaskLauncherTheme.ONETIME]）；
-     * - **内框色 = 当前运行情况**：绿 = 正在运行、蓝 = 已入列、灰 = 未运行、红 = schema 异常。
+     * - **内框色 = 当前运行情况**：绿 = 正在运行、蓝 = 已入列、灰 = 未运行、红 = schema 异常；
+     * - 类型动作 = **一个不带文字的按钮**（触发任务翻图标表示启用 / 停用轮询，一次性 = ▶启动）；
+     * - 类型 / 状态 / 类名的文字语义进 tooltip。
      *
-     * 两层框之间留 2px 缝，两个颜色互不干扰。文字语义进 tooltip（「触发 · 正在运行」）。
+     * 两层框之间留 2px 缝，两个颜色互不干扰。
      *
-     * 布局是**两行**（窄工具窗是常态）：第一行 = 任务名 + 类型动作（启用勾选 / ▶启动），
-     * 第二行 = 类名·模块。每行都是 `BorderLayout`：两端拿 preferred 宽度**永不裁切**，
-     * 中间的自由文本拿剩余宽度、放不下就省略成「…」。之前是单个 `FlowLayout` 一行塞五件
-     * 东西 —— FlowLayout 的 preferredLayoutSize 只算**一行**，一旦换行，多出来的那行
-     * 会被父容器按「一行高」给的高度裁掉，窄窗里正好把右侧的 chip 与徽标切没了（用户反馈「露一半」）。
+     * 布局是**两行**（窄工具窗是常态）：第一行 = 任务名（放不下按像素省略）+ 动作按钮，
+     * 第二行 = 任务介绍（可换行）。两端拿 preferred 宽度**永不裁切**，中间的自由文本拿
+     * 剩余宽度。之前是单个 `FlowLayout` 一行塞五件东西 —— FlowLayout 的 preferredLayoutSize
+     * 只算**一行**，一旦换行，多出来的那行会被父容器按「一行高」给的高度裁掉，
+     * 窄窗里正好把右侧的 chip 与徽标切没了（用户反馈「露一半」）。
      *
      * 参数表单与 ⇄/⟲ 快照操作全部移到详情页；点击卡片主体 = 选中 + 加载详情。
      */
@@ -347,18 +346,25 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
 
         private val nameLabel = EllipsizingLabel(displayName()).apply {
             font = font.deriveFont(Font.BOLD)
-            toolTipText = cardKey
         }
-        private val classLine = EllipsizingLabel("${task.className} · ${task.module}").apply {
-            foreground = UIUtil.getContextHelpForeground()
-            toolTipText = "${task.className} · ${task.module}"
-        }
+        /** 任务介绍：可换行（卡片上只留「名称 + 介绍」两处文字） */
+        private val descriptionArea = SchemaFieldUi.WrappingDescription(descriptionOf())
 
-        private val triggerCheckbox = if (isTrigger) JCheckBox(OkScriptToolkitBundle.message("taskLauncher.enableTrigger")) else null
-        private val runButton = if (!isTrigger) {
-            JButton(OkScriptToolkitBundle.message("taskLauncher.run"), AllIcons.RunConfigurations.TestState.Run)
+        /**
+         * 类型动作：**一个不带文字的按钮**。
+         * 触发任务 = 启用/停用轮询（图标随状态翻），一次性任务 = ▶启动。
+         */
+        private val actionButton: JButton = if (isTrigger) {
+            JButton().apply {
+                isFocusable = false
+                addActionListener { host.onToggleTrigger(task, !host.isTriggerEnabled(cardKey)) }
+            }
         } else {
-            null
+            JButton(AllIcons.RunConfigurations.TestState.Run).apply {
+                isFocusable = false
+                toolTipText = OkScriptToolkitBundle.message("taskLauncher.run")
+                addActionListener { host.onRunTask(task) }
+            }
         }
 
         init {
@@ -367,28 +373,14 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
             val titleRow = JPanel(BorderLayout(6, 0))
             titleRow.isOpaque = false
             titleRow.add(nameLabel, BorderLayout.CENTER)
-
-            val actions = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
-            actions.isOpaque = false
-            triggerCheckbox?.let { checkbox ->
-                checkbox.isFocusable = false
-                checkbox.addActionListener {
-                    if (!programmaticToggle) host.onToggleTrigger(task, checkbox.isSelected)
-                }
-                checkbox.isSelected = host.isTriggerEnabled(cardKey)
-                actions.add(checkbox)
-            }
-            runButton?.let { button ->
-                button.isFocusable = false
-                button.addActionListener { host.onRunTask(task) }
-                actions.add(button)
-            }
-            titleRow.add(actions, BorderLayout.EAST)
+            titleRow.add(actionButton, BorderLayout.EAST)
 
             add(titleRow, BorderLayout.NORTH)
-            add(classLine, BorderLayout.CENTER)
+            add(descriptionArea, BorderLayout.CENTER)
+            // 没写介绍的任务不留空行
+            descriptionArea.isVisible = descriptionArea.text.isNotBlank()
 
-            // 悬停高亮 + 悬停弹层 + 主体点击（按钮 / 勾选框消费自己的事件，不会重复触发）
+            // 悬停高亮 + 悬停弹层 + 主体点击（按钮消费自己的事件，不会重复触发）
             val cardMouse = object : MouseAdapter() {
                 override fun mouseEntered(e: MouseEvent) {
                     if (cardKey != selectedKey) {
@@ -466,21 +458,24 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
         private fun displayName(): String =
             host.schemaOf(task)?.displayName ?: task.displayName
 
-        /** 原地刷新执行状态：换内框色 + 更新 tooltip（卡片上没有状态文字了） */
+        private fun descriptionOf(): String =
+            host.schemaOf(task)?.description.orEmpty()
+
+        /** 原地刷新执行状态：换内框色 + 翻动作按钮图标 + 更新 tooltip（卡片上没有状态文字） */
         fun refresh(status: TaskCardStatus) {
             statusColor = statusColorForTone(status.tone)
             statusText = status.text
             border = cardBorder()
-            toolTipText = "${kindLabel()} \u00b7 $statusText"
-            programmaticToggle = true
-            try {
-                triggerCheckbox?.let { checkbox ->
-                    val want = host.isTriggerEnabled(cardKey)
-                    if (checkbox.isSelected != want) checkbox.isSelected = want
-                }
-                runButton?.isEnabled = status.launchEnabled
-            } finally {
-                programmaticToggle = false
+            // 颜色撤掉文字后，语义只能靠 tooltip 讲清楚（类型 chip / 状态文字 / 类名都在这）
+            toolTipText = "${kindLabel()} \u00b7 $statusText \u00b7 $cardKey"
+            if (isTrigger) {
+                val enabled = host.isTriggerEnabled(cardKey)
+                actionButton.icon = if (enabled) AllIcons.Actions.Suspend else AllIcons.Actions.Execute
+                actionButton.toolTipText = OkScriptToolkitBundle.message(
+                    if (enabled) "taskLauncher.disableTrigger" else "taskLauncher.enableTrigger",
+                )
+            } else {
+                actionButton.isEnabled = status.launchEnabled
             }
             repaint()
         }

@@ -355,50 +355,63 @@ class TaskLauncherService(private val project: Project) {
      * 单组 / 单字段解析失败只跳过该部分 —— 异常外抛会让整个探针 ok=false、
      * 缓存读取失败，一处畸形数据不应该把任务列表也带走。
      */
+    /**
+     * 解析探针输出的全局配置组（缺键 / 非数组时静默为空列表，不影响任务 schema）。
+     *
+     * 与 VS Code 侧 consolePanel.ts 的读取保持一致： 与
+     *  **两段都收**。当前探针把项目自建 store 的组并进前者、后者为空，
+     * 但父仓仍读两段 —— 只读一段的话，哪天探针改回分段就会静默漏掉整批组。
+     *
+     * 单组 / 单字段解析失败只跳过该部分 —— 异常外抛会让整个探针 ok=false、
+     * 缓存读取失败，一处畸形数据不应该把任务列表也带走。
+     */
     private fun parseGlobalConfigGroups(parsed: JsonNode): List<GlobalConfigGroup> {
         val groups = mutableListOf<GlobalConfigGroup>()
-        parsed.get("globalConfigGroups")?.takeIf { it.isArray }?.forEach { groupNode ->
-            val name = groupNode.get("name")?.asText(null) ?: return@forEach
-            val fields = mutableListOf<TaskParamField>()
-            groupNode.get("fields")?.takeIf { it.isArray }?.forEach { fieldNode ->
+        for (segment in arrayOf("globalConfigGroups", "projectGlobalGroups")) {
+            parsed.get(segment)?.takeIf { it.isArray }?.forEach { groupNode ->
+                val name = groupNode.get("name")?.asText(null) ?: return@forEach
+                // 两段里同名组只收一次（先到先得）
+                if (groups.any { it.name == name }) return@forEach
+                val fields = mutableListOf<TaskParamField>()
+                groupNode.get("fields")?.takeIf { it.isArray }?.forEach { fieldNode ->
+                    try {
+                        val key = fieldNode.get("key")?.asText(null) ?: return@forEach
+                        fields.add(
+                            TaskParamField(
+                                key = key,
+                                displayKey = fieldNode.get("displayKey")?.asText(null),
+                                default = fieldNode.get("default")?.let { objectMapper.convertValue(it, Any::class.java) },
+                                hasDefault = fieldNode.has("default"),
+                                value = fieldNode.get("value")?.let { objectMapper.convertValue(it, Any::class.java) },
+                                type = fieldNode.get("type")?.takeIf { !it.isNull }?.let {
+                                    @Suppress("UNCHECKED_CAST")
+                                    objectMapper.convertValue(it, Map::class.java) as? Map<String, Any>
+                                },
+                                desc = fieldNode.get("desc")?.asText(null),
+                                displayDesc = fieldNode.get("displayDesc")?.asText(null),
+                            ),
+                        )
+                    } catch (e: Exception) {
+                        LOG.warn("Skipping malformed global config field", e)
+                    }
+                }
                 try {
-                    val key = fieldNode.get("key")?.asText(null) ?: return@forEach
-                    fields.add(
-                        TaskParamField(
-                            key = key,
-                            displayKey = fieldNode.get("displayKey")?.asText(null),
-                            default = fieldNode.get("default")?.let { objectMapper.convertValue(it, Any::class.java) },
-                            hasDefault = fieldNode.has("default"),
-                            value = fieldNode.get("value")?.let { objectMapper.convertValue(it, Any::class.java) },
-                            type = fieldNode.get("type")?.takeIf { !it.isNull }?.let {
-                                @Suppress("UNCHECKED_CAST")
-                                objectMapper.convertValue(it, Map::class.java) as? Map<String, Any>
-                            },
-                            desc = fieldNode.get("desc")?.asText(null),
-                            displayDesc = fieldNode.get("displayDesc")?.asText(null),
+                    groups.add(
+                        GlobalConfigGroup(
+                            name = name,
+                            displayName = groupNode.get("displayName")?.asText(null),
+                            description = groupNode.get("description")?.asText(null),
+                            fields = fields,
+                            source = groupNode.get("source")?.asText(null),
                         ),
                     )
                 } catch (e: Exception) {
-                    LOG.warn("Skipping malformed global config field", e)
+                    LOG.warn("Skipping malformed global config group '$name'", e)
                 }
-            }
-            try {
-                groups.add(
-                    GlobalConfigGroup(
-                        name = name,
-                        displayName = groupNode.get("displayName")?.asText(null),
-                        description = groupNode.get("description")?.asText(null),
-                        fields = fields,
-                        source = groupNode.get("source")?.asText(null),
-                    ),
-                )
-            } catch (e: Exception) {
-                LOG.warn("Skipping malformed global config group '$name'", e)
             }
         }
         return groups
     }
-
     private fun parseMultiAccount(node: JsonNode?): MultiAccountInfo {
         if (node == null || !node.isObject) return MultiAccountInfo()
         val enabled = linkedMapOf<String, MultiAccountEnabledTask>()

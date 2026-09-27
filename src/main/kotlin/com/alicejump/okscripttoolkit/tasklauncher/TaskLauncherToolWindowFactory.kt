@@ -99,6 +99,9 @@ class TaskLauncherPanel(private val project: Project) {
         /** 配置页二级导航宽度（px）：放得下中文导航项，又不至于白占宽窗的地方 */
         private const val CONFIG_NAV_WIDTH = 118
 
+        /** 全局配置组折叠状态在 uiState 里的键前缀（与任务卡折叠共用一套持久化） */
+        private const val GLOBAL_GROUP_FOLD_PREFIX = "globalGroup:"
+
         /** 配置页二级导航：CardLayout 的键（顺序与导航列表一一对应） */
         private const val NAV_GLOBAL = "config.global"
         private const val NAV_ACCOUNT = "config.account"
@@ -1289,22 +1292,30 @@ class TaskLauncherPanel(private val project: Project) {
         globalConfigHost.repaint()
     }
 
+    /**
+     * 「全局配置」区：每组一张卡片，直接进单列页面。
+     *
+     * 不再套一层「全局配置」外壳卡 —— 主仓库里一张组卡就是一层，套两层框在窄工具窗里
+     * 白白吃掉左右各十几像素宽度。
+     */
     private fun buildGlobalConfigSection(): JPanel {
         renderGlobalConfig()
-        val card = pageCard(OkScriptToolkitBundle.message("taskLauncher.configNavGlobal")) { body ->
-            body.add(mutedHint(OkScriptToolkitBundle.message("taskLauncher.configGlobalHint")))
-            body.add(globalConfigHost)
-        }
-        return singleColumnPage(listOf(card))
+        return singleColumnPage(listOf(globalConfigHost))
     }
 
     /**
-     * 全局配置组内联卡片：字段控件 + 「改动即存」。
-     * 可见性规则复用对话框路径的 [GlobalConfigEditor.installVisibility]（布尔子项跟随父级），
-     * 与任务参数面板同款语义 —— 两条路径不该有两套显隐规则。
+     * 全局配置组卡片（对齐主仓库 consolePanel/webview 的 buildGlobalCard）：
+     * 组头（折叠箭头 + 显示名 + 项目 store 标记 + 字段数 + **本组自己的 ⇄/⟲**）+ 说明 + 字段表单。
+     *
+     * - 折叠状态落 uiState（与任务卡折叠同一套持久化），重开面板按上次状态；
+     * - 字段控件「改动即存」（400ms 防抖），可见性复用对话框路径的
+     *   [GlobalConfigEditor.installVisibility]（布尔子项跟随父级）—— 两条路径不该有两套显隐规则。
      */
     private fun globalConfigCard(group: TaskLauncherService.GlobalConfigGroup): JPanel {
+        val foldKey = GLOBAL_GROUP_FOLD_PREFIX + group.name
+        val collapsed = uiCollapseState[foldKey] == true
         val existing = taskService.loadGlobalConfigs(taskDataRoot())[group.name].orEmpty()
+
         // 控件列表要先建好才能被自己的回调捕获（回调触发时列表已填满），故用可变列表分两步填
         val controls = mutableListOf<GlobalConfigEditor.FieldControl>()
         for (field in group.fields) {
@@ -1330,9 +1341,149 @@ class TaskLauncherPanel(private val project: Project) {
             })
         }
         GlobalConfigEditor.installVisibility(controls, rowsByKey, form)
-        return pageCard(group.displayName ?: group.name) { body -> body.add(form) }
+
+        val body = JPanel(BorderLayout())
+        body.isOpaque = false
+        body.isVisible = !collapsed
+        body.add(form, BorderLayout.NORTH)
+
+        val card = JPanel()
+        card.layout = BoxLayout(card, BoxLayout.Y_AXIS)
+        card.isOpaque = false
+        card.border = BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(JBColor.border(), 1, true),
+            BorderFactory.createEmptyBorder(6, 10, 8, 10),
+        )
+        card.add(buildGlobalGroupHeader(group, foldKey, collapsed, body))
+        if (!group.description.isNullOrBlank()) {
+            val desc = mutedHint(group.description)
+            desc.alignmentX = java.awt.Component.LEFT_ALIGNMENT
+            card.add(desc)
+        }
+        body.alignmentX = java.awt.Component.LEFT_ALIGNMENT
+        card.add(body)
+        return card
     }
 
+    /** 组头：折叠箭头 + 显示名 + 项目 store 标记 + 字段数 …… 本组 ⇄ / ⟲ */
+    private fun buildGlobalGroupHeader(
+        group: TaskLauncherService.GlobalConfigGroup,
+        foldKey: String,
+        collapsed: Boolean,
+        body: JComponent,
+    ): JPanel {
+        val chevron = JBLabel(if (collapsed) "\u25b8" else "\u25be")
+        val title = JBLabel(group.displayName ?: group.name)
+        title.font = title.font.deriveFont(Font.BOLD)
+        val left = JPanel(WrapLayout(FlowLayout.LEFT, 6, 0))
+        left.isOpaque = false
+        left.add(chevron)
+        left.add(title)
+        if (group.source == "project_store") {
+            left.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.gconfigSourceProject")))
+        }
+        left.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.itemsCount", group.fields.size)))
+
+        val sync = JButton(OkScriptToolkitBundle.message("taskLauncher.syncDefaultBtn"))
+        sync.addActionListener { syncGlobalGroup(group) }
+        val reset = JButton(OkScriptToolkitBundle.message("taskLauncher.resetDefaultBtn"))
+        reset.addActionListener { resetGlobalGroup(group) }
+        val right = JPanel(WrapLayout(FlowLayout.RIGHT, 4, 0))
+        right.isOpaque = false
+        right.add(sync)
+        right.add(reset)
+
+        val header = JPanel(BorderLayout(8, 0))
+        header.isOpaque = false
+        header.add(left, BorderLayout.CENTER)
+        header.add(right, BorderLayout.EAST)
+        header.toolTipText = group.description
+        header.cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
+        // 折叠切换：Swing 事件不冒泡，箭头与标题各自挂（⇄/⟲ 在 EAST，自己消费事件）
+        val toggle = object : java.awt.event.MouseAdapter() {
+            override fun mouseClicked(e: java.awt.event.MouseEvent) {
+                val open = !body.isVisible
+                body.isVisible = open
+                chevron.text = if (open) "\u25be" else "\u25b8"
+                setGlobalGroupCollapsed(foldKey, !open)
+                header.revalidate()
+                header.repaint()
+                header.parent?.revalidate()
+            }
+        }
+        header.addMouseListener(toggle)
+        chevron.addMouseListener(toggle)
+        title.addMouseListener(toggle)
+        return header
+    }
+
+    /** 折叠状态落 uiState（与任务卡折叠同一套持久化；失败只记日志，不影响交互） */
+    private fun setGlobalGroupCollapsed(foldKey: String, collapsed: Boolean) {
+        uiCollapseState = uiCollapseState + (foldKey to collapsed)
+        try {
+            taskService.saveUiStateValue(foldKey, collapsed, taskDataRoot())
+        } catch (e: Exception) {
+            LOG.warn("Failed to persist global group collapse state", e)
+        }
+    }
+
+    /** 全局组 ⇄ 同步 default（补缺键；已有键不动、孤儿键保留）—— 与任务快照同规则 */
+    private fun syncGlobalGroup(group: TaskLauncherService.GlobalConfigGroup) {
+        val added = mutateGlobalSnapshot(group) { existing ->
+            GlobalSnapshotRules.materialize(existing, group.fields)
+        } ?: return
+        statusLabel.text = if (added > 0) {
+            OkScriptToolkitBundle.message("taskLauncher.syncDefaultDone", added)
+        } else {
+            OkScriptToolkitBundle.message("taskLauncher.syncDefaultNoop")
+        }
+    }
+
+    /** 全局组 ⟲ 恢复出厂默认（只作用于 schema 已知键，孤儿键保留） */
+    private fun resetGlobalGroup(group: TaskLauncherService.GlobalConfigGroup) {
+        val reset = mutateGlobalSnapshot(group) { existing ->
+            GlobalSnapshotRules.resetToDefaults(existing, group.fields) to
+                group.fields.count { existing[it.key] != it.defaultOrValue() }
+        } ?: return
+        statusLabel.text = if (reset > 0) {
+            OkScriptToolkitBundle.message("taskLauncher.resetDefaultDone", reset)
+        } else {
+            OkScriptToolkitBundle.message("taskLauncher.resetDefaultNoop")
+        }
+    }
+
+    /**
+     * 全局组快照写操作的公共骨架（对齐任务侧的 mutateTaskSnapshot）：
+     * 先提交防抖中的内联编辑（否则会被随后的重建覆盖），再在最新快照上应用 [mutation]，
+     * 落盘并推给运行中的执行器，最后重建卡片（值已变）。返回键变更数；失败返回 null。
+     */
+    private fun mutateGlobalSnapshot(
+        group: TaskLauncherService.GlobalConfigGroup,
+        mutation: (Map<String, Any?>) -> Pair<Map<String, Any?>, Int>,
+    ): Int? {
+        globalSaveTimer.stop()
+        flushPendingGlobalSave()
+        val root = taskDataRoot()
+        return try {
+            val existing = taskService.loadGlobalConfigs(root)[group.name].orEmpty()
+            val (updated, changed) = mutation(existing)
+            if (changed > 0) {
+                taskService.saveGlobalConfigGroup(group.name, updated, root)
+                pushGlobalSnapshot(taskService.loadGlobalConfigs(root), root)
+                renderGlobalConfig()
+            }
+            changed
+        } catch (e: Exception) {
+            LOG.warn("Failed to mutate global snapshot for ${group.name}", e)
+            JOptionPane.showMessageDialog(
+                mainPanel,
+                OkScriptToolkitBundle.message("taskLauncher.gconfigSaveFailed", e.message ?: ""),
+                group.displayName ?: group.name,
+                JOptionPane.ERROR_MESSAGE,
+            )
+            null
+        }
+    }
     /** 内联卡片改动：登记待存快照并重启 400ms 防抖（连续输入只落一次盘） */
     private fun scheduleGlobalSave(
         group: TaskLauncherService.GlobalConfigGroup,
