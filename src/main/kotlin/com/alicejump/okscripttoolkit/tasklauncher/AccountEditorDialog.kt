@@ -5,6 +5,7 @@ import com.alicejump.okscripttoolkit.core.AccountStoreData
 import com.alicejump.okscripttoolkit.core.AccountStoreService
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.intellij.openapi.project.Project
 import com.intellij.ui.components.JBScrollPane
 import java.awt.BorderLayout
 import java.awt.Component
@@ -29,6 +30,7 @@ import javax.swing.SwingUtilities
  */
 internal class AccountEditorDialog(
     parent: Component,
+    private val project: Project,
     private val service: AccountStoreService,
     private val projectDir: String,
     private var info: TaskLauncherService.MultiAccountInfo,
@@ -289,7 +291,7 @@ internal class AccountEditorDialog(
             displayName = target.label,
             fields = target.fields.map { it.copy(value = it.defaultOrValue()) },
         )
-        val edited = GlobalConfigEditor.show(dialog, group, existing, accountOverride = true) ?: return
+        val edited = GlobalConfigEditor.show(dialog, group, existing, accountOverride = true, project = project) ?: return
         if (edited.values == existing) return
         perform(service.setOverride(projectDir, account, target.storageName, edited.values), "taskLauncher.accountSaved")
     }

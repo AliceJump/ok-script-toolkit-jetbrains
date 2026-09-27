@@ -807,7 +807,7 @@ class TaskLauncherPanel(private val project: Project) {
     private fun editGlobalConfig(group: TaskLauncherService.GlobalConfigGroup) {
         val root = taskDataRoot()
         val existing = taskService.loadGlobalConfigs(root)
-        val edited = GlobalConfigEditor.show(mainPanel, group, existing[group.name].orEmpty()) ?: return
+        val edited = GlobalConfigEditor.show(mainPanel, group, existing[group.name].orEmpty(), project = project) ?: return
         if (edited.values == existing[group.name]) return
         try {
             taskService.saveGlobalConfigGroup(group.name, edited.values, root)
@@ -845,6 +845,7 @@ class TaskLauncherPanel(private val project: Project) {
         }
         accountEditor = AccountEditorDialog(
             parent = mainPanel,
+            project = project,
             service = accountStoreService,
             projectDir = projectDir,
             info = multiAccountInfo,

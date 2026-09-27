@@ -17,6 +17,7 @@ import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JList
 import javax.swing.JPanel
+import javax.swing.JTextArea
 import javax.swing.ListSelectionModel
 
 /** 与框架 ModifyListDialog.SHOW_SEARCH_OPTIONS_THRESHOLD 一致 */
@@ -269,7 +270,14 @@ class ListEditorComponent(
     }
 
     private val typeMeta = typeMeta
-    private val summaryLabel = JBLabel()
+    private val summaryText = JTextArea(1, 18).apply {
+        isEditable = false
+        isFocusable = false
+        isOpaque = false
+        lineWrap = true
+        wrapStyleWord = true
+        border = null
+    }
 
     init {
         val modifyButton = JButton(OkScriptToolkitBundle.message("list.modify"))
@@ -290,7 +298,7 @@ class ListEditorComponent(
                 onChanged(next)
             }
         }
-        add(summaryLabel, BorderLayout.CENTER)
+        add(summaryText, BorderLayout.CENTER)
         add(modifyButton, BorderLayout.EAST)
         refreshSummary()
     }
@@ -300,15 +308,8 @@ class ListEditorComponent(
         val (available, labels, _) = availableOptions(typeMeta)
         val texts = value.map { labelFor(it, available, labels) }
         val joined = texts.joinToString("")
-        summaryLabel.text = if (joined.length > 30 || value.size > 3) {
-            "<html>${texts.joinToString("<br>") { escapeHtml(it) }}</html>"
-        } else {
-            texts.joinToString(", ").ifEmpty { "—" }
-        }
+        summaryText.text = if (joined.length > 30 || value.size > 3) {
+            texts.joinToString("\n")
+        } else texts.joinToString(", ").ifEmpty { "—" }
     }
-
-    private fun escapeHtml(text: String): String = text
-        .replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
 }

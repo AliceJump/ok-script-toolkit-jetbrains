@@ -2,20 +2,28 @@ package com.alicejump.okscripttoolkit.tasklauncher
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.intellij.openapi.project.Project
 import com.intellij.ui.components.JBScrollPane
+import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.Dimension
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.Insets
+import java.awt.Rectangle
+import javax.swing.DefaultListCellRenderer
 import javax.swing.JCheckBox
 import javax.swing.JComboBox
 import javax.swing.JComponent
-import javax.swing.JLabel
+import javax.swing.JList
 import javax.swing.JOptionPane
 import javax.swing.JPanel
+import javax.swing.JSpinner
 import javax.swing.JTextArea
 import javax.swing.JTextField
+import javax.swing.ListSelectionModel
+import javax.swing.Scrollable
+import javax.swing.SpinnerNumberModel
 
 /** An editor for the same global config snapshot that is injected into run_executor.py. */
 internal object GlobalConfigEditor {
@@ -23,10 +31,11 @@ internal object GlobalConfigEditor {
 
     data class Result(val values: Map<String, Any?>)
 
-    private data class FieldControl(
+    internal data class FieldControl(
         val field: TaskLauncherService.TaskParamField,
         val component: JComponent,
         val read: () -> Any?,
+        val booleanControl: JCheckBox? = null,
     )
 
     fun show(
@@ -34,33 +43,50 @@ internal object GlobalConfigEditor {
         group: TaskLauncherService.GlobalConfigGroup,
         existing: Map<String, Any?>,
         accountOverride: Boolean = false,
+        project: Project? = null,
     ): Result? {
         val controls = group.fields.map { field ->
             val value = if (existing.containsKey(field.key)) existing[field.key] else field.value ?: field.default
-            makeControl(field, value)
+            makeControl(field, value, project)
         }
         // 比较控件的初始读数，而不是 schema 原始值：某些控件会把 null 呈现为
         // 未勾选或空文本。未触碰的字段不能在保存其它字段时被改写。
         val initialValues = controls.associate { control ->
             control.field.key to runCatching { control.read() }.getOrNull()
         }
-        val form = JPanel(GridBagLayout())
-        for ((index, control) in controls.withIndex()) {
-            val field = control.field
-            form.add(JLabel(field.displayKey ?: field.key).apply {
-                toolTipText = field.displayDesc ?: field.desc ?: field.key
-            }, GridBagConstraints().apply {
-                gridx = 0; gridy = index; anchor = GridBagConstraints.WEST
-                insets = Insets(4, 8, 4, 8)
-            })
-            form.add(control.component, GridBagConstraints().apply {
-                gridx = 1; gridy = index; weightx = 1.0
+        val form = object : JPanel(GridBagLayout()), Scrollable {
+            override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
+            override fun getScrollableUnitIncrement(visibleRect: Rectangle, orientation: Int, direction: Int) = 16
+            override fun getScrollableBlockIncrement(visibleRect: Rectangle, orientation: Int, direction: Int) =
+                (visibleRect.height - 16).coerceAtLeast(16)
+            override fun getScrollableTracksViewportWidth() = true
+            override fun getScrollableTracksViewportHeight() = false
+        }
+        var rowIndex = 0
+        if (!group.description.isNullOrBlank()) {
+            form.add(SchemaFieldUi.WrappingDescription(group.description), GridBagConstraints().apply {
+                gridx = 0; gridy = rowIndex++; weightx = 1.0
                 fill = GridBagConstraints.HORIZONTAL
-                insets = Insets(4, 0, 4, 8)
+                insets = Insets(8, 12, 8, 12)
             })
         }
+        val rowsByKey = linkedMapOf<String, JPanel>()
+        for (control in controls) {
+            val row = SchemaFieldUi.row(control.field, control.component)
+            rowsByKey[control.field.key] = row
+            form.add(row, GridBagConstraints().apply {
+                gridx = 0; gridy = rowIndex++; weightx = 1.0
+                fill = GridBagConstraints.HORIZONTAL
+                anchor = GridBagConstraints.NORTHWEST
+                insets = Insets(1, 8, 1, 8)
+            })
+        }
+        installVisibility(controls, rowsByKey, form)
+        form.add(JPanel().apply { isOpaque = false }, GridBagConstraints().apply {
+            gridx = 0; gridy = rowIndex; weighty = 1.0; fill = GridBagConstraints.BOTH
+        })
         val scroll = JBScrollPane(form).apply {
-            preferredSize = Dimension(640, (controls.size * 42 + 16).coerceIn(120, 480))
+            preferredSize = Dimension(560, (controls.size * 90 + 32).coerceIn(160, 500))
             border = null
         }
         val options = if (accountOverride) arrayOf(
@@ -123,55 +149,193 @@ internal object GlobalConfigEditor {
         }
     }
 
-    private fun makeControl(field: TaskLauncherService.TaskParamField, value: Any?): FieldControl {
+    /** Boolean sub_configs follow the same inline visibility rules as task parameters. */
+    internal fun installVisibility(
+        controls: List<FieldControl>,
+        rowsByKey: Map<String, JPanel>,
+        form: JPanel,
+    ) {
+        val byKey = controls.associateBy { it.field.key }
+        val rules = linkedMapOf<String, Map<Boolean, List<String>>>()
+        val parentsByChild = linkedMapOf<String, MutableList<String>>()
+        for (control in controls) {
+            if (control.booleanControl == null) continue
+            val raw = control.field.type?.get("sub_configs") as? Map<*, *> ?: continue
+            val choices = linkedMapOf<Boolean, List<String>>()
+            for ((choice, children) in raw) {
+                val boolean = when (choice.toString().lowercase()) {
+                    "true" -> true
+                    "false" -> false
+                    else -> continue
+                }
+                val keys = when (children) {
+                    is String -> listOf(children)
+                    is List<*> -> children.filterIsInstance<String>()
+                    else -> emptyList()
+                }
+                choices[boolean] = keys
+                keys.forEach { child -> parentsByChild.getOrPut(child) { mutableListOf() }.add(control.field.key) }
+            }
+            if (choices.isNotEmpty()) rules[control.field.key] = choices
+        }
+        fun visible(key: String, checking: Set<String> = emptySet()): Boolean {
+            if (key in checking) return false
+            return parentsByChild[key].orEmpty().all { parent ->
+                val parentControl = byKey[parent] ?: return@all false
+                visible(parent, checking + key) &&
+                    rules[parent]?.get(parentControl.booleanControl?.isSelected == true)?.contains(key) == true
+            }
+        }
+        val refresh = {
+            rowsByKey.forEach { (key, row) -> row.isVisible = visible(key) }
+            form.revalidate()
+            form.repaint()
+        }
+        controls.forEach { it.booleanControl?.addActionListener { refresh() } }
+        refresh()
+    }
+
+    internal fun makeControl(
+        field: TaskLauncherService.TaskParamField,
+        value: Any?,
+        project: Project? = null,
+    ): FieldControl {
         val typeName = field.type?.get("type")?.toString().orEmpty()
         val options = field.type?.get("options") as? List<*>
-        if (!options.isNullOrEmpty() && (typeName == "drop_down" || (typeName.isEmpty() && value !is List<*>))) {
-            val combo = JComboBox(options.toTypedArray())
-            val index = options.indexOf(value)
-            if (index >= 0) {
-                combo.selectedIndex = index
-            } else if (value != null) {
-                combo.insertItemAt(value, 0)
-                combo.selectedIndex = 0
-            } else {
-                combo.selectedIndex = -1
+        val labels = field.type?.get("option_labels") as? List<*> ?: emptyList<Any>()
+        if (typeName == "cascade_drop_down" && field.type?.get("options") is Map<*, *>) {
+            val groups = field.type["options"] as Map<*, *>
+            val categoryLabels = field.type["category_labels"] as? Map<*, *>
+            val optionLabels = field.type["option_labels"] as? Map<*, *>
+            val groupCombo = JComboBox<Any?>().apply { groups.keys.forEach { addItem(it) } }
+            val leafCombo = JComboBox<Any?>()
+            groupCombo.renderer = labeledRenderer { option ->
+                categoryLabels?.get(option)?.toString() ?: option?.toString().orEmpty()
             }
-            return FieldControl(field, combo) { combo.selectedItem }
+            leafCombo.renderer = labeledRenderer { option ->
+                val currentGroup = groupCombo.selectedItem
+                val values = groups[currentGroup] as? List<*>
+                val index = values?.indexOf(option) ?: -1
+                val groupLabels = optionLabels?.get(currentGroup) as? List<*>
+                groupLabels?.getOrNull(index)?.toString() ?: option?.toString().orEmpty()
+            }
+            fun fillLeaves(group: Any?) {
+                leafCombo.removeAllItems()
+                (groups[group] as? List<*>)?.forEach { leafCombo.addItem(it) }
+            }
+            val owner = groups.entries.firstOrNull { (_, leaves) ->
+                (leaves as? List<*>)?.any { it == value || it?.toString() == value?.toString() } == true
+            }?.key
+            if (owner != null) groupCombo.selectedItem = owner
+            fillLeaves(groupCombo.selectedItem)
+            if (value != null) {
+                val selected = (groups[groupCombo.selectedItem] as? List<*>)?.firstOrNull {
+                    it == value || it?.toString() == value.toString()
+                }
+                if (selected != null) leafCombo.selectedItem = selected
+            }
+            groupCombo.addActionListener { fillLeaves(groupCombo.selectedItem) }
+            val panel = JPanel(BorderLayout(6, 0)).apply {
+                isOpaque = false
+                add(groupCombo, BorderLayout.WEST)
+                add(leafCombo, BorderLayout.CENTER)
+            }
+            return FieldControl(field, panel, { leafCombo.selectedItem })
+        }
+        if (!options.isNullOrEmpty() && (typeName == "drop_down" || (typeName.isEmpty() && value !is List<*>))) {
+            val combo = JComboBox<Any?>()
+            options.forEach { combo.addItem(it) }
+            if (value != null && options.none { it == value || it?.toString() == value.toString() }) {
+                combo.insertItemAt(value, 0)
+            }
+            combo.selectedItem = value
+            combo.renderer = labeledRenderer { option ->
+                val index = options.indexOfFirst { it == option || it?.toString() == option?.toString() }
+                labels.getOrNull(index)?.toString() ?: option?.toString().orEmpty()
+            }
+            return FieldControl(field, combo, { combo.selectedItem })
         }
         if (typeName == "bool" || value is Boolean) {
             val check = JCheckBox().apply { isSelected = value == true }
-            return FieldControl(field, check) { check.isSelected }
+            return FieldControl(field, check, { check.isSelected }, check)
+        }
+        if (typeName == "multi_selection" || (value is List<*> && !options.isNullOrEmpty())) {
+            val values = options.orEmpty()
+            val list = JList<Any?>(values.toTypedArray())
+            list.selectionMode = ListSelectionModel.MULTIPLE_INTERVAL_SELECTION
+            list.cellRenderer = labeledRenderer { option ->
+                val index = values.indexOfFirst { it == option || it?.toString() == option?.toString() }
+                labels.getOrNull(index)?.toString() ?: option?.toString().orEmpty()
+            }
+            val selected = value as? List<*> ?: emptyList<Any>()
+            list.selectedIndices = values.indices.filter { index ->
+                selected.any { it == values[index] || it?.toString() == values[index]?.toString() }
+            }.toIntArray()
+            val scroll = JBScrollPane(list).apply { preferredSize = Dimension(240, 112) }
+            return FieldControl(field, scroll, { list.selectedValuesList.toList() })
+        }
+        if (value is Int) {
+            val spinner = JSpinner(SpinnerNumberModel(value, Int.MIN_VALUE, Int.MAX_VALUE, 1))
+            return FieldControl(field, spinner, { committedSpinnerValue(spinner).toInt() })
+        }
+        if (value is Long) {
+            val spinner = JSpinner(SpinnerNumberModel(value, Long.MIN_VALUE, Long.MAX_VALUE, 1L))
+            return FieldControl(field, spinner, { committedSpinnerValue(spinner).toLong() })
         }
         if (value is Number) {
-            val input = JTextField(value.toString(), 32)
-            return FieldControl(field, input) {
-                val text = input.text.trim()
-                if (text.isEmpty()) null else when (value) {
-                    is Byte, is Short, is Int -> text.toIntOrNull() ?: throw IllegalArgumentException()
-                    is Long -> text.toLongOrNull() ?: throw IllegalArgumentException()
-                    else -> text.toDoubleOrNull()?.takeIf { it.isFinite() } ?: throw IllegalArgumentException()
-                }
-            }
+            val spinner = JSpinner(SpinnerNumberModel(value.toDouble(), -Double.MAX_VALUE, Double.MAX_VALUE, 0.1))
+            return FieldControl(field, spinner, { committedSpinnerValue(spinner).toDouble() })
         }
-        if (value is List<*> || value is Map<*, *> || typeName == "multi_selection" || typeName == "cond_sequence_editor") {
-            val input = JTextArea(mapper.writerWithDefaultPrettyPrinter().writeValueAsString(value ?: emptyList<Any>()), 5, 40)
-            input.lineWrap = true
-            return FieldControl(field, JBScrollPane(input)) {
+        if (value is List<*> || value is Map<*, *> || typeName == "cond_sequence_editor") {
+            if (value is List<*> && value.none { it is Map<*, *> } && typeName != "cond_sequence_editor") {
+                val editor = ListEditorComponent(
+                    project = project,
+                    dialogTitle = field.displayKey ?: field.key,
+                    typeMeta = field.type,
+                    initialValue = value.toList(),
+                    onChanged = {},
+                )
+                return FieldControl(field, editor, { editor.value })
+            }
+            val input = JTextArea(mapper.writerWithDefaultPrettyPrinter().writeValueAsString(value ?: emptyList<Any>()), 5, 24).apply {
+                lineWrap = true
+                wrapStyleWord = true
+            }
+            val scroll = JBScrollPane(input).apply { preferredSize = Dimension(240, 110) }
+            return FieldControl(field, scroll, {
                 val parsed = try { mapper.readTree(input.text) } catch (_: Exception) { null }
                     ?: throw IllegalArgumentException()
-                if ((value is List<*> && !parsed.isArray) || (value is Map<*, *> && !parsed.isObject)) {
-                    throw IllegalArgumentException()
-                }
+                if ((value is List<*> || typeName == "cond_sequence_editor") && !parsed.isArray) throw IllegalArgumentException()
+                if (value is Map<*, *> && !parsed.isObject) throw IllegalArgumentException()
                 mapper.convertValue(parsed, Any::class.java)
-            }
+            })
         }
-        val input = if (typeName == "text_edit" || (value is String && (value.contains('\n') || value.length > 80))) {
-            JTextArea(value?.toString().orEmpty(), 4, 40).apply { lineWrap = true }
+        val text = value?.toString().orEmpty()
+        val input = if (typeName == "text_edit" || text.contains('\n') || text.length > 80) {
+            JTextArea(text, 4, 24).apply { lineWrap = true; wrapStyleWord = true }
         } else {
-            JTextField(value?.toString().orEmpty(), 40)
+            JTextField(text, 24)
         }
-        val component = if (input is JTextArea) JBScrollPane(input) else input
-        return FieldControl(field, component) { input.text }
+        val component = if (input is JTextArea) {
+            JBScrollPane(input).apply { preferredSize = Dimension(240, 96) }
+        } else input
+        return FieldControl(field, component, { input.text })
+    }
+
+    private fun labeledRenderer(label: (Any?) -> String) = object : DefaultListCellRenderer() {
+        override fun getListCellRendererComponent(
+            list: JList<*>?, value: Any?, index: Int, isSelected: Boolean, cellHasFocus: Boolean,
+        ): Component = super.getListCellRendererComponent(
+            list, label(value), index, isSelected, cellHasFocus,
+        )
+    }
+
+    private fun committedSpinnerValue(spinner: JSpinner): Number {
+        try {
+            spinner.commitEdit()
+        } catch (_: java.text.ParseException) {
+            throw IllegalArgumentException()
+        }
+        return spinner.value as Number
     }
 }
