@@ -1,5 +1,6 @@
 package com.alicejump.okscripttoolkit.tasklauncher
 
+import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.PythonScriptLocator
 import com.alicejump.okscripttoolkit.core.PythonScriptRunner
 import com.alicejump.okscripttoolkit.core.RunDir
@@ -516,13 +517,28 @@ class TaskLauncherService(private val project: Project) {
     }
 
     private fun parseTaskConfigStore(node: JsonNode): TaskConfigStore {
-        require(node.isObject && node.get("projects")?.isObject == true) {
-            "Expected an object property named 'projects' in task configuration"
-        }
+        requireConfigShape(node.isObject && node.get("projects")?.isObject == true, "projects")
         val projects = linkedMapOf<String, TaskConfigStore.ProjectConfig>()
         node.get("projects")?.forEachField { projectDir, projectNode ->
+            requireConfigShape(projectNode.isObject, "projects.$projectDir")
+            requireOptionalObject(projectNode, "tasks", "projects.$projectDir")
+            requireOptionalArray(projectNode, "enabledTriggers", "projects.$projectDir")
+            requireOptionalObject(projectNode, "globalConfigs", "projects.$projectDir")
+            requireOptionalObject(projectNode, "uiState", "projects.$projectDir")
+            projectNode.get("enabledTriggers")?.takeIf { it.isArray }?.forEach { trigger ->
+                requireConfigShape(trigger.isTextual, "projects.$projectDir.enabledTriggers[]")
+            }
+            projectNode.get("globalConfigs")?.takeIf { it.isObject }?.forEachField { groupName, groupNode ->
+                requireConfigShape(groupNode.isObject, "projects.$projectDir.globalConfigs.$groupName")
+            }
+            projectNode.get("uiState")?.takeIf { it.isObject }?.forEachField { key, value ->
+                requireConfigShape(value.isBoolean, "projects.$projectDir.uiState.$key")
+            }
             val tasks = linkedMapOf<String, TaskConfig>()
             projectNode.get("tasks")?.forEachField { taskKey, taskNode ->
+                requireConfigShape(taskNode.isObject, "projects.$projectDir.tasks.$taskKey")
+                requireOptionalObject(taskNode, "env", "projects.$projectDir.tasks.$taskKey")
+                requireOptionalObject(taskNode, "params", "projects.$projectDir.tasks.$taskKey")
                 tasks[taskKey] = TaskConfig(
                     extraArgs = taskNode.get("extraArgs")?.asText(null),
                     env = taskNode.get("env")?.takeIf { it.isObject }?.let { envNode ->
@@ -554,6 +570,20 @@ class TaskLauncherService(private val project: Project) {
             )
         }
         return TaskConfigStore(projects = projects)
+    }
+
+    private fun requireConfigShape(valid: Boolean, path: String) {
+        require(valid) { OkScriptToolkitBundle.message("taskLauncher.configShapeError", path) }
+    }
+
+    private fun requireOptionalObject(parent: JsonNode, key: String, path: String) {
+        val value = parent.get(key)
+        requireConfigShape(value == null || value.isNull || value.isObject, "$path.$key")
+    }
+
+    private fun requireOptionalArray(parent: JsonNode, key: String, path: String) {
+        val value = parent.get(key)
+        requireConfigShape(value == null || value.isNull || value.isArray, "$path.$key")
     }
 
     private fun saveTaskConfigs(store: TaskConfigStore) {

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.intellij.openapi.project.Project
 import java.lang.reflect.Proxy
 import java.nio.file.Files
+import java.nio.file.attribute.FileTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -51,6 +52,7 @@ class TaskConfigPersistenceTest {
         ) { _, method, _ -> if (method.name == "getBasePath") workspace.absolutePath else null } as Project
         val service = TaskLauncherService(project)
         val file = workspace.toPath().resolve(".idea/ok-script-toolkit-tasks.json")
+        val mapper = ObjectMapper()
 
         service.saveTaskConfig("m::A", TaskLauncherService.TaskConfig(params = mapOf("count" to 4)), workspace.absolutePath)
         val invalidJson = "{\"projects\":"
@@ -70,6 +72,31 @@ class TaskConfigPersistenceTest {
             service.saveUiStateValue("taskGroupCollapsed::trigger", true, workspace.absolutePath)
         }
         assertEquals(wrongShape, Files.readString(file))
+
+        val malformed = listOf(
+            "project" to mapOf("projects" to mapOf(workspace.absolutePath to emptyList<Any>())),
+            "tasks" to mapOf("projects" to mapOf(workspace.absolutePath to mapOf("tasks" to emptyList<Any>()))),
+            "params" to mapOf("projects" to mapOf(workspace.absolutePath to mapOf(
+                "tasks" to mapOf("m::A" to mapOf("params" to emptyList<Any>())),
+            ))),
+            "globalConfigs" to mapOf("projects" to mapOf(workspace.absolutePath to mapOf(
+                "globalConfigs" to mapOf("group" to emptyList<Any>()),
+            ))),
+            "enabledTriggers" to mapOf("projects" to mapOf(workspace.absolutePath to mapOf(
+                "enabledTriggers" to listOf(1),
+            ))),
+        )
+        malformed.forEachIndexed { index, (name, store) ->
+            val text = mapper.writeValueAsString(store)
+            Files.writeString(file, text)
+            Files.setLastModifiedTime(file, FileTime.fromMillis(1_700_000_000_000L + index * 2_000L))
+            assertEquals(4, service.getTaskConfig("m::A", workspace.absolutePath).params?.get("count"), name)
+            assertNotNull(service.taskConfigReadError(), name)
+            assertFailsWith<Exception>(name) {
+                service.saveUiStateValue("taskGroupCollapsed::trigger", true, workspace.absolutePath)
+            }
+            assertEquals(text, Files.readString(file), name)
+        }
 
         Files.writeString(file, "{\"projects\":{}}")
         assertNull(service.taskConfigReadError())
