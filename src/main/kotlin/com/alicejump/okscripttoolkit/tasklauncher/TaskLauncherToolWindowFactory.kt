@@ -273,6 +273,7 @@ class TaskLauncherPanel(private val project: Project) {
     /** 全局配置内联卡片「改动即存」的防抖（对齐任务参数的 400ms 自动保存语义） */
     private val globalSaveTimer = javax.swing.Timer(400, null).apply { isRepeats = false }
     private val pendingGlobalSaves = linkedMapOf<Pair<String, String>, PendingGlobalSave>()
+    private val failedGlobalSaves = linkedMapOf<Pair<String, String>, FailedGlobalSave>()
     private val globalTextDrafts = mutableMapOf<Pair<String, String>, MutableMap<String, String>>()
     private var flushingGlobalSaves = false
 
@@ -296,6 +297,11 @@ class TaskLauncherPanel(private val project: Project) {
         val controls: List<GlobalConfigEditor.FieldControl>,
         val initialValues: Map<String, Any?>,
         val changedKeys: MutableSet<String>,
+    )
+
+    private data class FailedGlobalSave(
+        val group: TaskLauncherService.GlobalConfigGroup,
+        val edits: GlobalSaveEdits,
     )
 
     /** 任务进程与运行状态由项目级服务持有：工具窗关闭不影响后台任务 */
@@ -1428,11 +1434,16 @@ class TaskLauncherPanel(private val project: Project) {
     private fun buildGlobalGroupForm(group: TaskLauncherService.GlobalConfigGroup): JPanel {
         val root = taskDataRoot()
         val existing = taskService.loadGlobalConfigs(root)[group.name].orEmpty()
+        val failedValues = failedGlobalSaves[root to group.name]?.edits?.editedValues.orEmpty()
         // 控件列表要先建好才能被自己的回调捕获（回调触发时列表已填满），故用可变列表分两步填
         val controls = mutableListOf<GlobalConfigEditor.FieldControl>()
         val initialValues = linkedMapOf<String, Any?>()
         for (field in group.fields) {
-            val value = if (existing.containsKey(field.key)) existing[field.key] else field.value ?: field.default
+            val value = when {
+                failedValues.containsKey(field.key) -> failedValues[field.key]
+                existing.containsKey(field.key) -> existing[field.key]
+                else -> field.value ?: field.default
+            }
             controls += GlobalConfigEditor.makeControl(field, value, project) {
                 scheduleGlobalSave(root, group, controls, initialValues, field.key)
             }
@@ -1519,7 +1530,7 @@ class TaskLauncherPanel(private val project: Project) {
         mutation: (Map<String, Any?>) -> Pair<Map<String, Any?>, Int>,
     ): Int? {
         globalSaveTimer.stop()
-        flushPendingGlobalSave()
+        if (!flushPendingGlobalSave()) return null
         val root = taskDataRoot()
         return try {
             val existing = taskService.loadGlobalConfigs(root)[group.name].orEmpty()
@@ -1579,14 +1590,17 @@ class TaskLauncherPanel(private val project: Project) {
      * 读值推迟到这一刻才做 —— 输入过程中的中间态（比如 JSON 还没补完括号）
      * 不该在每次按键时就判为非法。值非法时不落盘，只在状态栏提示。
      */
-    private fun flushPendingGlobalSave() {
-        if (pendingGlobalSaves.isEmpty()) return
+    private fun flushPendingGlobalSave(): Boolean {
+        if (pendingGlobalSaves.isEmpty() && failedGlobalSaves.isEmpty()) return true
         val saves = pendingGlobalSaves.values.toList()
         pendingGlobalSaves.clear()
+        val previousFailures = failedGlobalSaves.keys.toSet()
+        val attempts = LinkedHashMap(failedGlobalSaves)
+        failedGlobalSaves.clear()
         flushingGlobalSaves = true
+        var allSaved = true
         try {
             for (pending in saves) {
-                val name = pending.group.displayName ?: pending.group.name
                 val groupKey = pending.root to pending.group.name
                 val controlsByKey = pending.controls.associateBy { it.field.key }
                 val readings = linkedMapOf<String, Any?>()
@@ -1602,36 +1616,51 @@ class TaskLauncherPanel(private val project: Project) {
                         }
                     }
                 }
-                try {
-                    if (readings.isNotEmpty()) {
-                        val current = taskService.loadGlobalConfigs(pending.root)[pending.group.name].orEmpty()
-                        val values = GlobalSnapshotRules.mergeEdited(current, pending.initialValues, readings)
-                        if (values != current) {
-                            taskService.saveGlobalConfigGroup(pending.group.name, values, pending.root)
-                            pushGlobalSnapshot(taskService.loadGlobalConfigs(pending.root), pending.root)
-                            statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.gconfigSaved", name)
-                        }
-                        globalTextDrafts[groupKey]?.let { drafts ->
-                            readings.keys.forEach { drafts.remove(it) }
-                            if (drafts.isEmpty()) globalTextDrafts.remove(groupKey)
-                        }
-                    }
-                } catch (e: Exception) {
-                    LOG.warn("Failed to save global configuration", e)
-                    JOptionPane.showMessageDialog(
-                        mainPanel,
-                        OkScriptToolkitBundle.message("taskLauncher.gconfigSaveFailed", e.message ?: ""),
-                        name,
-                        JOptionPane.ERROR_MESSAGE,
-                    )
+                if (readings.isNotEmpty()) {
+                    val prior = attempts[groupKey]?.edits
+                    val edits = prior?.followedBy(pending.initialValues, readings)
+                        ?: GlobalSaveEdits(pending.initialValues, readings)
+                    attempts[groupKey] = FailedGlobalSave(pending.group, edits)
                 }
                 if (invalid != null) {
                     statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.gconfigInvalidValue", invalid)
                 }
             }
+            for ((groupKey, attempt) in attempts) {
+                val (root, groupName) = groupKey
+                val name = attempt.group.displayName ?: groupName
+                try {
+                    val current = taskService.loadGlobalConfigs(root)[groupName].orEmpty()
+                    val values = GlobalSnapshotRules.mergeEdited(
+                        current, attempt.edits.initialValues, attempt.edits.editedValues,
+                    )
+                    if (values != current) {
+                        taskService.saveGlobalConfigGroup(groupName, values, root)
+                        pushGlobalSnapshot(taskService.loadGlobalConfigs(root), root)
+                        statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.gconfigSaved", name)
+                    }
+                    globalTextDrafts[groupKey]?.let { drafts ->
+                        attempt.edits.editedValues.keys.forEach { drafts.remove(it) }
+                        if (drafts.isEmpty()) globalTextDrafts.remove(groupKey)
+                    }
+                } catch (e: Exception) {
+                    failedGlobalSaves[groupKey] = attempt
+                    allSaved = false
+                    LOG.warn("Failed to save global configuration", e)
+                    val message = OkScriptToolkitBundle.message("taskLauncher.gconfigSaveFailed", e.message ?: "")
+                    statusLabel.text = message
+                    if (groupKey !in previousFailures) {
+                        com.intellij.notification.NotificationGroupManager.getInstance()
+                            .getNotificationGroup("okScriptToolkit")
+                            .createNotification(message, com.intellij.notification.NotificationType.ERROR)
+                            .notify(project)
+                    }
+                }
+            }
         } finally {
             flushingGlobalSaves = false
         }
+        return allSaved
     }
 
     /** 执行环境卡与项目配置区的只读取值（设置 / 探针变化后刷新） */
