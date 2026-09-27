@@ -147,6 +147,9 @@ object PythonScriptLocator {
         // run_executor.py 顶部 `from task_visibility import install_all_registered_tasks`
         // 从脚本同目录导入 —— 漏掉它执行器一启动就 ModuleNotFoundError 退出。
         "task_visibility.py",
+        // probe_task_schemas.py 与 run_executor.py 都 `import project_store`
+        // （按项目声明定位「自建全局配置 store」的模块），同款风险：漏掉就整批全局配置消失。
+        "project_store.py",
         "account_store.py",
         "capture_game_window.py",
         "probe_window_config.py",
