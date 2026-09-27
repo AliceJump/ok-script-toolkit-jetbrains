@@ -102,7 +102,7 @@ internal object TaskConfigMerge {
         return store.copy(projects = projects)
     }
 
-    /** 防抖表单快照晚到时，保留其构建后由探针补入的新键；表单里的值仍优先。 */
+    /** 表单只提交编辑过的键，合并进最新快照并保留其余参数与旧版运行字段。 */
     fun withUserTaskSnapshot(
         store: TaskConfigStore,
         projectRoot: String,
@@ -112,7 +112,8 @@ internal object TaskConfigMerge {
         val latest = store.projects[projectRoot]?.tasks?.get(taskKey)
         val params = LinkedHashMap<String, Any>(latest?.params.orEmpty())
         params.putAll(config.params.orEmpty())
-        return withTask(store, projectRoot, taskKey, config.copy(params = params.ifEmpty { null }))
+        val merged = (latest ?: config).copy(params = params.ifEmpty { null })
+        return withTask(store, projectRoot, taskKey, merged)
     }
 
     /**

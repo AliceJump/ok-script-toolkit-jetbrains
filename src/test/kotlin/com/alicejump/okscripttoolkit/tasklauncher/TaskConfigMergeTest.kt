@@ -129,6 +129,24 @@ class TaskConfigMergeTest {
         )
     }
 
+    @Test
+    fun `editing one field does not change untouched numeric values or concurrent fields`() {
+        val latest = storeWith(mapOf("/proj" to projectOf(taskEntries = mapOf(
+            "m::A" to config("counter" to 5_000_000_000L, "other" to "external").copy(
+                extraArgs = "--latest", env = mapOf("MODE" to "latest"),
+            ),
+        ))))
+        val staleForm = config("enabled" to true).copy(extraArgs = "--old", env = mapOf("MODE" to "old"))
+        val saved = TaskConfigMerge.withUserTaskSnapshot(latest, "/proj", "m::A", staleForm)
+
+        assertEquals(
+            mapOf("counter" to 5_000_000_000L, "other" to "external", "enabled" to true),
+            saved.projects["/proj"]?.tasks?.get("m::A")?.params,
+        )
+        assertEquals("--latest", saved.projects["/proj"]?.tasks?.get("m::A")?.extraArgs)
+        assertEquals(mapOf("MODE" to "latest"), saved.projects["/proj"]?.tasks?.get("m::A")?.env)
+    }
+
     private fun storeWith(
         projectEntries: Map<String, TaskConfigStore.ProjectConfig> = emptyMap(),
     ): TaskConfigStore = TaskConfigStore(projects = projectEntries)

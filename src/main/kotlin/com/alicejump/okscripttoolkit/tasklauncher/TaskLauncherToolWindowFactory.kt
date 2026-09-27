@@ -2685,7 +2685,7 @@ class TaskLauncherPanel(private val project: Project) {
                 JCheckBox("", currentValue as? Boolean ?: false).also { cb ->
                     cb.addActionListener {
                         owningRenderer.markEdited(field.key, cb)
-                        autoSaveTaskConfig(task)
+                        autoSaveTaskConfig(task, owningRenderer)
                     }
                 }
             }
@@ -2697,7 +2697,7 @@ class TaskLauncherPanel(private val project: Project) {
                 comboBox.selectedItem = currentValue
                     comboBox.addActionListener {
                         owningRenderer.markEdited(field.key, comboBox)
-                        autoSaveTaskConfig(task)
+                        autoSaveTaskConfig(task, owningRenderer)
                     }
                 comboBox
             }
@@ -2713,7 +2713,7 @@ class TaskLauncherPanel(private val project: Project) {
                 }
                 list.addListSelectionListener {
                     owningRenderer.markEdited(field.key, list)
-                    autoSaveTaskConfig(task)
+                    autoSaveTaskConfig(task, owningRenderer)
                 }
                 JBScrollPane(list)
             }
@@ -2754,13 +2754,13 @@ class TaskLauncherPanel(private val project: Project) {
                 groupCombo.addActionListener {
                     fillLeaves(groupCombo.selectedItem)
                     owningRenderer.markEdited(field.key, leafField)
-                    autoSaveTaskConfig(task)
+                    autoSaveTaskConfig(task, owningRenderer)
                 }
                 leafCombo.addActionListener {
                     if (leafCombo.selectedItem != null) {
                         leafField.text = leafCombo.selectedItem?.toString()
                         owningRenderer.markEdited(field.key, leafField)
-                        autoSaveTaskConfig(task)
+                        autoSaveTaskConfig(task, owningRenderer)
                     }
                 }
                 val combos = JPanel(BorderLayout(4, 0))
@@ -2775,7 +2775,7 @@ class TaskLauncherPanel(private val project: Project) {
             currentValue is List<*> -> {
                 if (currentValue.any { it is Map<*, *> }) {
                     // 对象数组（条件/动作序列）：无结构化编辑器，回退多行 JSON（避免 toString 破坏数据）
-                    jsonSequenceArea(currentValue, task, field.key)
+                    jsonSequenceArea(currentValue, task, field.key, owningRenderer)
                 } else {
                     // 对齐 VSCode buildList：折叠摘要 + 「修改」弹窗（ModifyListDialog 语义）
                     // onChanged 回传的是新值（List<Any?>），而 markEdited 要的是控件本身，
@@ -2788,20 +2788,29 @@ class TaskLauncherPanel(private val project: Project) {
                         initialValue = currentValue,
                         onChanged = {
                             owningRenderer.markEdited(field.key, editor)
-                            autoSaveTaskConfig(task)
+                            autoSaveTaskConfig(task, owningRenderer)
                         },
                     )
                     editor
                 }
             }
 
-            field.type?.get("type") == "cond_sequence_editor" -> jsonSequenceArea(currentValue, task, field.key)
+            field.type?.get("type") == "cond_sequence_editor" ->
+                jsonSequenceArea(currentValue, task, field.key, owningRenderer)
 
             currentValue is Int -> {
                 JSpinner(SpinnerNumberModel(currentValue, Int.MIN_VALUE, Int.MAX_VALUE, 1)).also { sp ->
                     sp.addChangeListener {
                         owningRenderer.markEdited(field.key, sp)
-                        autoSaveTaskConfig(task)
+                        autoSaveTaskConfig(task, owningRenderer)
+                    }
+                }
+            }
+            currentValue is Long -> {
+                JSpinner(SpinnerNumberModel(currentValue, Long.MIN_VALUE, Long.MAX_VALUE, 1L)).also { sp ->
+                    sp.addChangeListener {
+                        owningRenderer.markEdited(field.key, sp)
+                        autoSaveTaskConfig(task, owningRenderer)
                     }
                 }
             }
@@ -2809,7 +2818,15 @@ class TaskLauncherPanel(private val project: Project) {
                 JSpinner(SpinnerNumberModel(currentValue, Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY, 0.1)).also { sp ->
                     sp.addChangeListener {
                         owningRenderer.markEdited(field.key, sp)
-                        autoSaveTaskConfig(task)
+                        autoSaveTaskConfig(task, owningRenderer)
+                    }
+                }
+            }
+            currentValue is Float -> {
+                JSpinner(SpinnerNumberModel(currentValue, -Float.MAX_VALUE, Float.MAX_VALUE, 0.1f)).also { sp ->
+                    sp.addChangeListener {
+                        owningRenderer.markEdited(field.key, sp)
+                        autoSaveTaskConfig(task, owningRenderer)
                     }
                 }
             }
@@ -2824,15 +2841,15 @@ class TaskLauncherPanel(private val project: Project) {
                     area.document.addDocumentListener(object : DocumentListener {
                         override fun insertUpdate(e: DocumentEvent?) {
                             owningRenderer.markEdited(field.key, area)
-                            autoSaveTaskConfig(task)
+                            autoSaveTaskConfig(task, owningRenderer)
                         }
                         override fun removeUpdate(e: DocumentEvent?) {
                             owningRenderer.markEdited(field.key, area)
-                            autoSaveTaskConfig(task)
+                            autoSaveTaskConfig(task, owningRenderer)
                         }
                         override fun changedUpdate(e: DocumentEvent?) {
                             owningRenderer.markEdited(field.key, area)
-                            autoSaveTaskConfig(task)
+                            autoSaveTaskConfig(task, owningRenderer)
                         }
                     })
                     return JBScrollPane(area).apply { preferredSize = Dimension(200, 70) }
@@ -2849,7 +2866,7 @@ class TaskLauncherPanel(private val project: Project) {
                             insideUpdate = true
                             SwingUtilities.invokeLater {
                                 owningRenderer.markEdited(field.key, textField)
-                                autoSaveTaskConfig(task)
+                                autoSaveTaskConfig(task, owningRenderer)
                                 insideUpdate = false
                             }
                         }
@@ -2861,23 +2878,16 @@ class TaskLauncherPanel(private val project: Project) {
         return component
     }
 
-    /**
-     * 读取文本域值：条件/动作序列等 JSON 域在合法时保存解析后的结构（对齐 VSCode 结构化
-     * 编辑器的数组/对象语义）；空/非法文本返回 null（跳过保存，保持默认值）。
-     */
+    /** JSON 序列只保存数组；未完成的输入保留在草稿里，不覆盖磁盘快照。 */
     private fun textAreaValue(area: JTextArea): Any? {
         val text = area.text
         if (text.isBlank()) return null
         if (area.getClientProperty(OK_JSON_FIELD) == true) {
-            val parsed = runCatching {
+            return runCatching {
                 val node = objectMapper.readTree(text.trim())
+                require(node.isArray)
                 objectMapper.convertValue(node, Any::class.java)
             }.getOrNull()
-            // JSON 字段：解析成功返回结构化值，失败返回最后有效的值
-            if (parsed != null) return parsed
-            // 返回最后有效的值（如果有）
-            @Suppress("UNCHECKED_CAST")
-            return area.getClientProperty("lastValidValue") as? Any
         }
         return text
     }
@@ -2887,12 +2897,11 @@ class TaskLauncherPanel(private val project: Project) {
         currentValue: Any?,
         task: TaskLauncherService.TaskInfo,
         fieldKey: String,
+        owningRenderer: SchemaTreeRenderer,
     ): JComponent {
         val mapper = objectMapper
         val root = taskDataRoot()
         val taskKey = taskKeyOf(task)
-        // 跟踪最后有效的值，用于 JSON 无效时保留
-        var lastValidValue: Any? = currentValue
         val savedText = when (val v = currentValue) {
             null -> ""
             is String -> v
@@ -2904,39 +2913,34 @@ class TaskLauncherPanel(private val project: Project) {
         area.putClientProperty(OK_JSON_FIELD, true)
         fun validateJson(rememberDraft: Boolean = false) {
             val text = area.text.trim()
-            val parsed = if (text.isEmpty()) null else runCatching { mapper.readTree(text) }.getOrNull()
+            val parsed = if (text.isEmpty()) null else runCatching { mapper.readTree(text).takeIf { it.isArray } }.getOrNull()
             area.border = BorderFactory.createLineBorder(if (parsed != null || text.isEmpty()) OK_BORDER else BAD_BORDER)
             if (rememberDraft) taskJsonDrafts.record(root, taskKey, fieldKey, area.text, parsed != null)
-            // 解析成功时更新最后有效的值
-            if (parsed != null) {
-                lastValidValue = runCatching { mapper.convertValue(parsed, Any::class.java) }.getOrNull()
-                area.putClientProperty("lastValidValue", lastValidValue)
-            }
         }
         area.document.addDocumentListener(object : DocumentListener {
             override fun insertUpdate(e: DocumentEvent?) {
-                currentRenderer?.markEdited(fieldKey, area)
+                owningRenderer.markEdited(fieldKey, area)
                 validateJson(rememberDraft = true)
-                autoSaveTaskConfig(task)
+                autoSaveTaskConfig(task, owningRenderer)
             }
             override fun removeUpdate(e: DocumentEvent?) {
-                currentRenderer?.markEdited(fieldKey, area)
+                owningRenderer.markEdited(fieldKey, area)
                 validateJson(rememberDraft = true)
-                autoSaveTaskConfig(task)
+                autoSaveTaskConfig(task, owningRenderer)
             }
             override fun changedUpdate(e: DocumentEvent?) {
-                currentRenderer?.markEdited(fieldKey, area)
+                owningRenderer.markEdited(fieldKey, area)
                 validateJson(rememberDraft = true)
-                autoSaveTaskConfig(task)
+                autoSaveTaskConfig(task, owningRenderer)
             }
         })
         validateJson()
-        // 将最后有效的值存储到客户端属性中，供 textAreaValue 使用
-        area.putClientProperty("lastValidValue", lastValidValue)
         return JBScrollPane(area).apply { preferredSize = Dimension(200, 90) }
     }
 
-    private fun autoSaveTaskConfig(task: TaskLauncherService.TaskInfo) {
+    private fun autoSaveTaskConfig(task: TaskLauncherService.TaskInfo, owningRenderer: SchemaTreeRenderer) {
+        // JTextField 的延迟回调可能在任务/项目切换后才到达，不能读取新表单写进旧任务。
+        if (currentRenderer !== owningRenderer || detailTask?.let { taskKeyOf(it) } != taskKeyOf(task)) return
         // 参数变更在 EDT 上高频触发：先构建快照，文件 IO 经 400ms 防抖后放到后台执行
         // 从编辑的控件同步到其他重复控件
         currentRenderer?.syncFromEdited()
@@ -2944,7 +2948,11 @@ class TaskLauncherPanel(private val project: Project) {
         val root = taskDataRoot()
         val taskKey = "${task.module}::${task.className}"
         val config = buildTaskConfig(task, root)
-        pendingSave = PendingTaskSave(root, taskKey, config)
+        if (config.params.isNullOrEmpty()) return
+        val previous = pendingSave?.takeIf { it.root == root && it.taskKey == taskKey }
+        val changes = LinkedHashMap<String, Any>(previous?.config?.params.orEmpty())
+        changes.putAll(config.params.orEmpty())
+        pendingSave = PendingTaskSave(root, taskKey, config.copy(params = changes.ifEmpty { null }))
         saveTimer.restart()
     }
 
@@ -2984,10 +2992,9 @@ class TaskLauncherPanel(private val project: Project) {
     /**
      * 由表单当前值构建任务配置。
      *
-     * **起点是既有快照的副本**（对齐 VS Code sanitizeTaskConfig 的「永不删键」决议）：
-     * schema 已不存在的孤儿键（default_config 里删掉的旧键）原样保留 —— 键回归 schema
-     * 时设置自动复活。之前只收集表单控件，用户一编辑就把孤儿键从 tasks.json 里抹掉了。
-     * 表单没渲染出来的键（schema 未就绪 / 隐藏字段）同样走这条路径保留。
+     * 只捕获用户编辑过的字段，再由 [TaskConfigMerge.withUserTaskSnapshot] 合并进最新快照。
+     * 未触碰的字段（包括孤儿键、显式 null 和超出 Int 范围的数字）必须保持原类型和原值；
+     * 也不能让防抖期间的表单副本覆盖其他编辑器刚保存的字段。
      *
      * **legacy 字段必须带过来**：`extraArgs` / `env` 在单进程执行器模型下已不生效
      * （[warnLegacyPerTaskSettings] 会在启动时提示一次），但 UI 上早就没有它们的入口了 ——
@@ -3002,11 +3009,9 @@ class TaskLauncherPanel(private val project: Project) {
      */
     private fun buildTaskConfig(task: TaskLauncherService.TaskInfo, root: String): TaskLauncherService.TaskConfig {
         val existing = taskService.getTaskConfig(taskKeyOf(task), root)
-        val params = LinkedHashMap<String, Any>(existing.params.orEmpty())
+        val params = linkedMapOf<String, Any>()
         for ((key, component) in paramFields) {
-            if (TaskParamValues.keepUntouchedNull(existing.params.orEmpty(), key, currentRenderer?.wasEdited(key) == true)) {
-                continue
-            }
+            if (currentRenderer?.wasEdited(key) != true) continue
             // 使用 renderer 的 getValueControl 方法获取值控件
             val actualComponent = currentRenderer?.getValueControl(key) ?: component
             when (actualComponent) {
