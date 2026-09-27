@@ -39,8 +39,11 @@ internal class AccountEditorDialog(
     private val onAccountListSaved: () -> Unit,
 ) {
     private val mapper = ObjectMapper()
+    private val drafts = AccountEditorDrafts()
     private var data: AccountStoreData? = null
     private var busy = false
+    private var refreshingData = false
+    private var renderedMapId: String? = null
     private val dialog = JDialog(
         SwingUtilities.getWindowAncestor(parent),
         msg("taskLauncher.accounts"),
@@ -94,6 +97,7 @@ internal class AccountEditorDialog(
         dialog.setLocationRelativeTo(parent)
         listSave.addActionListener {
             perform(service.setListText(projectDir, accountListArea.text), "taskLauncher.accountSaved") {
+                accountListArea.text = data?.accountListText.orEmpty()
                 onAccountListSaved()
             }
         }
@@ -101,10 +105,15 @@ internal class AccountEditorDialog(
         overrideTarget.addActionListener { updateOverrideSummary() }
         overrideEdit.addActionListener { editOverride() }
         overrideClear.addActionListener { clearOverride() }
-        mapAccount.addActionListener { loadMapText() }
+        mapAccount.addActionListener { if (!refreshingData) loadMapText() }
         mapSave.addActionListener {
             val account = mapAccount.selectedItem as? String ?: return@addActionListener
-            perform(service.setMapContent(projectDir, account, mapArea.text), "taskLauncher.accountSaved")
+            val id = data?.let { resolveAccountId(it, account) }
+            perform(service.setMapContent(projectDir, account, mapArea.text), "taskLauncher.accountSaved") {
+                drafts.forgetMap(id)
+                renderedMapId = null
+                loadMapText()
+            }
         }
         reload.addActionListener { load() }
         setBusy(false)
@@ -212,17 +221,25 @@ internal class AccountEditorDialog(
     private fun refreshData(fresh: AccountStoreData) {
         val oldOverride = overrideAccount.selectedItem as? String
         val oldMap = mapAccount.selectedItem as? String
-        data = fresh
-        accountListArea.text = fresh.accountListText
-        val names = fresh.accountListText.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.distinct().toList()
-        overrideAccount.removeAllItems()
-        mapAccount.removeAllItems()
-        names.forEach {
-            overrideAccount.addItem(it)
-            mapAccount.addItem(it)
+        val listText = drafts.listText(accountListArea.text, data?.accountListText, fresh.accountListText)
+        captureMapDraft()
+        renderedMapId = null
+        refreshingData = true
+        try {
+            data = fresh
+            accountListArea.text = listText
+            val names = fresh.accountListText.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.distinct().toList()
+            overrideAccount.removeAllItems()
+            mapAccount.removeAllItems()
+            names.forEach {
+                overrideAccount.addItem(it)
+                mapAccount.addItem(it)
+            }
+            if (oldOverride != null && names.contains(oldOverride)) overrideAccount.selectedItem = oldOverride
+            if (oldMap != null && names.contains(oldMap)) mapAccount.selectedItem = oldMap
+        } finally {
+            refreshingData = false
         }
-        if (oldOverride != null && names.contains(oldOverride)) overrideAccount.selectedItem = oldOverride
-        if (oldMap != null && names.contains(oldMap)) mapAccount.selectedItem = oldMap
         refreshTargets()
         loadMapText()
     }
@@ -331,11 +348,20 @@ internal class AccountEditorDialog(
     }
 
     private fun loadMapText() {
+        captureMapDraft()
         val account = mapAccount.selectedItem as? String
         val snapshot = data
         val id = if (account != null && snapshot != null) resolveAccountId(snapshot, account) else ""
-        mapArea.text = if (id.isNotEmpty()) snapshot?.mapContents?.path(id)?.asText("") ?: "" else ""
+        val persisted = if (id.isNotEmpty()) snapshot?.mapContents?.path(id)?.asText("") ?: "" else ""
+        renderedMapId = id.takeIf { it.isNotEmpty() }
+        mapArea.text = drafts.mapText(renderedMapId, persisted)
         mapSave.isEnabled = !busy && account != null
+    }
+
+    private fun captureMapDraft() {
+        val id = renderedMapId ?: return
+        val persisted = data?.mapContents?.path(id)?.asText("") ?: ""
+        drafts.captureMap(id, mapArea.text, persisted)
     }
 
     private fun resolveAccountId(snapshot: AccountStoreData, username: String): String {
