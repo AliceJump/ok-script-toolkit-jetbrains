@@ -90,7 +90,6 @@ class TaskLauncherPanel(private val project: Project) {
 
         /** 一级页签下标（tabbedPane.addTab 的添加顺序） */
         private const val TAB_TASKS = 0
-        private const val TAB_RUNNER = 2
 
         /**
          * 任务页改用**上下分栏**的宽度阈值（px）。
@@ -152,10 +151,6 @@ class TaskLauncherPanel(private val project: Project) {
     // 各独立编辑器入口归工具。
     private lateinit var tabbedPane: JBTabbedPane
 
-    /** 任务页顶部的执行器状态胶囊：点击跳运行器页（运行态完整视图在那边） */
-    private val executorPillDot = TaskLauncherTheme.HealthDot()
-    /** 状态文案可能很长（「执行器运行中 · N 个触发任务已入列」）⇒ 窄窗里省略而不是把刷新按钮挤掉 */
-    private val executorPillLabel = EllipsizingLabel()
 
     // ── 任务页的两个半区（分栏方向随宽度自适应，见 applyTaskPageOrientation）──
     /** 半区一：搜索 + 执行器胶囊 + 队列条 + 任务卡列表 */
@@ -167,17 +162,22 @@ class TaskLauncherPanel(private val project: Project) {
     /** 当前是否上下分栏（true = 列表在上、详情在下） */
     private var taskPageStacked = true
 
-    // ── 运行器页（执行器状态 / 队列与轮询 / 执行环境 / 游戏连接）─────
+    // ── 执行器条（**跨页签常驻**：无论在看哪个页签，执行器在干什么都看得见）──────
+    // 用户要求「运行器应该作为无论何时都能看到的东西」，且「不要弄太大，就弄几个关键的地方」。
+    // 所以只放关键项：状态点 + 状态文字 + 当前任务 + 生命周期图标按钮 + 日志入口，就一行；
+    // 按钮按状态**显隐**（不是只置灰）—— 空闲时只剩一个「启动」，条子始终很窄。
     // ⚠️ 必须声明在 init 块之前：Kotlin 按文本顺序执行初始化器，
     // init → initUI() → showDetailPlaceholder() 会读下面的控件字段。
     private val runnerDot = TaskLauncherTheme.HealthDot()
-    private val runnerStatusLabel = JBLabel().apply { font = font.deriveFont(Font.BOLD) }
+    private val runnerStatusLabel = EllipsizingLabel().apply { font = font.deriveFont(Font.BOLD) }
     private val runnerCurrentChip = JBLabel().apply { isVisible = false }
-    private val runnerStartButton = JButton(OkScriptToolkitBundle.message("taskLauncher.startExecutor"))
-    private val runnerPauseButton = JButton(OkScriptToolkitBundle.message("taskLauncher.pause"))
-    private val runnerResumeButton = JButton(OkScriptToolkitBundle.message("taskLauncher.resume"))
-    private val runnerStopCurrentButton = JButton(OkScriptToolkitBundle.message("taskLauncher.stopCurrent"))
-    private val runnerCloseButton = JButton(OkScriptToolkitBundle.message("taskLauncher.closeExecutor"))
+    private val runnerStartButton = iconButton(AllIcons.Actions.Execute, "taskLauncher.startExecutor") { startExecutorManual() }
+    private val runnerPauseButton = iconButton(AllIcons.Actions.Pause, "taskLauncher.pause") { sendControlCommand("pause") }
+    private val runnerResumeButton = iconButton(AllIcons.Actions.Play_forward, "taskLauncher.resume") { sendControlCommand("resume") }
+    private val runnerStopCurrentButton = iconButton(AllIcons.Actions.Suspend, "taskLauncher.stopCurrent") { stopCurrentTask() }
+    private val runnerCloseButton = iconButton(AllIcons.Actions.Cancel, "taskLauncher.closeExecutor") { closeExecutor() }
+    /** 常驻执行器条本体（按钮显隐后要 revalidate 才收得回去） */
+    private var executorBar: JPanel? = null
     private val runnerQueuePanel = JPanel(WrapLayout(FlowLayout.LEFT, 4, 1))
     private val runnerPollingPanel = JPanel(WrapLayout(FlowLayout.LEFT, 4, 1))
     /** 执行环境卡取值（长路径不截断，见 [wrappingValueLabel]） */
@@ -282,9 +282,6 @@ class TaskLauncherPanel(private val project: Project) {
         val base: Map<String, Any?>,
     )
 
-    /** 状态栏右侧的「查看日志」入口：把 Run 工具窗口的控制台拉到前台 */
-    private val viewLogButton = JButton(OkScriptToolkitBundle.message("taskLauncher.viewLog"))
-
     /** 任务进程与运行状态由项目级服务持有：工具窗关闭不影响后台任务 */
     private val taskRunner = TaskRunnerService.getInstance(project)
 
@@ -387,7 +384,6 @@ class TaskLauncherPanel(private val project: Project) {
             else -> UIUtil.getLabelDisabledForeground()
         }
         healthDot.color = dotColor
-        executorPillDot.color = dotColor
         runnerDot.color = dotColor
 
         val statusText = when {
@@ -397,18 +393,20 @@ class TaskLauncherPanel(private val project: Project) {
             state.status == "running" -> OkScriptToolkitBundle.message("taskLauncher.executorRunning", state.enabledTriggers.size)
             else -> OkScriptToolkitBundle.message("taskLauncher.executorIdle")
         }
-        executorPillLabel.text = statusText
-        // 窄窗里胶囊文案会省略，完整状态留在 tooltip
-        executorPillLabel.toolTipText = statusText
         runnerStatusLabel.text = statusText
+        runnerStatusLabel.toolTipText = statusText
 
-        // 执行器生命周期按钮（运行器页；原工具栏在 IA 重设计后移除）
+        // 生命周期按钮按状态**显隐**（不是只置灰）：空闲时条子上只剩一个「启动」，
+        // 常驻条才能一直很窄（用户要求「不要弄太大」）。
         val active = state.status == "running" || state.status == "connecting"
-        runnerStartButton.isEnabled = !active
-        runnerPauseButton.isEnabled = state.status == "running" && !state.paused
-        runnerResumeButton.isEnabled = state.status == "running" && state.paused
-        runnerStopCurrentButton.isEnabled = state.current.isNotEmpty()
-        runnerCloseButton.isEnabled = active
+        val runningNow = state.status == "running"
+        runnerStartButton.isVisible = !active
+        runnerPauseButton.isVisible = runningNow && !state.paused
+        runnerResumeButton.isVisible = runningNow && state.paused
+        runnerStopCurrentButton.isVisible = state.current.isNotEmpty()
+        runnerCloseButton.isVisible = active
+        // 显隐会改变条子的首选高度，得让容器重新布局
+        executorBar?.revalidate()
 
         // 当前任务 chip（运行器状态卡）
         val running = state.status == "running" && state.current.isNotEmpty()
@@ -425,7 +423,7 @@ class TaskLauncherPanel(private val project: Project) {
             runnerCurrentChip.toolTipText = null
         }
 
-        // 队列与轮询清单（chips 可点击 → 跳任务页定位）
+        // 运行器页「队列与轮询」清单（chips 可点击 → 跳任务页定位）
         renderRunListPanel(
             runnerQueuePanel,
             state.onetimeQueue,
@@ -528,9 +526,15 @@ class TaskLauncherPanel(private val project: Project) {
         statusEast.add(progressBar)
         statusBar.add(statusEast, BorderLayout.EAST)
 
+        // 执行器条跨页签常驻：与状态栏一起放在页签下方，切到任何页签都看得见执行器在干什么
+        val south = JPanel(BorderLayout())
+        south.isOpaque = false
+        south.add(buildExecutorBar(), BorderLayout.NORTH)
+        south.add(statusBar, BorderLayout.SOUTH)
+
         mainPanel.layout = BorderLayout()
         mainPanel.add(tabbedPane, BorderLayout.CENTER)
-        mainPanel.add(statusBar, BorderLayout.SOUTH)
+        mainPanel.add(south, BorderLayout.SOUTH)
         // 工具窗宽度变了就重算任务页分栏方向（只在跨过阈值那一次真的重建 Splitter）
         mainPanel.addComponentListener(object : java.awt.event.ComponentAdapter() {
             override fun componentResized(e: java.awt.event.ComponentEvent) {
@@ -574,37 +578,13 @@ class TaskLauncherPanel(private val project: Project) {
             addActionListener { loadTasks() }
         }
 
-        // 执行器状态胶囊：运行态摘要 + 点击跳运行器页（运行态的完整视图在那边）
-        val openRunnerTab = object : java.awt.event.MouseAdapter() {
-            override fun mouseClicked(e: java.awt.event.MouseEvent) {
-                tabbedPane.selectedIndex = TAB_RUNNER
-            }
-        }
-        val pill = JPanel(BorderLayout(6, 0)).apply {
-            isOpaque = false
-            border = BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(JBColor.border(), 1, true),
-                BorderFactory.createEmptyBorder(3, 10, 3, 10),
-            )
-            cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
-            toolTipText = OkScriptToolkitBundle.message("taskLauncher.runnerTabHint")
-            add(executorPillDot, BorderLayout.WEST)
-            add(executorPillLabel, BorderLayout.CENTER)
-            // 子标签会吃掉点击（Swing 事件不冒泡）⇒ 三处挂同一个监听
-            addMouseListener(openRunnerTab)
-            executorPillDot.addMouseListener(openRunnerTab)
-            executorPillLabel.addMouseListener(openRunnerTab)
-        }
-
-        val toolbar = JPanel(BorderLayout(0, 4))
+        // 执行器状态不再挂在任务页上：它已经做成**跨页签常驻**的执行器条
+        // （见 buildExecutorBar），任务页只留搜索 + 刷新。
+        val toolbar = JPanel(BorderLayout(8, 0))
         toolbar.isOpaque = false
         toolbar.border = BorderFactory.createEmptyBorder(8, 8, 4, 8)
-        toolbar.add(taskSearchField, BorderLayout.NORTH)
-        val pillRow = JPanel(BorderLayout(6, 0))
-        pillRow.isOpaque = false
-        pillRow.add(pill, BorderLayout.CENTER)
-        pillRow.add(refreshButton, BorderLayout.EAST)
-        toolbar.add(pillRow, BorderLayout.SOUTH)
+        toolbar.add(taskSearchField, BorderLayout.CENTER)
+        toolbar.add(refreshButton, BorderLayout.EAST)
 
         val listScrollPane = JBScrollPane(taskCardList)
         listScrollPane.border = BorderFactory.createEmptyBorder()
@@ -725,7 +705,8 @@ class TaskLauncherPanel(private val project: Project) {
         detailTitle.font = detailTitle.font.deriveFont(Font.BOLD)
         // 名称拿剩余宽度（放不下就省略），两个 chip 拿 preferred 宽度永不裁切 ——
         // FlowLayout 在窄窗里会把后面的 chip 直接切掉（与任务卡同款坑）。
-        val chips = JPanel(WrapLayout(FlowLayout.RIGHT, 6, 0))
+        // EAST 位置用 FlowLayout：WrapLayout 的宽度取自自己的首选宽度，会退化成竖排
+        val chips = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0))
         chips.isOpaque = false
         chips.add(detailKindChip)
         chips.add(detailStateChip)
@@ -762,7 +743,8 @@ class TaskLauncherPanel(private val project: Project) {
     private fun buildDetailFooter(): JPanel {
         // 监听器在 wireTaskPageActions() 里挂一次（本函数会随分栏方向切换被重调）
         val hint = SchemaFieldUi.WrappingDescription(OkScriptToolkitBundle.message("taskLauncher.autosaveHint"))
-        val buttons = JPanel(WrapLayout(FlowLayout.LEFT, 6, 4))
+        // WEST 位置同样用 FlowLayout（理由同上）
+        val buttons = JPanel(FlowLayout(FlowLayout.LEFT, 6, 4))
         buttons.isOpaque = false
         buttons.add(detailSyncButton)
         buttons.add(detailResetButton)
@@ -999,34 +981,51 @@ class TaskLauncherPanel(private val project: Project) {
      * 执行器生命周期（启动 / 暂停 / 继续 / 停止当前 / 关闭）**只在这里** ——
      * 任务页只留一枚点击跳转的状态胶囊，避免同一动作出现第二条入口。
      */
+    /**
+     * 执行器条：**跨页签常驻**在页签下方（与状态栏同层，切页签不会消失）。
+     *
+     * 只放关键项（用户要求「不要弄太大」）：状态点 + 状态文字 + 当前任务 + 生命周期
+     * 图标按钮 + 日志入口，就一行。按钮的**显隐**由 [syncHealthBar] 按状态驱动 ——
+     * 空闲时只剩一个「启动」，所以条子永远是窄的。
+     */
+    private fun buildExecutorBar(): JPanel {
+        val logButton = iconButton(AllIcons.Toolwindows.ToolWindowRun, "taskLauncher.viewLog") { taskRunner.showConsole() }
+        logButton.toolTipText = OkScriptToolkitBundle.message("taskLauncher.viewLogHint")
+
+        // 状态行：状态点 / 状态文字 / 当前任务。用 BorderLayout 而不是 FlowLayout ——
+        // 窄窗里让状态文字自己省略，chip 永远可见（与任务卡同款）。
+        val statusRow = JPanel(BorderLayout(6, 0))
+        statusRow.isOpaque = false
+        statusRow.add(runnerDot, BorderLayout.WEST)
+        statusRow.add(runnerStatusLabel, BorderLayout.CENTER)
+        statusRow.add(runnerCurrentChip, BorderLayout.EAST)
+
+        // ⚠️ 按钮行必须用 **FlowLayout**，不能用 WrapLayout：WrapLayout 的首选宽度是按
+        // 容器**当前**宽度算的，而放在 BorderLayout.EAST 时它的宽度恰恰取自它自己的首选宽度
+        // ⇒ 首算拿到宽度 0，退化成「每项一行」= 按钮竖排（用户反馈「按钮怎么是竖着的」）。
+        // 这里本来就只想要一行（图标按钮 6 个 ≈ 130px），FlowLayout 的首选宽度就是单行。
+        val right = JPanel(FlowLayout(FlowLayout.RIGHT, 2, 0))
+        right.isOpaque = false
+        right.add(runnerStartButton)
+        right.add(runnerPauseButton)
+        right.add(runnerResumeButton)
+        right.add(runnerStopCurrentButton)
+        right.add(runnerCloseButton)
+        right.add(logButton)
+
+        val bar = JPanel(BorderLayout(8, 0))
+        bar.isOpaque = false
+        bar.border = BorderFactory.createCompoundBorder(
+            BorderFactory.createMatteBorder(1, 0, 0, 0, JBColor.border()),
+            BorderFactory.createEmptyBorder(3, 6, 3, 6),
+        )
+        bar.add(statusRow, BorderLayout.CENTER)
+        bar.add(right, BorderLayout.EAST)
+        executorBar = bar
+        return bar
+    }
+
     private fun buildRunnerPage(): JPanel {
-        runnerStartButton.addActionListener { startExecutorManual() }
-        runnerPauseButton.addActionListener { sendControlCommand("pause") }
-        runnerResumeButton.addActionListener { sendControlCommand("resume") }
-        runnerStopCurrentButton.addActionListener { stopCurrentTask() }
-        runnerCloseButton.addActionListener { closeExecutor() }
-
-        val statusCard = pageCard(OkScriptToolkitBundle.message("taskLauncher.runnerExecStatus")) { body ->
-            val head = JPanel(WrapLayout(FlowLayout.LEFT, 6, 0))
-            head.isOpaque = false
-            head.add(runnerDot)
-            head.add(runnerStatusLabel)
-            head.add(runnerCurrentChip)
-            body.add(head)
-
-            val buttons = JPanel(WrapLayout(FlowLayout.LEFT, 4, 0))
-            buttons.isOpaque = false
-            buttons.add(runnerStartButton)
-            buttons.add(runnerPauseButton)
-            buttons.add(runnerResumeButton)
-            buttons.add(runnerStopCurrentButton)
-            buttons.add(runnerCloseButton)
-            viewLogButton.toolTipText = OkScriptToolkitBundle.message("taskLauncher.viewLogHint")
-            viewLogButton.addActionListener { taskRunner.showConsole() }
-            buttons.add(viewLogButton)
-            body.add(buttons)
-        }
-
         val queueCard = pageCard(OkScriptToolkitBundle.message("taskLauncher.runnerQueuePolling")) { body ->
             body.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.runCenter.queue")))
             body.add(runnerQueuePanel)
@@ -1043,7 +1042,7 @@ class TaskLauncherPanel(private val project: Project) {
             body.add(envRow(OkScriptToolkitBundle.message("taskLauncher.envPython"), envPythonValue))
             body.add(envRow(OkScriptToolkitBundle.message("taskLauncher.envSandbox"), envSandboxValue))
             body.add(envRow(OkScriptToolkitBundle.message("taskLauncher.envSnapshots"), envSnapshotsValue))
-            val buttons = JPanel(WrapLayout(FlowLayout.LEFT, 4, 0))
+            val buttons = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
             buttons.isOpaque = false
             buttons.add(settingsButton)
             buttons.add(rescanButton)
@@ -1068,7 +1067,7 @@ class TaskLauncherPanel(private val project: Project) {
         gameStatusLabel.foreground = UIUtil.getContextHelpForeground()
         toolboxStatusLabel.foreground = UIUtil.getContextHelpForeground()
         val gameCard = pageCard(OkScriptToolkitBundle.message("taskLauncher.runnerGame")) { body ->
-            val buttons = JPanel(WrapLayout(FlowLayout.LEFT, 4, 0))
+            val buttons = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
             buttons.isOpaque = false
             buttons.add(connectGameButton)
             buttons.add(disconnectGameButton)
@@ -1079,9 +1078,11 @@ class TaskLauncherPanel(private val project: Project) {
         }
 
         refreshEnvironmentInfo()
+        // 执行器状态卡已搬去常驻的「执行器条」（见 buildExecutorBar），这里只剩
+        // 队列与轮询 / 执行环境 / 游戏连接。
         // 单列而不是两列网格：工具窗默认只有三四百像素宽，两列时每张卡不到 180px，
         // 卡里的「键 = 值」行与按钮全被挤坏。
-        return singleColumnPage(listOf(statusCard, queueCard, envCard, gameCard))
+        return singleColumnPage(listOf(queueCard, envCard, gameCard))
     }
 
     /**
