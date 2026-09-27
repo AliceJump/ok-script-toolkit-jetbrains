@@ -171,6 +171,35 @@ class TemplateAssetDataServiceCocoTest {
     }
 
     @Test
+    fun `swapping annotations writes the other images boxes to each destination`() {
+        val root = TestTmp.create("ok-coco-annotation-swap")
+        val service = serviceAt(root)
+        val source = service.addImageEntry("source.png", 200, 100)
+        val target = service.addImageEntry("target.png", 100, 50)
+        val sourceCategory = service.getOrCreateCategory("source-mark")
+        val targetCategory = service.getOrCreateCategory("target-mark")
+        service.replaceAnnotationsForImage(source.id, listOf(sourceCategory.id to intArrayOf(20, 10, 40, 20)))
+        service.replaceAnnotationsForImage(target.id, listOf(targetCategory.id to intArrayOf(30, 10, 20, 10)))
+        assertTrue(service.save())
+
+        val edits = AnnotationSwap.editsForSwap(
+            "source.png", AnnotationSwap.Size(200, 100), listOf("source-mark" to intArrayOf(20, 10, 40, 20)),
+            "target.png", AnnotationSwap.Size(100, 50), listOf("target-mark" to intArrayOf(30, 10, 20, 10)),
+        )
+        assertEquals(listOf("source.png", "target.png"), edits.map { it.fileName })
+        assertTrue(service.saveAnnotationEdits(edits))
+
+        val restored = serviceAt(root)
+        val names = restored.categories().associate { it.id to it.name }
+        val sourceAnnotation = restored.getAnnotationsForImage(source.id).single()
+        val targetAnnotation = restored.getAnnotationsForImage(target.id).single()
+        assertEquals("target-mark", names[sourceAnnotation.categoryId])
+        assertEquals(listOf(60, 20, 40, 20), sourceAnnotation.bbox.toList())
+        assertEquals("source-mark", names[targetAnnotation.categoryId])
+        assertEquals(listOf(10, 5, 20, 10), targetAnnotation.bbox.toList())
+    }
+
+    @Test
     fun `failed annotation write leaves in-memory COCO unchanged`() {
         val root = TestTmp.create("ok-coco-annotation-failure")
         val service = serviceAt(root)

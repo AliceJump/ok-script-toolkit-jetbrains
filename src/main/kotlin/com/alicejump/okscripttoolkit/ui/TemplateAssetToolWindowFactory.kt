@@ -1,6 +1,7 @@
 package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
+import com.alicejump.okscripttoolkit.core.AnnotationSwap
 import com.alicejump.okscripttoolkit.core.LabelEnumGuard
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
 import com.alicejump.okscripttoolkit.core.ProjectDirResolution
@@ -21,6 +22,7 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.components.service
 import com.intellij.openapi.fileChooser.FileChooserDescriptorFactory
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.JBColor
@@ -48,6 +50,35 @@ private val SKIPPED_SCAN_DIRS = setOf("node_modules", ".venv", "venv", ".git", "
 
 /** 引用扫描的文件数上限。项目代码远小于这个数，设它只为兜住"项目根填错"这种情形。 */
 private const val LABEL_ENUM_REFERENCE_SCAN_LIMIT = 2000
+
+/**
+ * 等比缩放到缩略图尺寸的图标；解码失败返回 null（调用方降级成占位）。
+ *
+ * 提到顶层是因为它现在有**两个**消费者：工具窗的卡片，和「交换标注」的目标选择器
+ * （两边都要缩略图，而大图 `ImageIO.read` 可达数秒）。原先它是面板的私有方法，
+ * 选择器只能再抄一份解码逻辑 —— 那种复制迟早会在"适配高度"这类细节上漂移。
+ *
+ * **必须在后台线程调用**（不做任何线程调度）。
+ */
+internal fun decodeTemplateThumb(file: File): ImageIcon? {
+    return try {
+        val bi = javax.imageio.ImageIO.read(file) ?: return null
+        // 等比适配预览框（高 72、宽不超 120），绝不拉伸
+        val scale = minOf(
+            ThumbGridPolicy.THUMB_HEIGHT.toDouble() / bi.height,
+            ThumbGridPolicy.CELL_WIDTH.toDouble() / bi.width,
+        )
+        val w = (bi.width * scale).toInt().coerceAtLeast(1)
+        val h = (bi.height * scale).toInt().coerceAtLeast(1)
+        val thumb = java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_ARGB)
+        val g = thumb.createGraphics()
+        g.drawImage(bi, 0, 0, w, h, null)
+        g.dispose()
+        ImageIcon(thumb)
+    } catch (_: Exception) {
+        null
+    }
+}
 
 class TemplateAssetToolWindowFactory : ToolWindowFactory {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
@@ -264,7 +295,11 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         }
         thumbCache[img.file.absolutePath]?.let { thumbLabel.icon = it } ?: requestThumb(img.file, thumbLabel)
 
-        val annText = if (img.annotations.isNotEmpty()) " [${img.annotations.size} ann]" else ""
+        val annText = if (img.annotations.isNotEmpty()) {
+            " · " + OkScriptToolkitBundle.message("templateAsset.swapBoxes", img.annotations.size)
+        } else {
+            ""
+        }
         val sizeText = "${img.width}×${img.height}$annText"
         // 长文件名中段截断，避免把卡片/网格撑宽；全名放 tooltip
         val displayName = if (img.name.length > 22) {
@@ -272,17 +307,25 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         } else {
             img.name
         }
-        val infoText = "<html><div style=\"text-align:center;\"><b>$displayName</b><br>" +
-            "<span style=\"color:#8a8a8a\">$sizeText</span></div></html>"
-        val infoLabel = JBLabel(infoText)
-        infoLabel.horizontalAlignment = SwingConstants.CENTER
-        infoLabel.font = infoLabel.font.deriveFont(10f)
+        val nameLabel = JBLabel(displayName).apply {
+            horizontalAlignment = SwingConstants.CENTER
+            font = font.deriveFont(Font.BOLD, 10f)
+        }
+        val sizeLabel = JBLabel(sizeText).apply {
+            horizontalAlignment = SwingConstants.CENTER
+            font = font.deriveFont(10f)
+            foreground = com.intellij.util.ui.UIUtil.getContextHelpForeground()
+        }
+        val infoPanel = JPanel(GridLayout(2, 1)).apply {
+            isOpaque = false
+            add(nameLabel)
+            add(sizeLabel)
+        }
 
         card.add(thumbLabel, BorderLayout.CENTER)
-        card.add(infoLabel, BorderLayout.SOUTH)
-        card.toolTipText = img.name
+        card.add(infoPanel, BorderLayout.SOUTH)
 
-        card.addMouseListener(object : MouseAdapter() {
+        val mouse = object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
                 if (e.clickCount == 2) openAnnotator(img)
             }
@@ -292,7 +335,12 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             override fun mouseReleased(e: MouseEvent) {
                 if (e.isPopupTrigger) showContextMenu(e, img)
             }
-        })
+        }
+        // Swing does not bubble child mouse events to the card. The image and text occupy nearly all of it.
+        listOf(card, thumbLabel, infoPanel, nameLabel, sizeLabel).forEach { component ->
+            component.toolTipText = img.name
+            component.addMouseListener(mouse)
+        }
 
         return card
     }
@@ -306,12 +354,121 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         loadData()
     }
 
+    /**
+     * 与另一张图**整套互换**标注（卡片右键菜单的「交换标注…」）。
+     *
+     * 尺寸不同时按比例映射（判据与数值都在 `core/AnnotationSwap`），并且**在确认框里
+     * 把这件事说出来**：缩放会改变框的真实像素尺寸，而模板裁剪是按像素取的，
+     * 用户有权在写盘之前知道"这次不只是搬家"。
+     *
+     * 落盘复用 `saveAnnotationEdits`：它一次 `copyCoco` → 两条 edit 一起改 → 一次
+     * `writeCoco`（临时文件替换），所以"交换"天然是原子的 —— 失败时内存与磁盘都保持原样，
+     * 不会出现只换了一边。**不需要为它新增数据层方法**，也就不会有两套写盘路径。
+     */
+    private fun swapAnnotationsWith(source: TemplateImage) {
+        val candidates = images.filter { it.file.name != source.file.name }
+        if (candidates.isEmpty()) {
+            notify(OkScriptToolkitBundle.message("templateAsset.swapNoTarget"), NotificationType.WARNING)
+            return
+        }
+
+        val dialog = SwapTargetDialog(project, source, candidates, thumbCache)
+        if (!dialog.showAndGet()) return
+        val target = dialog.selected ?: return
+
+        val sourceSize = resolveSize(source)
+        val targetSize = resolveSize(target)
+        if (sourceSize == null || targetSize == null) {
+            notify(OkScriptToolkitBundle.message("templateAsset.swapSizeUnknown"), NotificationType.ERROR)
+            return
+        }
+
+        val categoryNames = data.categories().associate { it.id to it.name }
+        val sourceBoxes = boxesOf(source, categoryNames)
+        val targetBoxes = boxesOf(target, categoryNames)
+        // 两边都空 ⇒ 交换是个空操作。这里直接说清楚，而不是弹一个 "0 ⇄ 0" 的确认框。
+        if (sourceBoxes.isEmpty() && targetBoxes.isEmpty()) {
+            notify(OkScriptToolkitBundle.message("templateAsset.swapNothing"), NotificationType.INFORMATION)
+            return
+        }
+
+        val detail = buildString {
+            if (!AnnotationSwap.isSameSize(sourceSize, targetSize)) {
+                append(
+                    OkScriptToolkitBundle.message(
+                        "templateAsset.swapScaled",
+                        "${sourceSize.width}×${sourceSize.height}",
+                        "${targetSize.width}×${targetSize.height}",
+                    ),
+                )
+                append("\n")
+            }
+            append(
+                OkScriptToolkitBundle.message(
+                    "templateAsset.swapCounts",
+                    source.name, sourceBoxes.size, target.name, targetBoxes.size,
+                ),
+            )
+        }
+        val confirmed = Messages.showYesNoDialog(
+            project,
+            OkScriptToolkitBundle.message("templateAsset.swapQuestion", source.name, target.name) +
+                "\n\n" + detail,
+            OkScriptToolkitBundle.message("templateAsset.swapTitle"),
+            Messages.getQuestionIcon(),
+        )
+        if (confirmed != Messages.YES) return
+
+        val edits = AnnotationSwap.editsForSwap(
+            source.file.name, sourceSize, sourceBoxes,
+            target.file.name, targetSize, targetBoxes,
+        )
+        CompletableFuture.supplyAsync { data.saveAnnotationEdits(edits) }.whenComplete { saved, error ->
+            SwingUtilities.invokeLater {
+                if (error != null || saved != true) {
+                    notify(OkScriptToolkitBundle.message("templateAsset.swapFailed"), NotificationType.ERROR)
+                } else {
+                    notify(
+                        OkScriptToolkitBundle.message("templateAsset.swapDone", source.name, target.name),
+                        NotificationType.INFORMATION,
+                    )
+                }
+                loadData()
+            }
+        }
+    }
+
+    /** 分类 id → 名。分类名就是交换时**原样带走**的那个东西（交换不产生新分类）。 */
+    private fun boxesOf(img: TemplateImage, categoryNames: Map<Int, String>): List<Pair<String, IntArray>> =
+        img.annotations.map { (categoryNames[it.categoryId] ?: "#${it.categoryId}") to it.bbox }
+
+    /**
+     * 图片的真实尺寸，供比例映射用。
+     *
+     * `TemplateImage` 的宽高在 COCO 里可能是 0（老数据），那时退回整图解码。
+     * 走到解码分支的情形极少 —— `listImages()` 已经用同一套兜底填过宽高；
+     * 两者都拿不到就返回 null，让调用方**拒绝交换**，而不是按 1 倍瞎搬。
+     */
+    private fun resolveSize(img: TemplateImage): AnnotationSwap.Size? {
+        if (img.width > 0 && img.height > 0) return AnnotationSwap.Size(img.width, img.height)
+        return try {
+            val read = javax.imageio.ImageIO.read(img.file)
+            if (read != null && read.width > 0 && read.height > 0) {
+                AnnotationSwap.Size(read.width, read.height)
+            } else {
+                null
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     /** 缩略图解码只在后台线程做，完成后回填到仍显示中的卡片（网格重渲染会换新 label）；
      *  解码结果写回缓存供后续渲染复用，进行中的解码按路径去重。 */
     private fun requestThumb(file: File, label: JBLabel) {
         val future = thumbInflight.computeIfAbsent(file.absolutePath) {
             CompletableFuture.supplyAsync {
-                val icon = loadThumbIcon(file)
+                val icon = decodeTemplateThumb(file)
                 if (icon != null) thumbCache[file.absolutePath] = icon
                 icon
             }.whenComplete { _, _ -> thumbInflight.remove(file.absolutePath) }
@@ -323,23 +480,6 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
                     label.repaint()
                 }
             }
-        }
-    }
-
-    private fun loadThumbIcon(file: File): ImageIcon? {
-        return try {
-            val bi = javax.imageio.ImageIO.read(file) ?: return null
-            // 等比适配预览框（高 72、宽不超 120），绝不拉伸
-            val scale = minOf(THUMB_HEIGHT.toDouble() / bi.height, 120.0 / bi.width)
-            val w = (bi.width * scale).toInt().coerceAtLeast(1)
-            val h = (bi.height * scale).toInt().coerceAtLeast(1)
-            val thumb = java.awt.image.BufferedImage(w, h, java.awt.image.BufferedImage.TYPE_INT_ARGB)
-            val g = thumb.createGraphics()
-            g.drawImage(bi, 0, 0, w, h, null)
-            g.dispose()
-            ImageIcon(thumb)
-        } catch (_: Exception) {
-            null
         }
     }
 
@@ -362,6 +502,14 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         popup.add(openItem)
 
         popup.addSeparator()
+
+        // 与另一张图整套互换标注：修"标错了图 / 图片顺序反了"的入口。
+        // 放在「删除」之上、与它同组 —— 两者都会改动已有数据，且都需要确认。
+        val swapItem = JMenuItem(OkScriptToolkitBundle.message("templateAsset.swap"))
+        swapItem.addActionListener {
+            swapAnnotationsWith(img)
+        }
+        popup.add(swapItem)
 
         val deleteItem = JMenuItem(OkScriptToolkitBundle.message("templateAsset.delete"))
         deleteItem.addActionListener {

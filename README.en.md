@@ -84,7 +84,7 @@ To build the plugin from source instead, see [Build](#build).
 
 - **Template gallery** — bbox-cropped thumbnails with insert/copy actions, and a
   red-box annotated preview of the source image.
-- **Template asset manager** — import and delete images with automatic COCO sync.
+- **Template asset manager** — import and delete images with automatic COCO sync. The card context menu's "**Swap annotations…**" swaps that image's whole annotation set with another image in the same list (the fix for "annotated the wrong image / images are in the wrong order"). The target is picked from thumbnails (template names are mostly numeric, so names alone are not enough); when the two images differ in size, box coordinates are **scaled proportionally** and the confirmation dialog spells out both sizes.
 - **Task launcher** — schema-driven parameter forms (grouped by `configGroups`),
   per-task overrides with auto-save and live push into the running executor, and a
   single long-lived executor process: one connection, then the framework's own
