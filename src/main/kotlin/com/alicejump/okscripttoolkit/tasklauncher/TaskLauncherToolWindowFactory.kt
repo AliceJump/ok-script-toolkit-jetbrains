@@ -189,7 +189,7 @@ class TaskLauncherPanel(private val project: Project) {
     /** 探针采集到的全局配置组（配置页「全局配置」卡片数据源；applyProbeResult 更新） */
     private var globalConfigGroups: List<TaskLauncherService.GlobalConfigGroup> = emptyList()
     private var multiAccountInfo = TaskLauncherService.MultiAccountInfo()
-    private var accountEditor: AccountEditorDialog? = null
+    private val accountEditors = mutableMapOf<String, AccountEditorDialog>()
 
     /** 悬停弹层抑制截止时间：点选/切换后 1.2s 内不弹（对齐主仓库约定） */
     private var hoverSuppressUntil = 0L
@@ -833,11 +833,12 @@ class TaskLauncherPanel(private val project: Project) {
             )
             return
         }
-        accountEditor?.takeIf { it.isOpen() }?.let {
+        accountEditors.entries.removeIf { !it.value.isOpen() }
+        accountEditors[projectDir]?.let {
             it.focus()
             return
         }
-        accountEditor = AccountEditorDialog(
+        accountEditors[projectDir] = AccountEditorDialog(
             parent = mainPanel,
             project = project,
             service = accountStoreService,
@@ -845,7 +846,7 @@ class TaskLauncherPanel(private val project: Project) {
             info = multiAccountInfo,
             schemas = schemas,
             globalGroups = globalConfigGroups,
-            onAccountListSaved = { loadTasks() },
+            onAccountListSaved = { if (detectProjectPath() == projectDir) loadTasks() },
         ).also { it.open() }
     }
 
@@ -1851,7 +1852,8 @@ class TaskLauncherPanel(private val project: Project) {
             // 配置页「全局配置」区数据源（#7）
             globalConfigGroups = result.globalConfigGroups
             multiAccountInfo = result.multiAccount
-            accountEditor?.takeIf { it.isOpen() }?.updateMetadata(result.multiAccount, result.schemas, result.globalConfigGroups)
+            accountEditors[sourceProjectDir]?.takeIf { it.isOpen() }
+                ?.updateMetadata(result.multiAccount, result.schemas, result.globalConfigGroups)
             refreshAccountSummary()
 
             tasks = result.schemas.map { (key, schema) ->
@@ -3407,7 +3409,8 @@ class TaskLauncherPanel(private val project: Project) {
         toolboxService.removeStateListener(toolboxStateListener)
         toolboxService.removeStatusListener(toolboxStatusListener)
         taskRunner.removeStateListener(runnerStateListener)
-        accountEditor?.close()
+        accountEditors.values.forEach { it.close() }
+        accountEditors.clear()
     }
 }
 

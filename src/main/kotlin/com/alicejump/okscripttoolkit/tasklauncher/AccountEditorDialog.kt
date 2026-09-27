@@ -6,6 +6,7 @@ import com.alicejump.okscripttoolkit.core.AccountStoreService
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.intellij.openapi.project.Project
+import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import java.awt.BorderLayout
 import java.awt.Component
@@ -88,7 +89,13 @@ internal class AccountEditorDialog(
                 add(close)
             }, BorderLayout.EAST)
         }
+        val projectRoot = JPanel(BorderLayout(8, 0)).apply {
+            border = javax.swing.BorderFactory.createEmptyBorder(8, 12, 0, 12)
+            add(JBLabel(msg("taskLauncher.envProjectRoot")), BorderLayout.WEST)
+            add(SchemaFieldUi.WrappingDescription(projectDir), BorderLayout.CENTER)
+        }
         dialog.contentPane = JPanel(BorderLayout(8, 8)).apply {
+            add(projectRoot, BorderLayout.NORTH)
             add(tabs, BorderLayout.CENTER)
             add(bottom, BorderLayout.SOUTH)
         }
