@@ -77,7 +77,7 @@ val conventionSchemaFile = configuredSchemaFile?.let { configured ->
     val path = File(configured)
     (if (path.isAbsolute) path else project.rootDir.resolve(path)).normalize()
 } ?: project.rootDir.resolve("../schemas/ok-script-toolkit.schema.json").normalize()
-// 与 copyPythonScripts 同一策略：子仓独立 CI 没有父仓时放行（空跑），发版任务必须带。
+// 与 copyPythonScripts 同一策略：单独跑测试时允许没有父仓，打包任务必须带 schema。
 if (!conventionSchemaFile.isFile) {
     val isDistributable = gradle.startParameter.taskNames.any { requested ->
         val taskName = requested.substringAfterLast(':')
@@ -147,6 +147,9 @@ val cleanTestTmpAfter = tasks.register<Delete>("cleanTestTmpAfter") {
 tasks {
     test {
         useJUnitPlatform()
+
+        // 测试使用与打包相同的 schema 来源；源文件可见时缺失 JAR 资源必须直接失败。
+        systemProperty("ok.convention.schema.source", conventionSchemaFile.absolutePath)
 
         // Kotlin 侧（TestTmp）读系统属性；TestTmp 会在其下用 kt/ 子目录落盘
         systemProperty("ok.test.tmp.root", testTmpRoot.absolutePath)

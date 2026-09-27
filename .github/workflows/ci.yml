@@ -13,10 +13,11 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - name: Check out shared Python scripts
+      - name: Check out shared Python scripts and convention schema
         uses: actions/checkout@v4
         with:
           repository: AliceJump/ok-script-toolkit
+          ref: v1.14.0
           path: parent-source
       - uses: actions/setup-java@v5
         with:
@@ -26,11 +27,11 @@ jobs:
       # ⚠️ 这里**没有也不该有** `verifyPlugin`（Plugin Verifier：真的下载 IDE 去查
       # 废弃 / 实验性 / internal API）：
       #   1. 它慢且要联网，真正的校验放在父仓 `release.yml`；
-      #   2. 此处只构建可安装的 ZIP，Python 脚本由上一步单独检出并显式传给 Gradle。
+      #   2. 此处只构建可安装的 ZIP，共享脚本和 schema 由上一步单独检出并显式传给 Gradle。
       # ⚠️ `verifyPluginStructure` 只查 JAR / plugin.xml 的**结构**，**不查 API 兼容性** ——
       # 别把它当成"API 已经验过了"。
       - name: Test and build plugin
-        run: ./gradlew -PpythonScriptsDir=parent-source/python test buildPlugin verifyPluginStructure verifyPluginConfiguration
+        run: ./gradlew -PpythonScriptsDir=parent-source/python -PconventionSchemaFile=parent-source/schemas/ok-script-toolkit.schema.json test buildPlugin verifyPluginStructure verifyPluginConfiguration
       - name: Upload plugin archive
         uses: actions/upload-artifact@v4
         with:
