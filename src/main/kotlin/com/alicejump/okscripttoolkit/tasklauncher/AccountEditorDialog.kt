@@ -8,6 +8,8 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.intellij.openapi.project.Project
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.components.JBTabbedPane
+import com.intellij.ui.components.JBTextArea
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.Dimension
@@ -18,11 +20,8 @@ import java.util.concurrent.CompletableFuture
 import javax.swing.JButton
 import javax.swing.JComboBox
 import javax.swing.JDialog
-import javax.swing.JLabel
 import javax.swing.JOptionPane
 import javax.swing.JPanel
-import javax.swing.JTabbedPane
-import javax.swing.JTextArea
 import javax.swing.SwingUtilities
 
 /**
@@ -51,18 +50,18 @@ internal class AccountEditorDialog(
         Dialog.ModalityType.MODELESS,
     )
 
-    private val accountListArea = JTextArea(8, 54)
+    private val accountListArea = JBTextArea(8, 54)
     private val listSave = JButton(msg("annotation.save"))
     private val overrideAccount = JComboBox<String>()
     private val overrideTarget = JComboBox<Target>()
-    private val overrideSummary = JLabel()
+    private val overrideSummary = SchemaFieldUi.WrappingDescription("")
     private val overrideEdit = JButton(msg("taskLauncher.accountEditOverride"))
     private val overrideClear = JButton(msg("taskLauncher.accountClearOverride"))
     private val mapAccount = JComboBox<String>()
-    private val mapArea = JTextArea(9, 54)
+    private val mapArea = JBTextArea(9, 54)
     private val mapSave = JButton(msg("annotation.save"))
     private val reload = JButton(msg("taskLauncher.accountReload"))
-    private val status = JLabel()
+    private val status = SchemaFieldUi.WrappingDescription("")
 
     private data class Target(
         val id: String,
@@ -76,7 +75,7 @@ internal class AccountEditorDialog(
     init {
         accountListArea.lineWrap = false
         mapArea.lineWrap = false
-        val tabs = JTabbedPane().apply {
+        val tabs = JBTabbedPane().apply {
             addTab(msg("taskLauncher.accountList"), buildListTab())
             addTab(msg("taskLauncher.accountOverrides"), buildOverrideTab())
             addTab(msg("taskLauncher.accountMap"), buildMapTab())
@@ -99,8 +98,12 @@ internal class AccountEditorDialog(
             add(tabs, BorderLayout.CENTER)
             add(bottom, BorderLayout.SOUTH)
         }
-        dialog.minimumSize = Dimension(640, 420)
-        dialog.setSize(760, 560)
+        dialog.minimumSize = Dimension(480, 400)
+        val hostWindow = SwingUtilities.getWindowAncestor(parent)
+        dialog.setSize(
+            ((hostWindow?.width ?: 800) - 40).coerceIn(480, 760),
+            ((hostWindow?.height ?: 640) - 80).coerceIn(420, 560),
+        )
         dialog.setLocationRelativeTo(parent)
         listSave.addActionListener {
             perform(service.setListText(projectDir, accountListArea.text), "taskLauncher.accountSaved") {
@@ -155,7 +158,7 @@ internal class AccountEditorDialog(
 
     private fun buildListTab(): JPanel = JPanel(BorderLayout(8, 8)).apply {
         border = javax.swing.BorderFactory.createEmptyBorder(12, 12, 12, 12)
-        add(JLabel(msg("taskLauncher.accountListHint")), BorderLayout.NORTH)
+        add(SchemaFieldUi.WrappingDescription(msg("taskLauncher.accountListHint")), BorderLayout.NORTH)
         add(JBScrollPane(accountListArea), BorderLayout.CENTER)
         add(JPanel(FlowLayout(FlowLayout.RIGHT)).apply { add(listSave) }, BorderLayout.SOUTH)
     }
@@ -163,9 +166,9 @@ internal class AccountEditorDialog(
     private fun buildOverrideTab(): JPanel = JPanel(BorderLayout(8, 8)).apply {
         border = javax.swing.BorderFactory.createEmptyBorder(12, 12, 12, 12)
         val selectors = JPanel(GridLayout(2, 2, 8, 8)).apply {
-            add(JLabel(msg("taskLauncher.accountName")))
+            add(JBLabel(msg("taskLauncher.accountName")))
             add(overrideAccount)
-            add(JLabel(msg("taskLauncher.accountTarget")))
+            add(JBLabel(msg("taskLauncher.accountTarget")))
             add(overrideTarget)
         }
         add(selectors, BorderLayout.NORTH)
@@ -179,13 +182,17 @@ internal class AccountEditorDialog(
     private fun buildMapTab(): JPanel = JPanel(BorderLayout(8, 8)).apply {
         border = javax.swing.BorderFactory.createEmptyBorder(12, 12, 12, 12)
         add(JPanel(BorderLayout(8, 0)).apply {
-            add(JLabel(msg("taskLauncher.accountName")), BorderLayout.WEST)
+            add(JBLabel(msg("taskLauncher.accountName")), BorderLayout.WEST)
             add(mapAccount, BorderLayout.CENTER)
         }, BorderLayout.NORTH)
         add(JBScrollPane(mapArea), BorderLayout.CENTER)
-        add(JPanel(BorderLayout()).apply {
-            add(JLabel(msg("taskLauncher.accountMapHint")), BorderLayout.WEST)
-            add(mapSave, BorderLayout.EAST)
+        add(JPanel(BorderLayout(0, 4)).apply {
+            isOpaque = false
+            add(SchemaFieldUi.WrappingDescription(msg("taskLauncher.accountMapHint")), BorderLayout.CENTER)
+            add(JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0)).apply {
+                isOpaque = false
+                add(mapSave)
+            }, BorderLayout.SOUTH)
         }, BorderLayout.SOUTH)
     }
 
