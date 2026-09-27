@@ -2594,6 +2594,8 @@ class TaskLauncherPanel(private val project: Project) {
             }
         }
 
+        fun wasEdited(key: String): Boolean = editedControls.containsKey(key)
+
         /** 标记控件为已编辑（同步期间忽略） */
         fun markEdited(key: String, component: JComponent) {
             if (!syncingInProgress) {
@@ -2626,7 +2628,7 @@ class TaskLauncherPanel(private val project: Project) {
             if (liveControl is JCheckBox) return liveControl.isSelected
             // 回退到持久化的值
             val taskConfig = taskService.getTaskConfig("${task.module}::${task.className}", taskDataRoot())
-            return when (val v = taskConfig.params?.get(field.key) ?: field.value ?: field.default) {
+            return when (val v = TaskParamValues.resolve(taskConfig.params, field)) {
                 is Boolean -> v
                 is String -> v.trim().equals("true", ignoreCase = true)
                 is Int -> v != 0
@@ -2672,15 +2674,14 @@ class TaskLauncherPanel(private val project: Project) {
         val owningRenderer = currentRenderer ?: throw IllegalStateException("createFieldComponent called without active renderer")
         val taskKey = "${task.module}::${task.className}"
         val taskConfig = taskService.getTaskConfig(taskKey, taskDataRoot())
-        val savedValue = taskConfig.params?.get(field.key)
-        val currentValue = savedValue ?: field.value ?: field.default
+        val currentValue = TaskParamValues.resolve(taskConfig.params, field)
 
         val typeName = field.type?.get("type")?.toString().orEmpty()
         val options = (field.type?.get("options") as? List<*>).takeIf { !it.isNullOrEmpty() }
         val optionLabels = field.type?.get("option_labels") as? List<*> ?: emptyList<Any>()
 
         val component = when {
-            field.type?.get("type") == "bool" || currentValue is Boolean -> {
+            currentValue is Boolean -> {
                 JCheckBox("", currentValue as? Boolean ?: false).also { cb ->
                     cb.addActionListener {
                         owningRenderer.markEdited(field.key, cb)
@@ -3003,6 +3004,9 @@ class TaskLauncherPanel(private val project: Project) {
         val existing = taskService.getTaskConfig(taskKeyOf(task), root)
         val params = LinkedHashMap<String, Any>(existing.params.orEmpty())
         for ((key, component) in paramFields) {
+            if (TaskParamValues.keepUntouchedNull(existing.params.orEmpty(), key, currentRenderer?.wasEdited(key) == true)) {
+                continue
+            }
             // 使用 renderer 的 getValueControl 方法获取值控件
             val actualComponent = currentRenderer?.getValueControl(key) ?: component
             when (actualComponent) {
