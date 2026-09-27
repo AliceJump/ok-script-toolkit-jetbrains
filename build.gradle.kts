@@ -153,6 +153,7 @@ tasks {
 
         // Kotlin 侧（TestTmp）读系统属性；TestTmp 会在其下用 kt/ 子目录落盘
         systemProperty("ok.test.tmp.root", testTmpRoot.absolutePath)
+        systemProperty("ok.bundled.python.source", pythonDir.absolutePath)
         // 让生产代码 AtomicWritePaths 的 .bak 备份也落进同一个根，避免漏到系统临时目录
         systemProperty("ok-script-toolkit.backup.dir", File(testTmpRoot, "kt/backup").absolutePath)
         // Python / Node 测试脚本读环境变量，各自用 py/ 、js/ 子目录落盘

@@ -22,11 +22,10 @@ import org.junit.jupiter.api.Assumptions.assumeTrue
  * 装上含沙箱的新插件也没用 —— 临时目录里的旧脚本继续跑，**沙箱完全没生效**，
  * 执行器照样写目标项目的 `configs/`。
  *
- * 所以这里的核心断言是：**篡改过的脚本必须在下一次调用时被恢复**。
+ * 核心断言：篡改过的脚本必须被恢复，且相同打包内容共用一个版本目录。
  *
- * 前提：这些断言只在**打包脚本真的进了 classpath** 时有意义。子仓独立 CI
- * 检不到父仓的 `python/`，那里会整体跳过（见 [requireBundledScripts]）；
- * 父仓 CI 带 submodules 检出，断言完整执行。
+ * 测试构建若拿到共享 python/ 源码，classpath 上就必须包含脚本。
+ * 仅在源码本身不可用的非发行构建里跳过解压断言。
  */
 class PythonScriptLocatorTest {
 
@@ -36,35 +35,17 @@ class PythonScriptLocatorTest {
             .getResourceAsStream("python/$name")
             ?.use { it.readBytes().toString(Charsets.UTF_8) }
 
-    /**
-     * 打包脚本是否真的进了 classpath。
-     *
-     * **并非所有构建都有**，所以必须显式判断，不能默认它一定在：
-     * `jetbrains/` 是**独立公开仓库**，它自己的 CI（`.github/workflows/ci.yml`）
-     * 只检出本仓库，父仓的 `../python/` 不可见，`copyPythonScripts` 只能空跑。
-     * `build.gradle.kts` 对这种情况是**有意放行**的 —— 那里明确写了
-     * 「不要把 buildPlugin 放进 distributableTasks，放进去会让子仓独立 CI 必然失败」。
-     *
-     * 本测试当初漏了同一层考虑：在缺脚本的环境里 `extractBundledScripts` 按契约返回
-     * `null`，四条断言于是**必然失败**，把子仓 CI 变成长期红灯（实测 6 次连续
-     * run 全红，且早于本功能提交）—— 一个永远红的 CI 等于没有 CI。
-     *
-     * 判据与生产代码**用同一个表达式**（`BUNDLED_SCRIPTS.first()`），
-     * 免得两边的"算不算有脚本"悄悄分叉。
-     *
-     * 父仓 CI 用 `submodules: recursive` 检出，`../python` 存在、脚本齐全，
-     * 断言在那里**照常全跑** —— 跳过只发生在"本来就没有断言对象"的环境。
-     */
+    /** 只允许没有共享源码的非发行构建跳过。 */
     private val bundledScriptsPresent: Boolean
         get() = PythonScriptLocator::class.java.classLoader
             .getResource("python/${PythonScriptLocator.BUNDLED_SCRIPTS.first()}") != null
 
     private fun requireBundledScripts() {
         assumeTrue(
-            bundledScriptsPresent,
-            "classpath 上没有 python/*.py —— 只检出了 jetbrains 子仓库（父仓 python/ 不可见），" +
-                "本断言无可断言对象，跳过。父仓 CI 会带 submodules 检出并完整跑这些断言。",
+            System.getProperty("ok.bundled.python.source")?.let(::File)?.isDirectory == true,
+            "共享 python/ 源码不可用，跳过非发行构建的解压断言",
         )
+        assertTrue(bundledScriptsPresent, "共享 python/ 源码存在，但脚本未进入测试 classpath")
     }
 
     @Test
@@ -75,9 +56,9 @@ class PythonScriptLocatorTest {
         val dir = PythonScriptLocator.extractBundledScripts(base)
         assertNotNull(dir, "classpath 上有 python/*.py 时必须解压成功（build 里由 copyPythonScripts 提供）")
 
-        assertEquals(
-            PythonScriptLocator.SCRIPT_DIR_NAME, dir.fileName.toString(),
-            "目录名必须稳定且**不含时间戳** —— 带时间戳时它恒为 -0，正是旧 bug 的成因",
+        assertTrue(
+            dir.fileName.toString().startsWith("${PythonScriptLocator.SCRIPT_DIR_NAME}-"),
+            "目录必须由脚本内容摘要区分版本，不能使用恒为 0 的 JAR 时间戳",
         )
         assertTrue(dir.parent.toFile() == base, "必须解压到传入的 baseDir 下（单测靠它隔离，不碰真实临时目录）")
 
@@ -212,9 +193,9 @@ class PythonScriptLocatorTest {
         )
     }
 
-    /** 历史遗留目录（旧版的时间戳命名）要被清掉，否则它会一直占着旧脚本。 */
+    /** 旧版目录可能仍被另一个 IDE 进程使用；新版本不应删除它。 */
     @Test
-    fun `legacy timestamped directories are cleaned up`() {
+    fun `legacy directories are left alone while new content uses its own path`() {
         requireBundledScripts()
         val base = TestTmp.create("ok-scripts-legacy")
         val legacy = File(base, "ok-script-toolkit-scripts-0").apply { mkdirs() }
@@ -223,12 +204,12 @@ class PythonScriptLocatorTest {
         PythonScriptLocator.extractBundledScripts(base)
 
         assertTrue(
-            !legacy.exists(),
-            "旧的时间戳目录必须被删除 —— 否则「升级插件却仍跑旧脚本」会继续发生",
+            legacy.exists(),
+            "另一个 IDE 进程可能仍在使用旧目录，不能在本进程启动时删除",
         )
         assertTrue(
-            File(base, PythonScriptLocator.SCRIPT_DIR_NAME).isDirectory,
-            "当前使用的目录必须保留",
+            base.listFiles()?.any { it.isDirectory && it.name.startsWith("${PythonScriptLocator.SCRIPT_DIR_NAME}-") } == true,
+            "当前打包内容应使用独立的摘要目录",
         )
     }
 
@@ -249,6 +230,25 @@ class PythonScriptLocatorTest {
                 bundledText(name), second.resolve(name).toFile().readText(Charsets.UTF_8),
                 "$name 反复解压后内容仍须与打包版本一致",
             )
+        }
+    }
+
+    @Test
+    fun `concurrent extraction returns complete scripts in one version directory`() {
+        requireBundledScripts()
+        val base = TestTmp.create("ok-scripts-concurrent")
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(6)
+        try {
+            val paths = (1..12).map {
+                pool.submit<java.nio.file.Path?> { PythonScriptLocator.extractBundledScripts(base) }
+            }.map { it.get() }
+            assertEquals(1, paths.toSet().size)
+            val path = assertNotNull(paths.first())
+            for (name in PythonScriptLocator.BUNDLED_SCRIPTS) {
+                assertEquals(bundledText(name), path.resolve(name).toFile().readText(Charsets.UTF_8))
+            }
+        } finally {
+            pool.shutdownNow()
         }
     }
 }

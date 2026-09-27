@@ -130,18 +130,15 @@ class PythonScriptRunner(private val project: Project) {
 }
 
 /**
- * Python 打包脚本的目录定位：项目内 python/ -> 父/祖目录 -> 同级目录 -> 从插件 JAR 解压。
+ * Python 打包脚本的目录定位：从插件 JAR 解压到按内容区分的临时目录。
  * 打包脚本全集见 [BUNDLED_SCRIPTS]（与 VSCode 版 python/ 目录一致）。
  */
 object PythonScriptLocator {
 
     private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance(PythonScriptLocator::class.java)
 
-    /** 解压目录名。**不带时间戳** —— 见 [extractBundledScripts] 里关于旧实现的说明。 */
+    /** 同一打包内容始终使用同一目录；具体路径还含脚本内容摘要。 */
     const val SCRIPT_DIR_NAME = "ok-script-toolkit-scripts"
-
-    /** 历史遗留目录的前缀（旧版把 lastModified 拼成了 `ok-script-toolkit-scripts-0` 之类）。 */
-    private const val SCRIPT_DIR_PREFIX = "ok-script-toolkit-scripts"
 
     val BUNDLED_SCRIPTS = listOf(
         "parse_config_tasks.py",
@@ -156,6 +153,23 @@ object PythonScriptLocator {
         "connect_game.py",
         "overlay_host.py",
     )
+
+    private data class BundledResources(val scripts: Map<String, ByteArray>, val digest: String)
+
+    private val bundledResources: BundledResources? by lazy {
+        val scripts = linkedMapOf<String, ByteArray>()
+        val digest = java.security.MessageDigest.getInstance("SHA-256")
+        for (name in BUNDLED_SCRIPTS) {
+            val bytes = PythonScriptLocator::class.java.classLoader
+                .getResourceAsStream("python/$name")?.use { it.readBytes() } ?: return@lazy null
+            scripts[name] = bytes
+            digest.update(name.toByteArray(Charsets.UTF_8))
+            digest.update(0.toByte())
+            digest.update(bytes)
+        }
+        val version = digest.digest().take(16).joinToString("") { "%02x".format(it) }
+        BundledResources(scripts, version)
+    }
 
     /**
      * 定位插件自带的 python 脚本目录。
@@ -173,7 +187,7 @@ object PythonScriptLocator {
     /**
      * 从插件 JAR 的 classpath 解压打包脚本到临时目录。
      *
-     * ⚠️ **每次调用都必须覆盖写出**，不能用「文件都在就跳过」的缓存判断。
+     * 路径由打包内容摘要决定：不同版本不会互相覆盖；同一版本复用同一目录。
      *
      * 曾经用 `classLoader.getResource(...).openConnection().lastModified` 当版本戳，
      * 并把它拼进目录名（`ok-script-toolkit-scripts-<stamp>`）。但 **JAR 内资源的
@@ -187,65 +201,45 @@ object PythonScriptLocator {
      * 执行器照样写目标项目的 `configs/`（实测：执行器运行期间项目 configs 被写、
      * 沙箱目录纹丝不动）。
      *
-     * 覆盖写出的代价是十来个小文件（合计约 100 KB），相对"跑错脚本"完全可以忽略。
+     * 每次调用核对现有文件内容；损坏的文件通过同目录临时文件原子替换，避免并发
+     * 启动脚本时读到写了一半的文件。旧目录可能仍被其他 IDE 实例使用，不主动删除。
      *
      * @param baseDir 临时根目录。做成参数是为了让单测指向自己的临时目录 ——
      *   否则测试一旦失败会在真实临时目录里留下损坏脚本，反而弄坏用户的插件。
      */
+    @Synchronized
     fun extractBundledScripts(
         baseDir: java.io.File = java.io.File(System.getProperty("java.io.tmpdir")),
     ): java.nio.file.Path? {
+        val resources = bundledResources ?: return null
         return try {
-            val resource = PythonScriptLocator::class.java.classLoader
-                .getResourceAsStream("python/${BUNDLED_SCRIPTS.first()}") ?: return null
-            resource.close()
-
-            val extractDir = baseDir.toPath().resolve(SCRIPT_DIR_NAME)
+            val extractDir = baseDir.toPath().resolve("$SCRIPT_DIR_NAME-${resources.digest}")
             java.nio.file.Files.createDirectories(extractDir)
-            var written = 0
-            for (name in BUNDLED_SCRIPTS) {
-                val input = PythonScriptLocator::class.java.classLoader
-                    .getResourceAsStream("python/$name") ?: continue
-                input.use { stream ->
-                    java.nio.file.Files.copy(
-                        stream,
-                        extractDir.resolve(name),
-                        java.nio.file.StandardCopyOption.REPLACE_EXISTING,
-                    )
+            for ((name, bytes) in resources.scripts) {
+                val target = extractDir.resolve(name)
+                val matches = java.nio.file.Files.isRegularFile(target) &&
+                    runCatching { java.nio.file.Files.readAllBytes(target).contentEquals(bytes) }.getOrDefault(false)
+                if (matches) continue
+                val temp = java.nio.file.Files.createTempFile(extractDir, ".$name-", ".tmp")
+                try {
+                    java.nio.file.Files.write(temp, bytes)
+                    try {
+                        java.nio.file.Files.move(
+                            temp, target,
+                            java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                            java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                        )
+                    } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                        java.nio.file.Files.move(temp, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                    }
+                } finally {
+                    java.nio.file.Files.deleteIfExists(temp)
                 }
-                written++
             }
-            // 一个都没解出来说明 JAR 里确实没有脚本，交给调用方报错。
-            if (written == 0) return null
-            cleanupOldScriptDirs(extractDir, baseDir)
             extractDir
         } catch (e: Exception) {
             LOG.warn("Failed to extract bundled Python scripts", e)
             null
-        }
-    }
-
-    /**
-     * 清理历史遗留的脚本目录（旧版把时间戳拼进了目录名，形如
-     * `ok-script-toolkit-scripts-0`），只保留当前使用的 [currentDir]。
-     */
-    private fun cleanupOldScriptDirs(currentDir: java.nio.file.Path, baseDir: java.io.File) {
-        try {
-            baseDir.listFiles()?.forEach { dir ->
-                if (dir.isDirectory &&
-                    dir.name.startsWith(SCRIPT_DIR_PREFIX) &&
-                    dir.toPath() != currentDir
-                ) {
-                    try {
-                        dir.deleteRecursively()
-                        LOG.info("Cleaned up old script directory: ${dir.name}")
-                    } catch (e: Exception) {
-                        LOG.warn("Failed to delete old script directory: ${dir.name}", e)
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            LOG.warn("Failed to cleanup old script directories", e)
         }
     }
 }
