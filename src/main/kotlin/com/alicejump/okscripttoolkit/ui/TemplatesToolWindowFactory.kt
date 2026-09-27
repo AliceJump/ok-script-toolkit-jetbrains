@@ -517,6 +517,11 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
 }
 
 class ShowTemplatesAction : AnAction(), DumbAware {
+    init {
+        templatePresentation.text = OkScriptToolkitBundle.message("action.showTemplates.text")
+        templatePresentation.description = OkScriptToolkitBundle.message("action.showTemplates.description")
+    }
+
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
