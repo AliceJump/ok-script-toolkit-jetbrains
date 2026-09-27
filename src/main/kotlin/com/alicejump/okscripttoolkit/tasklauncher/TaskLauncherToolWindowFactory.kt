@@ -98,6 +98,14 @@ class TaskLauncherPanel(private val project: Project) {
          */
         private const val TASK_PAGE_STACK_WIDTH = 560
 
+        /**
+         * 任务页两个半区的最小边长（px）。
+         *
+         * `Splitter` 默认按子组件的最小尺寸夹住分隔条的可拖范围；两个半区都是滚动容器，
+         * 不显式给下限的话最小尺寸会按内容算得很大 ⇒ 分隔条拖不动。见 [buildTaskPagePanes]。
+         */
+        private const val MIN_PANE_EXTENT = 100
+
         /** 全局配置组折叠状态在 uiState 里的键前缀（与任务卡折叠共用一套持久化） */
         private const val GLOBAL_GROUP_FOLD_PREFIX = "globalGroup:"
     }
@@ -619,6 +627,15 @@ class TaskLauncherPanel(private val project: Project) {
         taskDetailPane.add(buildDetailHeader(), BorderLayout.NORTH)
         taskDetailPane.add(paramScrollPane, BorderLayout.CENTER)
         taskDetailPane.add(buildDetailFooter(), BorderLayout.SOUTH)
+
+        // ⚠️ 这两行不是样式，是**分隔条能不能拖**的前提：
+        // `Splitter` 默认 honorComponentsMinimumSize = true，分隔条的**可拖范围**由子组件的
+        // **最小尺寸**算出来（见 Splitter.getMinProportion）。两个半区都是滚动容器，它们的最小
+        // 尺寸按内容算得很大（列表 = N 张卡高度之和、详情 = 整张参数表单），于是最小比例几乎
+        // 等于当前比例 ⇒ 分隔条**拖不动**（用户反馈「拖拽中间的部分没有变化」）。
+        // 滚动容器缩到很小本来也没问题（出现滚动条而已），这里显式给一个小下限。
+        taskListHost.minimumSize = Dimension(MIN_PANE_EXTENT, MIN_PANE_EXTENT)
+        taskDetailPane.minimumSize = Dimension(MIN_PANE_EXTENT, MIN_PANE_EXTENT)
     }
 
     /**
