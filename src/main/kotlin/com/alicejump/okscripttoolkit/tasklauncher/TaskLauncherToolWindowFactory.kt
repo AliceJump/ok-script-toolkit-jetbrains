@@ -263,7 +263,7 @@ class TaskLauncherPanel(private val project: Project) {
 
     /** 执行器是否服务于本窗口当前解析的项目（未启动视为是）。跨项目防护见 [ensureExecutor] */
     private fun executorMatchesProject(): Boolean =
-        !taskRunner.isRunning() || taskRunner.runningProjectDir == detectProjectPath()
+        !taskRunner.isActive() || taskRunner.runningProjectDir == detectProjectPath()
 
     /** 展示用快照：跨项目时净化（不显示对方的 current/queue/paused）—— 对齐 VS Code projectMismatch 语义 */
     private fun runnerStateForDisplay(): TaskRunnerService.ExecutorState {
@@ -307,7 +307,7 @@ class TaskLauncherPanel(private val project: Project) {
         // 净化后的快照喂给健康点：跨项目时不显示对方 current，但「有执行器在跑」如实呈现
         syncHealthBar(visible)
         // 别的项目的触发集合不能 adopt 成本窗口的勾选（enabledTriggers 会写进本项目的 tasks.json）
-        if (!mismatched) syncTriggerCheckboxes(state)
+        if (!mismatched && visible.status == "running") syncTriggerCheckboxes(state)
         renderTaskStatuses(visible)
         // 状态 chip 与「启用/停用轮询」按钮文案跟着执行器状态走
         renderDetailHeader(detailTask, visible)
@@ -1342,6 +1342,7 @@ class TaskLauncherPanel(private val project: Project) {
             }
 
             // 勾选集合来自插件自己的持久化文件；执行器运行中则以它的快照为准
+            triggerSaveTail.join()
             enabledTriggers.clear()
             enabledTriggers.addAll(taskService.loadEnabledTriggers(sourceProjectDir))
 
@@ -1373,7 +1374,9 @@ class TaskLauncherPanel(private val project: Project) {
                 updatingTableModel = false
             }
             // 别的项目的触发集合不能 adopt（会写进本项目的 tasks.json）；状态列用净化快照
-            if (executorMatchesProject()) syncTriggerCheckboxes(taskRunner.currentState())
+            if (executorMatchesProject() && taskRunner.currentState().status == "running") {
+                syncTriggerCheckboxes(taskRunner.currentState())
+            }
             renderTaskStatuses(runnerStateForDisplay())
             restoreSelection(previousSelection)
 
@@ -2476,7 +2479,7 @@ class TaskLauncherPanel(private val project: Project) {
     /** 一次性任务：入队到常驻执行器，执行一次后自动出队 */
     private fun enqueueTask(task: TaskLauncherService.TaskInfo) {
         if (!ensureExecutor()) return
-        if (!taskRunner.enqueueOnetime(taskKeyOf(task))) {
+        if (!taskRunner.enqueueOnetime(taskKeyOf(task), taskDataRoot())) {
             statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.executorNotRunning")
             return
         }
@@ -2491,14 +2494,14 @@ class TaskLauncherPanel(private val project: Project) {
         }
         // 跨项目防护（对齐 VS Code stopCurrent 的 isCurrentProjectExecutor 门）：别打断别的项目的任务
         if (!executorMatchesProject()) return
-        if (!taskRunner.stopCurrent()) {
+        if (!taskRunner.stopCurrent(detectProjectPath())) {
             statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.executorNotRunning")
         }
     }
 
     /** 关闭常驻执行器（进程级；与「停止当前任务」不同）。跨项目时保留：这是解除 mismatch 的出口 */
     private fun closeExecutor() {
-        if (!taskRunner.isRunning()) {
+        if (!taskRunner.isActive()) {
             statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.executorNotRunning")
             return
         }
@@ -2526,7 +2529,7 @@ class TaskLauncherPanel(private val project: Project) {
             statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.saveFailed", lastTriggerSaveError)
             return false
         }
-        if (taskRunner.isRunning()) {
+        if (taskRunner.isActive()) {
             // 跨项目防护（对齐 VS Code ensureExecutor 的 projectMismatch）：执行器是
             // 项目级服务、常驻后台 —— 用户改了 okScriptProjectPath 再点启动/入队，
             // 命令会静默打进旧项目的执行器。明确挡下并提示，让用户先停掉再换项目。
@@ -2728,15 +2731,16 @@ class TaskLauncherPanel(private val project: Project) {
             loadTasks()
             return
         }
+        val root = taskDataRoot()
         val key = taskKeyOf(task)
         if (enabled) enabledTriggers.add(key) else enabledTriggers.remove(key)
         persistEnabledTriggers()
         renderTaskStatuses(runnerStateForDisplay())
-        if (taskRunner.isRunning()) {
+        if (taskRunner.isActive()) {
             // 勾选是本项目的数据（已持久化），但别把它推给别的项目的执行器
             // （对齐 VS Code setTriggerEnabled 的 isCurrentProjectExecutor 门）
             if (!executorMatchesProject()) return
-            if (!taskRunner.setTriggerEnabled(key, enabled)) {
+            if (!taskRunner.setTriggerEnabled(key, enabled, root)) {
                 statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.executorNotRunning")
             }
         }
@@ -2772,7 +2776,7 @@ class TaskLauncherPanel(private val project: Project) {
         }
         // 跨项目防护（对齐 VS Code：pause/resume/stopCurrent 都先过 isCurrentProjectExecutor）
         if (!executorMatchesProject()) return
-        if (!taskRunner.sendCommand(command)) {
+        if (!taskRunner.sendCommand(command, detectProjectPath())) {
             statusLabel.text = OkScriptToolkitBundle.message("toolbox.sendCommandFailed", command)
         }
     }

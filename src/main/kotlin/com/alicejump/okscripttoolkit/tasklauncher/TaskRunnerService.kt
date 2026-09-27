@@ -99,6 +99,13 @@ class TaskRunnerService(private val project: Project) : Disposable {
 
     /** UI 自动保存和工具栏可能从不同线程同时推送命令，stdin 每行必须完整写入。 */
     private val commandLock = Any()
+    /** 启动预约、进程归属、关闭请求和退出回调必须作为同一个会话变更。 */
+    private val lifecycleLock = Any()
+    private var sessionId = 0L
+    private var stopRequested = false
+    private var disposed = false
+    /** 启动期间的点击意图在 READY 后送达；触发开关保留到状态快照确认。 */
+    private val startupIntents = ExecutorStartupIntents()
 
     /** 调试浮层当前是否生效（启动沿用工具箱状态，运行中经 overlay_* 标记同步） */
     @Volatile
@@ -131,6 +138,9 @@ class TaskRunnerService(private val project: Project) : Disposable {
     // ── State ─────────────────────────────────────────────────────────
 
     fun isRunning(): Boolean = process?.isAlive == true
+
+    /** 从启动预约到退出回调完成期间，均不可再启动第二个进程。 */
+    fun isActive(): Boolean = synchronized(lifecycleLock) { connecting || process != null }
 
     /** 执行器正在服务的项目目录（未启动时为空串）—— UI 用它做跨项目防护（projectMismatch） */
     val runningProjectDir: String get() = currentProjectDir
@@ -271,6 +281,7 @@ class TaskRunnerService(private val project: Project) : Disposable {
         group.add(executorAction(
             OkScriptToolkitBundle.message("taskLauncher.closeExecutor"),
             AllIcons.Actions.Cancel,
+            ::isActive,
         ) { stopExecutor() })
         group.addSeparator()
         for (action in console.createConsoleActions()) group.add(action)
@@ -285,12 +296,17 @@ class TaskRunnerService(private val project: Project) : Disposable {
     }
 
     /** Run 工具栏上的执行器动作：可用性按「当前是否有任务在跑」实时刷新 */
-    private fun executorAction(text: String, icon: javax.swing.Icon, onClick: () -> Unit): AnAction =
+    private fun executorAction(
+        text: String,
+        icon: javax.swing.Icon,
+        enabled: () -> Boolean = ::isRunning,
+        onClick: () -> Unit,
+    ): AnAction =
         object : AnAction(text, text, icon) {
             override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
 
             override fun update(e: AnActionEvent) {
-                e.presentation.isEnabled = isRunning()
+                e.presentation.isEnabled = enabled()
             }
 
             override fun actionPerformed(e: AnActionEvent) {
@@ -331,34 +347,54 @@ class TaskRunnerService(private val project: Project) : Disposable {
         env: Map<String, String>,
         enabledTriggers: List<String>,
     ): Boolean {
-        if (isRunning()) return false
-        connecting = true
-        currentProjectDir = projectDir
-        snapshot = ExecutorState(status = "connecting", enabledTriggers = enabledTriggers)
+        val launchId = synchronized(lifecycleLock) {
+            if (disposed || connecting || process != null) return false
+            ++sessionId
+            connecting = true
+            stopRequested = false
+            startupIntents.clear()
+            currentProjectDir = projectDir
+            snapshot = ExecutorState(status = "connecting", enabledTriggers = enabledTriggers)
+            sessionId
+        }
         synchronized(recentOutputLock) { recentOutput.clear() }
         // 每次启动都开一张新的 Run 标签页（等价 IDE 的「重新运行」），日志从第一行起就在那儿
         showConsole(fresh = true)
         emitState()
 
         CompletableFuture.runAsync {
+            var spawned: Process? = null
             try {
                 val processBuilder = ProcessBuilder(listOf(pythonPath) + command)
                     .directory(File(projectDir))
                 processBuilder.environment().let { pe -> env.forEach { (k, v) -> pe[k] = v } }
 
                 val proc = processBuilder.start()
-                process = proc
-                // 浮层开关等工具箱命令改经服务转发（与视图生命周期解耦）
-                toolboxService.registerTaskCommandWriter { command -> sendCommand(command) }
-                // 浮层互斥：执行器进程自带 overlay，通知工具箱停掉独立浮层宿主
-                toolboxService.onExecutorRunningChanged(true)
+                spawned = proc
+                val shouldStop = synchronized(lifecycleLock) {
+                    if (launchId != sessionId) {
+                        proc.destroyForcibly()
+                        return@runAsync
+                    }
+                    synchronized(commandLock) { process = proc }
+                    if (!stopRequested && !disposed) {
+                        // 浮层开关等工具箱命令改经服务转发（与视图生命周期解耦）
+                        toolboxService.registerTaskCommandWriter { command -> sendCommand(command) }
+                        toolboxService.onExecutorRunningChanged(true)
+                    }
+                    stopRequested || disposed
+                }
                 emitState()
 
                 Thread {
                     try {
                         proc.inputStream.bufferedReader(Charsets.UTF_8).forEachLine { line ->
-                            recordAndEmit(line)
-                            scanControlMarkers(line)
+                            if (synchronized(lifecycleLock) { launchId == sessionId && process === proc }) {
+                                recordAndEmit(line)
+                            }
+                            synchronized(lifecycleLock) {
+                                if (launchId == sessionId && process === proc) scanControlMarkers(line)
+                            }
                         }
                     } catch (_: Exception) { }
                 }.apply { isDaemon = true; start() }
@@ -366,42 +402,74 @@ class TaskRunnerService(private val project: Project) : Disposable {
                 Thread {
                     try {
                         proc.errorStream.bufferedReader(Charsets.UTF_8).forEachLine { line ->
-                            recordAndEmit(line)
+                            if (synchronized(lifecycleLock) { launchId == sessionId && process === proc }) recordAndEmit(line)
                         }
                     } catch (_: Exception) { }
                 }.apply { isDaemon = true; start() }
 
                 Thread {
-                    val exitCode = try {
-                        proc.waitFor()
-                    } catch (e: InterruptedException) {
-                        null
-                    }
-                    onExecutorExit(exitCode)
+                    val exitCode = waitForExecutor(proc)
+                    onExecutorExit(launchId, proc, exitCode)
                 }.apply { isDaemon = true; start() }
+
+                if (shouldStop) {
+                    killProcessTree(proc, OkScriptToolkitBundle.message("taskLauncher.executorForceKilling"))
+                }
 
             } catch (e: Exception) {
                 LOG.error("Failed to start executor", e)
                 val message = OkScriptToolkitBundle.message("taskLauncher.launchFailed", e.message ?: "")
                 recordAndEmit(message)
                 // 启动失败≠用户关闭：经 controlError 标记，健康条显红而不是绿色
-                onExecutorExit(null, startupError = message)
+                val proc = spawned
+                if (proc == null) {
+                    onExecutorExit(launchId, null, null, startupError = message)
+                } else {
+                    Thread {
+                        val exitCode = waitForExecutor(proc)
+                        onExecutorExit(launchId, proc, exitCode, startupError = message)
+                    }.apply { isDaemon = true; start() }
+                    killProcessTree(proc, OkScriptToolkitBundle.message("taskLauncher.executorForceKilling"))
+                }
             }
         }
         return true
     }
 
-    private fun onExecutorExit(exitCode: Int?, startupError: String? = null) {
-        val wasForced = forceKillTask != null
-        cancelForceKill()
-        process = null
-        connecting = false
+    private fun onExecutorExit(launchId: Long, exitedProcess: Process?, exitCode: Int?, startupError: String? = null) {
         val message = when {
             exitCode == null -> OkScriptToolkitBundle.message("taskLauncher.executorClosed")
             exitCode == 0 -> OkScriptToolkitBundle.message("taskLauncher.executorClosed")
             else -> OkScriptToolkitBundle.message("taskLauncher.executorExitCode", exitCode)
         }
-        if (!wasForced) {
+        val wasStopped = synchronized(lifecycleLock) {
+            if (launchId != sessionId || process !== exitedProcess) return
+            cancelForceKillLocked()
+            val requested = stopRequested || disposed
+            startupIntents.clear()
+            synchronized(commandLock) { process = null }
+            connecting = false
+            currentProjectDir = ""
+            toolboxService.registerTaskCommandWriter(null)
+            // 浮层互斥：执行器退出，把独立浮层宿主交还给工具箱。
+            if (!disposed) {
+                try {
+                    toolboxService.onExecutorRunningChanged(false)
+                } catch (e: Exception) {
+                    LOG.warn("Failed to restore toolbox overlay after executor exit", e)
+                }
+            }
+            snapshot = ExecutorState(
+                status = "idle",
+                exitCode = exitCode,
+                controlError = startupError,
+                enabledTriggers = snapshot.enabledTriggers,
+                finishMessage = message,
+            )
+            emitState()
+            requested
+        }
+        if (!wasStopped) {
             // 异常退出 / 启动失败要主动告知（对齐 VS Code 的 showErrorMessage toast）：
             // 只靠状态栏红点 + finishMessage，不看任务工具窗就不知道执行器崩了。
             // 通知挂在项目级 service 上发 —— 工具窗关闭后执行器还在跑，崩了照样要有人听见。
@@ -419,33 +487,58 @@ class TaskRunnerService(private val project: Project) : Disposable {
                     .notify(project)
             }
         }
-        snapshot = ExecutorState(
-            status = "idle",
-            exitCode = exitCode,
-            // 启动失败时非空：健康条据此显红（正常退出/用户关闭保持绿）
-            controlError = startupError,
-            // 保留启用集合，重开工具窗 / 重启执行器时沿用用户勾选
-            enabledTriggers = snapshot.enabledTriggers,
-            finishMessage = message,
-        )
-        toolboxService.registerTaskCommandWriter(null)
-        // 浮层互斥：执行器退出，把独立浮层宿主交还给工具箱
-        // （error / 正常退出都走这里，onExecutorRunningChanged 内部会去重）
-        toolboxService.onExecutorRunningChanged(false)
-        emitState()
+    }
+
+    /** watcher 被中断也必须等到真正退出，不能把仍存活的进程释放给下一次启动。 */
+    private fun waitForExecutor(proc: Process): Int {
+        while (true) {
+            try {
+                return proc.waitFor()
+            } catch (_: InterruptedException) {
+                // 继续等待；进程归属直到 waitFor 真正返回才可释放。
+            }
+        }
     }
 
     // ── 命令 ──────────────────────────────────────────────────────────
 
     /** 触发任务入列 / 出列（等价 ok-script GUI 的启用开关） */
-    fun setTriggerEnabled(key: String, enabled: Boolean): Boolean =
-        sendCommand(if (enabled) "trigger_enable $key" else "trigger_disable $key")
+    fun setTriggerEnabled(key: String, enabled: Boolean, expectedProjectDir: String? = null): Boolean {
+        val (deferred, launchId) = synchronized(lifecycleLock) {
+            if (stopRequested || disposed || (!connecting && process == null)) return false
+            if (expectedProjectDir != null && currentProjectDir != expectedProjectDir) return false
+            startupIntents.setTrigger(key, enabled)
+            val triggers = snapshot.enabledTriggers.toMutableSet()
+            if (enabled) triggers.add(key) else triggers.remove(key)
+            snapshot = snapshot.copy(enabledTriggers = triggers.toList())
+            emitState()
+            connecting to sessionId
+        }
+        if (deferred) return true
+        val sent = sendCommand(if (enabled) "trigger_enable $key" else "trigger_disable $key", expectedProjectDir)
+        if (!sent) synchronized(lifecycleLock) {
+            if (sessionId == launchId) startupIntents.forgetTrigger(key, enabled)
+        }
+        return sent
+    }
 
     /** 一次性任务入队：由常驻执行器执行一次后自动出队 */
-    fun enqueueOnetime(key: String): Boolean = sendCommand("onetime_enqueue $key")
+    fun enqueueOnetime(key: String, expectedProjectDir: String? = null): Boolean {
+        val deferred = synchronized(lifecycleLock) {
+            if (stopRequested || disposed) return false
+            if (expectedProjectDir != null && currentProjectDir != expectedProjectDir) return false
+            if (connecting) {
+                startupIntents.queueOnetime(key)
+                snapshot = snapshot.copy(onetimeQueue = snapshot.onetimeQueue + key)
+                emitState()
+                true
+            } else false
+        }
+        return deferred || sendCommand("onetime_enqueue $key", expectedProjectDir)
+    }
 
     /** 停掉当前正在执行的任务，轮询继续 */
-    fun stopCurrent(): Boolean = sendCommand("task_disable")
+    fun stopCurrent(expectedProjectDir: String? = null): Boolean = sendCommand("task_disable", expectedProjectDir)
 
     /** 参数覆盖即时推送（执行器是常驻进程，不推就要重启才生效） */
     fun pushParams(json: String, expectedProjectDir: String): Boolean =
@@ -467,32 +560,46 @@ class TaskRunnerService(private val project: Project) : Disposable {
      * 3. 超时强杀 —— 由 [killProcessTree] 在真正动手时记录。
      */
     fun stopExecutor() {
-        val proc = process
-        if (proc == null || !proc.isAlive) {
+        val (proc, launchId) = synchronized(lifecycleLock) {
+            if (!connecting && process == null) return@synchronized null to sessionId
+            stopRequested = true
+            process to sessionId
+        }
+        if (proc == null) {
+            if (connecting) {
+                recordAndEmit("--- ${OkScriptToolkitBundle.message("taskLauncher.stoppingExecutor")} ---")
+                return
+            }
             recordAndEmit(OkScriptToolkitBundle.message("taskLauncher.executorNotRunning"))
             return
         }
+        if (!proc.isAlive) return
         recordAndEmit("--- ${OkScriptToolkitBundle.message("taskLauncher.stoppingExecutor")} ---")
-        if (!sendCommand("stop")) {
-            recordAndEmit(OkScriptToolkitBundle.message("taskLauncher.executorForceKilling"))
-            killProcessTree(proc, OkScriptToolkitBundle.message("taskLauncher.executorForceKilling"))
+        if (!sendCommand("stop", expectedProcess = proc)) {
+            if (proc.isAlive) killProcessTree(proc, OkScriptToolkitBundle.message("taskLauncher.executorForceKilling"))
             return
         }
-        cancelForceKill()
-        val task = object : TimerTask() {
-            override fun run() {
-                forceKillTask = null
-                val alive = process
-                if (alive != null && alive.isAlive) {
-                    killProcessTree(alive, OkScriptToolkitBundle.message("taskLauncher.executorKillTimeout"))
+        synchronized(lifecycleLock) {
+            if (disposed || sessionId != launchId || process !== proc) return@synchronized
+            cancelForceKillLocked()
+            val task = object : TimerTask() {
+                override fun run() {
+                    val shouldKill = synchronized(lifecycleLock) {
+                        if (sessionId != launchId || process !== proc || forceKillTask !== this) false
+                        else {
+                            forceKillTask = null
+                            proc.isAlive
+                        }
+                    }
+                    if (shouldKill) killProcessTree(proc, OkScriptToolkitBundle.message("taskLauncher.executorKillTimeout"))
                 }
             }
+            forceKillTask = task
+            forceKillTimer.schedule(task, FORCE_KILL_DELAY_MS)
         }
-        forceKillTask = task
-        forceKillTimer.schedule(task, FORCE_KILL_DELAY_MS)
     }
 
-    private fun cancelForceKill() {
+    private fun cancelForceKillLocked() {
         forceKillTask?.cancel()
         forceKillTask = null
     }
@@ -507,6 +614,7 @@ class TaskRunnerService(private val project: Project) : Disposable {
         recordAndEmit("--- $reason ---")
         CompletableFuture.runAsync {
             try {
+                if (!proc.isAlive) return@runAsync
                 val pid = proc.pid()
                 if (pid > 0 && System.getProperty("os.name").lowercase().contains("win")) {
                     ProcessBuilder("taskkill", "/F", "/T", "/PID", pid.toString())
@@ -527,11 +635,17 @@ class TaskRunnerService(private val project: Project) : Disposable {
      * 向执行器 stdin 写入控制命令（trigger_enable / onetime_enqueue / pause / resume /
      * overlay_on|off / stop …）。无运行进程返回 false；调用线程任意。
      */
-    fun sendCommand(command: String, expectedProjectDir: String? = null): Boolean =
-        synchronized(commandLock) {
+    fun sendCommand(
+        command: String,
+        expectedProjectDir: String? = null,
+        expectedProcess: Process? = null,
+    ): Boolean {
+        var failure: Exception? = null
+        val sent = synchronized(commandLock) {
             // 先固定进程实例再核对项目。进程在检查后退出/切换时，最多写到已退出的旧实例，
             // 不能把旧项目的 params/gparams 写到刚启动的新项目执行器。
             val proc = process ?: return@synchronized false
+            if (expectedProcess != null && proc !== expectedProcess) return@synchronized false
             if (expectedProjectDir != null && currentProjectDir != expectedProjectDir) return@synchronized false
             if (!proc.isAlive) return@synchronized false
             try {
@@ -540,14 +654,17 @@ class TaskRunnerService(private val project: Project) : Disposable {
                 writer.flush()
                 true
             } catch (e: Exception) {
-                // 只记命令名不记参数：gparams/params 的 JSON 快照可能含用户配置里的
-                // 敏感值，写进 IDE 日志就是泄露（CWE-532，CodeRabbit Major 意见）
-                val commandName = command.substringBefore(' ')
-                LOG.warn("Failed to send control command: $commandName", e)
-                recordAndEmit(OkScriptToolkitBundle.message("toolbox.sendCommandFailed", e.message ?: ""))
+                failure = e
                 false
             }
         }
+        failure?.let { e ->
+            // 只记命令名不记参数：gparams/params 的 JSON 快照可能含用户配置里的敏感值。
+            LOG.warn("Failed to send control command: ${command.substringBefore(' ')}", e)
+            recordAndEmit(OkScriptToolkitBundle.message("toolbox.sendCommandFailed", e.message ?: ""))
+        }
+        return sent
+    }
 
     // ── Control markers ───────────────────────────────────────────────
 
@@ -558,6 +675,16 @@ class TaskRunnerService(private val project: Project) : Disposable {
             line.contains("OK_TOOLKIT_EXECUTOR_READY") -> {
                 connecting = false
                 snapshot = snapshot.copy(controlError = null)
+                if (!stopRequested) {
+                    for ((key, enabled) in startupIntents.pendingTriggerCommands()) {
+                        val command = if (enabled) "trigger_enable $key" else "trigger_disable $key"
+                        if (!sendCommand(command, currentProjectDir)) startupIntents.forgetTrigger(key, enabled)
+                    }
+                    for (key in startupIntents.drainOnetimeCommands()) {
+                        sendCommand("onetime_enqueue $key", currentProjectDir)
+                    }
+                }
+                if (stopRequested) startupIntents.clear()
                 emitState()
             }
             line.contains("OK_TOOLKIT_PAUSED") -> {
@@ -600,12 +727,17 @@ class TaskRunnerService(private val project: Project) : Disposable {
         } else {
             snapshot.enabledTriggers
         }
+        val visibleEnabled = startupIntents.visibleTriggers(
+            enabled,
+            acknowledge = !connecting && triggers != null && triggers.isArray,
+        )
+        val actualQueue = parsed.get("onetimeQueue")?.mapNotNull { it.asText(null) } ?: emptyList()
         snapshot = snapshot.copy(
             paused = parsed.get("paused")?.asBoolean() ?: false,
             current = parsed.get("current")?.asText(null) ?: "",
             currentIsTrigger = parsed.get("currentIsTrigger")?.asBoolean() ?: false,
-            onetimeQueue = parsed.get("onetimeQueue")?.mapNotNull { it.asText(null) } ?: emptyList(),
-            enabledTriggers = enabled,
+            onetimeQueue = startupIntents.visibleOnetimeQueue(actualQueue, connecting),
+            enabledTriggers = visibleEnabled,
             controlError = null,
         )
         emitState()
@@ -625,9 +757,16 @@ class TaskRunnerService(private val project: Project) : Disposable {
     }
 
     override fun dispose() {
-        cancelForceKill()
-        forceKillTimer.cancel()
-        toolboxService.registerTaskCommandWriter(null)
-        stopExecutor()
+        val proc = synchronized(lifecycleLock) {
+            disposed = true
+            stopRequested = true
+            cancelForceKillLocked()
+            forceKillTimer.cancel()
+            toolboxService.registerTaskCommandWriter(null)
+            process
+        }
+        if (proc != null && proc.isAlive) {
+            killProcessTree(proc, OkScriptToolkitBundle.message("taskLauncher.executorForceKilling"))
+        }
     }
 }
