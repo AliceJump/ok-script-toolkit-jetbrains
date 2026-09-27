@@ -2,6 +2,7 @@ package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.CocoAnnotation
+import com.alicejump.okscripttoolkit.core.CocoAnnotationEdit
 import com.alicejump.okscripttoolkit.core.CocoCategory
 import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
 import com.alicejump.okscripttoolkit.core.TemplateImage
@@ -10,6 +11,7 @@ import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
+import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.ui.ValidationInfo
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
@@ -250,29 +252,26 @@ class AnnotationDialog(
     }
 
     override fun doOKAction() {
-        try {
+        val saved = try {
             stashCurrent()
-            var changed = false
-            for (s in sessionByFile.values) {
-                if (!s.dirty) continue
-                val id = if (s.cocoImageId < 0) {
-                    val (w, h) = s.newSize ?: continue
-                    data.addImageEntry(s.fileName, w, h).id.also { s.cocoImageId = it }
-                } else {
-                    s.cocoImageId
-                }
-                data.replaceAnnotationsForImage(
-                    id,
+            val edits = sessionByFile.values.filter { it.dirty }.map { s ->
+                CocoAnnotationEdit(
+                    s.fileName,
+                    s.newSize,
                     s.boxes.map { box ->
-                        data.getOrCreateCategory(box.categoryName).id to
-                            intArrayOf(box.rect.x, box.rect.y, box.rect.w, box.rect.h)
+                        box.categoryName to intArrayOf(box.rect.x, box.rect.y, box.rect.w, box.rect.h)
                     },
                 )
-                changed = true
             }
-            if (changed) data.save()
+            data.saveAnnotationEdits(edits)
         } catch (e: Exception) {
             LOG.error("Failed to save annotations for ${currentImage.name}", e)
+            false
+        }
+        if (!saved) {
+            Messages.showErrorDialog(project, OkScriptToolkitBundle.message("annotation.saveFailed"),
+                OkScriptToolkitBundle.message("annotation.title", currentImage.name))
+            return
         }
         super.doOKAction()
     }

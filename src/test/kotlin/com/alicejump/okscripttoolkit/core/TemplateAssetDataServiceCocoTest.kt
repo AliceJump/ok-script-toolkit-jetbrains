@@ -5,9 +5,19 @@ import com.intellij.openapi.project.Project
 import java.lang.reflect.Proxy
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class TemplateAssetDataServiceCocoTest {
+
+    private fun serviceAt(root: java.io.File): TemplateAssetDataService {
+        val project = Proxy.newProxyInstance(
+            Project::class.java.classLoader,
+            arrayOf(Project::class.java),
+        ) { _, _, _ -> null } as Project
+        return TemplateAssetDataService(project).also { it.load(root.absolutePath, "ok_templates") }
+    }
 
     @Test
     fun `serialize then parse round-trips coco data`() {
@@ -141,5 +151,56 @@ class TemplateAssetDataServiceCocoTest {
         assertEquals(0, afterDelete.get("images").size())
         assertEquals(0, afterDelete.get("annotations").size())
         assertEquals(0, afterDelete.get("categories").size())
+    }
+
+    @Test
+    fun `annotation edits save all images as one COCO update`() {
+        val root = TestTmp.create("ok-coco-annotation-save")
+        val service = serviceAt(root)
+        val old = service.addImageEntry("old.png", 100, 80)
+        assertTrue(service.saveAnnotationEdits(listOf(
+            CocoAnnotationEdit("old.png", null, listOf("old-category" to intArrayOf(1, 2, 3, 4))),
+            CocoAnnotationEdit("new.png", 50 to 40, listOf("new-category" to intArrayOf(5, 6, 7, 8))),
+        )))
+
+        val restored = serviceAt(root)
+        assertNotNull(restored.getImageEntryForFile("old.png"))
+        assertEquals(listOf(1, 2, 3, 4), restored.getAnnotationsForImage(old.id).single().bbox.toList())
+        val newImage = restored.getImageEntryForFile("new.png")!!
+        assertEquals(50 to 40, newImage.width to newImage.height)
+        assertEquals(listOf(5, 6, 7, 8), restored.getAnnotationsForImage(newImage.id).single().bbox.toList())
+    }
+
+    @Test
+    fun `failed annotation write leaves in-memory COCO unchanged`() {
+        val root = TestTmp.create("ok-coco-annotation-failure")
+        val service = serviceAt(root)
+        val old = service.addImageEntry("old.png", 100, 80)
+        val category = service.getOrCreateCategory("before")
+        service.replaceAnnotationsForImage(old.id, listOf(category.id to intArrayOf(1, 2, 3, 4)))
+        service.save()
+
+        // 让目标路径变成目录：写入临时文件能成功，最终替换必然失败。
+        val target = root.resolve("ok_templates/coco_annotations.json")
+        assertTrue(target.delete())
+        assertTrue(target.mkdir())
+        assertFalse(service.saveAnnotationEdits(listOf(
+            CocoAnnotationEdit("old.png", null, listOf("after" to intArrayOf(5, 6, 7, 8))),
+        )))
+        assertEquals(listOf("before"), service.categories().map { it.name })
+        assertEquals(listOf(1, 2, 3, 4), service.getAnnotationsForImage(old.id).single().bbox.toList())
+        assertTrue(target.isDirectory)
+        assertTrue(root.resolve("ok_templates").listFiles()?.none { it.name.endsWith(".tmp") } == true)
+    }
+
+    @Test
+    fun `new annotation image without dimensions is rejected without mutation`() {
+        val root = TestTmp.create("ok-coco-annotation-size")
+        val service = serviceAt(root)
+        assertFalse(service.saveAnnotationEdits(listOf(
+            CocoAnnotationEdit("missing.png", null, listOf("icon" to intArrayOf(1, 2, 3, 4))),
+        )))
+        assertEquals(null, service.getImageEntryForFile("missing.png"))
+        assertTrue(service.categories().isEmpty())
     }
 }

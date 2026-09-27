@@ -116,6 +116,13 @@ data class CocoData(
     }
 }
 
+/** 一张图在标注对话框中待提交的完整框列表。 */
+data class CocoAnnotationEdit(
+    val fileName: String,
+    val imageSize: Pair<Int, Int>?,
+    val boxes: List<Pair<String, IntArray>>,
+)
+
 data class TemplateImage(
     val name: String,
     val file: File,
@@ -280,14 +287,53 @@ class TemplateAssetDataService(private val project: Project) {
     }
 
     fun save() {
-        val file = cocoFile?.toFile() ?: return
+        writeCoco(cocoData)
+    }
+
+    /** 所有编辑作为一次写盘提交；失败时不改动服务中的 COCO 状态。 */
+    fun saveAnnotationEdits(edits: List<CocoAnnotationEdit>): Boolean {
+        if (edits.isEmpty()) return true
+        val updated = parseCoco(serializeCoco(cocoData))
+        for (edit in edits) {
+            val image = updated.findImageByFileName(edit.fileName) ?: run {
+                val size = edit.imageSize ?: return false
+                if (size.first <= 0 || size.second <= 0) return false
+                updated.addImage(edit.fileName, size.first, size.second)
+            }
+            updated.setAnnotationsForImage(image.id, emptyList())
+            for ((categoryName, bbox) in edit.boxes) {
+                val category = updated.getOrCreateCategory(categoryName)
+                updated.addAnnotation(image.id, category.id, bbox)
+            }
+        }
+        if (!writeCoco(updated)) return false
+        cocoData = updated
+        return true
+    }
+
+    /** 临时文件与目标同目录，替换前的旧 COCO 始终保持完整。 */
+    private fun writeCoco(data: CocoData): Boolean {
+        val target = cocoFile ?: return false
+        var temp: Path? = null
         try {
-            file.parentFile?.mkdirs()
+            Files.createDirectories(target.parent)
+            val staged = Files.createTempFile(target.parent, ".coco_annotations-", ".tmp")
+            temp = staged
             // 直接写 root 节点；此前写 root.toPrettyString() 会把整份 COCO 当字符串
             // 再包一层引号，产生损坏的 JSON
-            JSON.writerWithDefaultPrettyPrinter().writeValue(file, serializeCoco(cocoData))
+            JSON.writerWithDefaultPrettyPrinter().writeValue(staged.toFile(), serializeCoco(data))
+            try {
+                Files.move(staged, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+                Files.move(staged, target, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            }
+            return true
         } catch (e: Exception) {
-            LOG.error("Failed to save COCO data", e)
+            LOG.warn("Failed to save COCO data", e)
+            return false
+        } finally {
+            temp?.let { runCatching { Files.deleteIfExists(it) } }
         }
     }
 
