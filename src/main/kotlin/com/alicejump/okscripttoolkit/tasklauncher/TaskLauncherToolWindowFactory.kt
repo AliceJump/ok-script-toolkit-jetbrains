@@ -938,13 +938,6 @@ class TaskLauncherPanel(private val project: Project) {
         }
     }
 
-    /** 字段值截断显示（弹层摘要用；不解析语义，只转文本） */
-    private fun formatFieldValue(raw: Any?): String {
-        if (raw == null) return "—"
-        val text = raw.toString()
-        return if (text.length > 40) text.take(40) + "…" else text
-    }
-
     private fun renderDetailHeader(
         task: TaskLauncherService.TaskInfo?,
         state: TaskRunnerService.ExecutorState = taskRunner.currentState(),
@@ -1190,31 +1183,6 @@ class TaskLauncherPanel(private val project: Project) {
         }
     }
 
-    /** 两列卡片网格：宽度均分、卡片高度随内容；内容超高时由外层滚动条接管 */
-    private fun pageGrid(cards: List<JPanel>): JPanel {
-        val grid = JPanel(GridBagLayout())
-        grid.isOpaque = false
-        grid.border = BorderFactory.createEmptyBorder(12, 14, 12, 14)
-        cards.forEachIndexed { index, card ->
-            grid.add(card, GridBagConstraints().apply {
-                gridx = index % 2
-                gridy = index / 2
-                weightx = 0.5
-                fill = GridBagConstraints.HORIZONTAL
-                anchor = GridBagConstraints.NORTHWEST
-                insets = Insets(0, 0, 12, 12)
-            })
-        }
-        // 底部弹簧：卡片顶对齐，不被纵向拉伸
-        grid.add(JPanel().apply { isOpaque = false }, GridBagConstraints().apply {
-            gridx = 0
-            gridy = (cards.size + 1) / 2
-            gridwidth = 2
-            weighty = 1.0
-            fill = GridBagConstraints.BOTH
-        })
-        return grid
-    }
 
     /** 单列页面（配置页 / 工具页用）：卡片纵向排列 + 外边距，内容超高时可滚 */
     private fun singleColumnPage(cards: List<JPanel>): JPanel {
@@ -1237,7 +1205,7 @@ class TaskLauncherPanel(private val project: Project) {
             weighty = 1.0
             fill = GridBagConstraints.BOTH
         })
-        return column
+        return scrollablePage(column)
     }
 
     /** 内容装进滚动面板（页签内容超过窗口高度时可滚，横向永不出现滚动条） */
