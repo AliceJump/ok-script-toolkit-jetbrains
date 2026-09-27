@@ -1,6 +1,8 @@
 package com.alicejump.okscripttoolkit.toolbox
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.intellij.openapi.project.Project
+import java.lang.reflect.Proxy
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -81,5 +83,18 @@ class ToolboxStoreTest {
         val parsed = ToolboxService.parseStore(json.readTree(serialized))
 
         assertEquals(original, parsed)
+    }
+
+    @Test
+    fun `connect and disconnect after disposal complete without submitting to a shut down queue`() {
+        val project = Proxy.newProxyInstance(
+            Project::class.java.classLoader,
+            arrayOf(Project::class.java),
+        ) { _, _, _ -> null } as Project
+        val service = ToolboxService(project)
+        service.dispose()
+
+        assertTrue(service.connectGame("C:/games/ok-ww", "python").isDone)
+        assertTrue(service.disconnectGame("C:/games/ok-ww", "python").isDone)
     }
 }

@@ -16,6 +16,7 @@ import java.nio.file.Paths
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import javax.swing.SwingUtilities
 import com.alicejump.okscripttoolkit.core.forEachField
@@ -125,9 +126,9 @@ class ToolboxService(private val project: Project) : Disposable {
     private val connectionOps = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
         Thread(r, "ok-script-toolkit-connection").apply { isDaemon = true }
     }
+    private val connectionQueueLock = Any()
 
     /** 尚未跑完的 Connect（对齐 VS Code pendingConnect）：并发两次 Connect 合并成一次 */
-    @Volatile
     private var pendingConnect: Pair<String, CompletableFuture<Unit>>? = null
 
     // ── State access ──────────────────────────────────────────────────
@@ -162,7 +163,9 @@ class ToolboxService(private val project: Project) : Disposable {
     }
 
     fun postStatus(text: String) {
+        if (disposed) return
         SwingUtilities.invokeLater {
+            if (disposed) return@invokeLater
             statusListeners.forEach { it(text) }
         }
     }
@@ -171,6 +174,10 @@ class ToolboxService(private val project: Project) : Disposable {
     private fun saveState(projectDir: String, strict: Boolean = false, patch: (ToolboxState) -> ToolboxState): ToolboxState {
         require(projectDir.isNotBlank()) { "projectDir must not be blank" }
         val next = synchronized(storeLock) {
+            if (disposed) {
+                if (strict) throw IllegalStateException("Toolbox service is disposed")
+                return cache[projectDir] ?: ToolboxState()
+            }
             val current = cache[projectDir] ?: readStoreFile(strict)[projectDir] ?: ToolboxState()
             val updated = patch(current)
             // 合并写回整个 store，避免覆盖其它项目条目；连接操作的写入失败向调用方报告。
@@ -230,18 +237,42 @@ class ToolboxService(private val project: Project) : Disposable {
             postStatus(OkScriptToolkitBundle.message("toolbox.noProject"))
             return CompletableFuture.completedFuture(Unit)
         }
-        // 并发的两次 Connect 合并成一次（对齐 VS Code pendingConnect）
-        pendingConnect?.let { (dir, future) -> if (dir == projectDir) return future }
-        postStatus(OkScriptToolkitBundle.message("toolbox.connecting"))
-        val future = CompletableFuture<Unit>()
-        pendingConnect = projectDir to future
-        future.whenComplete { _, _ -> if (pendingConnect?.second === future) pendingConnect = null }
-        connectionOps.execute {
-            if (disposed) { future.complete(Unit); return@execute }
-            doConnect(projectDir, pythonPath)
+        return synchronized(connectionQueueLock) {
+            if (disposed) return@synchronized CompletableFuture.completedFuture(Unit)
+            // 并发的两次 Connect 合并成一次（对齐 VS Code pendingConnect）
+            pendingConnect?.let { (dir, future) -> if (dir == projectDir) return@synchronized future }
+            val future = CompletableFuture<Unit>()
+            pendingConnect = projectDir to future
+            enqueueConnectionLocked(future) {
+                postStatus(OkScriptToolkitBundle.message("toolbox.connecting"))
+                doConnect(projectDir, pythonPath)
+            }
+            future
+        }
+    }
+
+    /** 调用方持有 connectionQueueLock；释放与提交互斥，所有 future 都会完成。 */
+    private fun enqueueConnectionLocked(future: CompletableFuture<Unit>, work: () -> Unit) {
+        try {
+            connectionOps.execute {
+                var failure: Throwable? = null
+                try {
+                    if (!disposed) work()
+                } catch (e: Throwable) {
+                    LOG.warn("Connection operation failed unexpectedly", e)
+                    failure = e
+                } finally {
+                    synchronized(connectionQueueLock) {
+                        if (pendingConnect?.second === future) pendingConnect = null
+                    }
+                    if (failure == null) future.complete(Unit) else future.completeExceptionally(failure)
+                }
+            }
+        } catch (e: RejectedExecutionException) {
+            // 与 dispose 竞态时仍完成请求；不能让按钮一直停在连接中。
+            if (pendingConnect?.second === future) pendingConnect = null
             future.complete(Unit)
         }
-        return future
     }
 
     private fun doConnect(projectDir: String, pythonPath: String) {
@@ -254,6 +285,7 @@ class ToolboxService(private val project: Project) : Disposable {
                 workingDir = File(projectDir),
                 timeoutMs = CONNECT_TIMEOUT_MS,
             )
+            if (disposed) return
             // 项目脚本约定：失败时往 stdout 末尾打印 {"ok": false, "error": "..."}；
             // 优先回传结构化错误，其次 stderr，最后才是通用命令失败信息。
             val parsed = pythonRunner.parseJsonFromStdout(result.stdout)
@@ -272,6 +304,7 @@ class ToolboxService(private val project: Project) : Disposable {
                 exe = parsed.path("exe").asText(""),
                 connectedAt = System.currentTimeMillis(),
             )
+            if (disposed) return
             saveState(projectDir, strict = true) { it.copy(game = game) }
             postStatus("")
             // 调试浮层开启时拉起常驻宿主：无需启动任务即可 Alt+右键框选取坐标
@@ -295,15 +328,16 @@ class ToolboxService(private val project: Project) : Disposable {
         }
         // 取消还没开跑的 Connect（对齐 VS Code disconnect 里的 pendingConnect = undefined）；
         // 已在跑的 Connect 仍会完成，本次 Disconnect 排在它之后执行 —— 最终状态是断开。
-        pendingConnect = null
-        postStatus(OkScriptToolkitBundle.message("toolbox.disconnecting"))
-        val future = CompletableFuture<Unit>()
-        connectionOps.execute {
-            if (disposed) { future.complete(Unit); return@execute }
-            doDisconnect(projectDir, pythonPath)
-            future.complete(Unit)
+        return synchronized(connectionQueueLock) {
+            if (disposed) return@synchronized CompletableFuture.completedFuture(Unit)
+            pendingConnect = null
+            val future = CompletableFuture<Unit>()
+            enqueueConnectionLocked(future) {
+                postStatus(OkScriptToolkitBundle.message("toolbox.disconnecting"))
+                doDisconnect(projectDir, pythonPath)
+            }
+            future
         }
-        return future
     }
 
     private fun doDisconnect(projectDir: String, pythonPath: String) {
@@ -316,6 +350,7 @@ class ToolboxService(private val project: Project) : Disposable {
                 workingDir = File(projectDir),
                 timeoutMs = DISCONNECT_TIMEOUT_MS,
             )
+            if (disposed) return
             val parsed = pythonRunner.parseJsonFromStdout(result.stdout)
                 ?.let { runCatching { JSON.readTree(it) }.getOrNull() }
             if (result.exitCode != 0 ||
@@ -332,6 +367,7 @@ class ToolboxService(private val project: Project) : Disposable {
                     }
                 throw IllegalStateException(error)
             }
+            if (disposed) return
             stopOverlayHost()
             saveState(projectDir, strict = true) { it.copy(game = null) }
             postStatus("")
@@ -351,6 +387,7 @@ class ToolboxService(private val project: Project) : Disposable {
      * 常驻宿主跟随开关：开启且已连接游戏时保持，关闭即停。
      */
     fun setOverlayEnabled(projectDir: String, pythonPath: String, enabled: Boolean) {
+        if (disposed) return
         if (projectDir.isBlank()) {
             // 无项目上下文：不改状态，回推当前空状态让 UI 复位（对齐 VS Code postToolboxState）
             SwingUtilities.invokeLater {
@@ -379,6 +416,7 @@ class ToolboxService(private val project: Project) : Disposable {
      * 否则会出现「跑完一次任务，浮层就没了」。
      */
     fun onExecutorRunningChanged(running: Boolean) {
+        if (disposed) return
         if (executorRunning == running) return
         executorRunning = running
         if (running) {
@@ -422,6 +460,7 @@ class ToolboxService(private val project: Project) : Disposable {
      * （见 onExecutorRunningChanged），避免同一窗口上两个 overlay 重复绘制。
      */
     fun startOverlayHost(projectDir: String, pythonPath: String) {
+        if (disposed) return
         if (projectDir.isBlank()) return
         if (executorRunning) return
         val existing = overlayHost
@@ -499,9 +538,16 @@ class ToolboxService(private val project: Project) : Disposable {
     }
 
     override fun dispose() {
-        disposed = true
-        // 队列收尾：等在跑的操作自然结束（脚本有超时），不再接新活
-        connectionOps.shutdown()
+        synchronized(connectionQueueLock) {
+            // 与正在落盘的 saveState 互斥；dispose 返回后不能再写项目状态。
+            synchronized(storeLock) { disposed = true }
+            pendingConnect = null
+            // 队列收尾：等在跑的操作自然结束（脚本有超时），不再接新活。
+            connectionOps.shutdown()
+        }
+        stateListeners.clear()
+        statusListeners.clear()
+        taskCommandWriter = null
         stopOverlayHost()
     }
 
