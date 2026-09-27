@@ -133,6 +133,7 @@ class TaskLauncherPanel(private val project: Project) {
     }
     /** 状态栏瞬时消息：可能很长（保存错误 / 加载进度）⇒ 省略而不是把右侧进度条挤掉 */
     private val statusLabel = EllipsizingLabel()
+    private var executorStartingStatus: String? = null
     private val schemaWarningLabel = JBLabel().apply {
         foreground = TaskLauncherTheme.WARN
         isVisible = false
@@ -358,12 +359,19 @@ class TaskLauncherPanel(private val project: Project) {
         val mismatched = !executorMatchesProject()
         val visible = if (mismatched) runnerStateForDisplay() else state
         // 执行器状态已合并到常驻执行器条（runnerStatusLabel），状态栏只留瞬时消息。
-        // 如果 statusLabel 当前还残留着旧的执行器状态文案，清空它。
+        // 只清理确定属于执行器生命周期的旧文案；保存错误也可能提到「执行器」，
+        // 不能靠字词匹配抹掉。各语言的项目不匹配提示也应在切回原项目后清除。
         if (mismatched) {
             statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.projectMismatch")
         } else {
             statusLabel.text?.let {
-                if (it.contains("执行器") || it.contains("Executor")) statusLabel.text = ""
+                if (it == executorStartingStatus ||
+                    it == OkScriptToolkitBundle.message("taskLauncher.executorNotRunning") ||
+                    it == OkScriptToolkitBundle.message("taskLauncher.projectMismatch")
+                ) {
+                    statusLabel.text = ""
+                    executorStartingStatus = null
+                }
             }
         }
         // 净化后的快照喂给健康点：跨项目时不显示对方 current，但「有执行器在跑」如实呈现
@@ -3223,7 +3231,8 @@ class TaskLauncherPanel(private val project: Project) {
             )
         }
 
-        statusLabel.text = OkScriptToolkitBundle.message("taskLauncher.executorStarting", projectDir)
+        executorStartingStatus = OkScriptToolkitBundle.message("taskLauncher.executorStarting", projectDir)
+        statusLabel.text = executorStartingStatus
         return taskRunner.start(
             pythonPath = pythonPath,
             command = taskService.buildExecutorCommand(configModule),
