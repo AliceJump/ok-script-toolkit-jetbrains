@@ -79,9 +79,6 @@ class TaskLauncherPanel(private val project: Project) {
         private const val LF_CHAR: Char = 0x0A.toChar()
         private const val OK_JSON_FIELD = "ok-script.jsonField"
 
-        /** 左侧列表里参数标签列的最小宽度：所有行的标签右对齐在同一条竖线上 */
-        private const val LABEL_COLUMN_WIDTH = 88
-
         /**
          * 操作列（左栏第 0 列）：触发任务是复选框、一次性任务是运行按钮。
          * 表格里多处按序号取列，集中成常量免得改列序时漏掉某处。
@@ -187,7 +184,14 @@ class TaskLauncherPanel(private val project: Project) {
 
     private val hoverPopupDelayMs = 800
 
-    private val paramPanel = JPanel(GridBagLayout())
+    private val paramPanel = object : JPanel(GridBagLayout()), Scrollable {
+        override fun getPreferredScrollableViewportSize(): Dimension = preferredSize
+        override fun getScrollableUnitIncrement(visibleRect: java.awt.Rectangle, orientation: Int, direction: Int) = 16
+        override fun getScrollableBlockIncrement(visibleRect: java.awt.Rectangle, orientation: Int, direction: Int) =
+            (visibleRect.height - 16).coerceAtLeast(16)
+        override fun getScrollableTracksViewportWidth() = true
+        override fun getScrollableTracksViewportHeight() = false
+    }
     private val paramFields = mutableMapOf<String, JComponent>()
 
     private var tasks = listOf<TaskLauncherService.TaskInfo>()
@@ -1480,6 +1484,7 @@ class TaskLauncherPanel(private val project: Project) {
         paramPanel.removeAll()
         paramFields.clear()
         visibilityRefresher = null
+        currentRenderer = null
         // 右栏头部跟着选中项走：名称 / 类型 chip / 状态 chip / 主操作按钮
         renderDetailHeader(task)
         // 已选中任务 → 详情区不再是运行中心，状态刷新不再驱动它
@@ -1490,9 +1495,7 @@ class TaskLauncherPanel(private val project: Project) {
 
         var row = 0
 
-        val taskConfig = taskService.getTaskConfig(taskKey, taskDataRoot())
-
-        if (schema != null && schema.fields.isNotEmpty()) {
+        if (schema != null && !schema.broken && schema.fields.isNotEmpty()) {
             val separator = JSeparator()
             paramPanel.add(separator, GridBagConstraints().apply {
                 gridx = 0; gridy = row; gridwidth = 2
@@ -1510,13 +1513,24 @@ class TaskLauncherPanel(private val project: Project) {
                 // 只刷新可见性，不同步重复行（避免覆盖用户在后续行的编辑）
                 renderer.applyVisibility()
             }
-        } else if (schema == null) {
+        } else {
             val gbc = GridBagConstraints().apply {
                 gridx = 0; gridy = row; gridwidth = 2
+                anchor = GridBagConstraints.NORTHWEST
                 insets = Insets(10, 10, 10, 10)
             }
-            paramPanel.add(JBLabel("No schema available for this task"), gbc)
+            val text = when {
+                schema == null -> OkScriptToolkitBundle.message("taskLauncher.schemaNotProbed")
+                schema.broken -> OkScriptToolkitBundle.message("taskLauncher.schemaBrokenDetail", schema.error.orEmpty())
+                else -> OkScriptToolkitBundle.message("taskLauncher.noConfigParameters")
+            }
+            paramPanel.add(JBLabel(text), gbc)
         }
+
+        paramPanel.add(JPanel().apply { isOpaque = false }, GridBagConstraints().apply {
+            gridx = 0; gridy = GridBagConstraints.RELATIVE; gridwidth = 2
+            weighty = 1.0; fill = GridBagConstraints.BOTH
+        })
 
         paramPanel.revalidate()
         paramPanel.repaint()
@@ -1529,23 +1543,6 @@ class TaskLauncherPanel(private val project: Project) {
         parseResult: TaskLauncherService.TaskListResult,
     ): Map<String, TaskLauncherService.TaskSchema> =
         TaskSchemaMerge.merge(cached, parseResult.tasks, parseResult.ok)
-
-    /** 字段描述（displayDesc 优先）渲染在控件下方的小字说明；无描述时原样返回（对齐 VSCode） */
-    private fun withFieldDescription(
-        field: TaskLauncherService.TaskParamField,
-        component: JComponent,
-    ): JComponent {
-        val text = field.displayDesc ?: field.desc ?: return component
-        val description = JBLabel(text)
-        description.foreground = UIUtil.getContextHelpForeground()
-        description.font = description.font.deriveFont(description.font.size2D - 1f)
-        description.verticalAlignment = javax.swing.SwingConstants.TOP
-        return JPanel(BorderLayout()).apply {
-            isOpaque = false
-            add(component, BorderLayout.CENTER)
-            add(description, BorderLayout.SOUTH)
-        }
-    }
 
     /** 取值控件：剥掉滚动面板/说明包装，返回真正持值的控件 */
     private fun valueControlOf(component: JComponent): JComponent = when (component) {
@@ -1631,6 +1628,7 @@ class TaskLauncherPanel(private val project: Project) {
         private val renderedFields = HashSet<String>()
         private val renderedGroups = HashSet<String>()
         private val rowsByKey = HashMap<String, MutableList<Pair<JComponent, JComponent>>>()
+        private val groupEntries = mutableListOf<Triple<JPanel, JPanel, Boolean>>()
         private val inlineRules = HashMap<String, Map<String, List<String>>>()
         private val parentsByChild = HashMap<String, MutableList<String>>()
         /** 跟踪用户编辑的控件：key -> 编辑过的控件 */
@@ -1766,7 +1764,7 @@ class TaskLauncherPanel(private val project: Project) {
             return true
         }
 
-        /** 渲染单字段行（label + 控件两格）；返回是否实际渲染 */
+        /** 字段名称、可换行说明、控件纵向排列，整个字段随右栏宽度伸缩。 */
         private fun renderFieldRow(
             key: String,
             container: JPanel,
@@ -1777,43 +1775,20 @@ class TaskLauncherPanel(private val project: Project) {
             if (!duplicate && key in renderedFields) return false
             if (!duplicate) renderedFields.add(key)
 
-            val label = JBLabel("${field.displayKey ?: field.key}:")
-            label.horizontalAlignment = SwingConstants.RIGHT
-            val indent = if (subConfig) 24 else 0
-            // 标签列定宽 + 右对齐：所有行的冒号落在同一条竖线上（子配置多缩进一档）
-            label.preferredSize = Dimension(LABEL_COLUMN_WIDTH + indent, label.preferredSize.height)
             val control = createFieldComponent(field, task)
-            val component = withFieldDescription(field, control)
+            val rowPanel = SchemaFieldUi.row(field, control, subConfig)
             val grow = nextRow(container)
-            container.add(label, GridBagConstraints().apply {
-                gridx = 0; gridy = grow
-                fill = GridBagConstraints.HORIZONTAL
-                anchor = GridBagConstraints.WEST
-                insets = Insets(4, 6, 4, 6)
-            })
-            container.add(naturalWidth(component), GridBagConstraints().apply {
-                gridx = 1; gridy = grow
+            container.add(rowPanel, GridBagConstraints().apply {
+                gridx = 0; gridy = grow; gridwidth = 2
                 fill = GridBagConstraints.HORIZONTAL
                 weightx = 1.0
-                insets = Insets(4, 0, 4, 6)
+                anchor = GridBagConstraints.NORTHWEST
+                insets = Insets(2, 4, 2, 4)
             })
             paramFields[key] = valueControlOf(control)
-            rowsByKey.getOrPut(key) { mutableListOf() }.add(label to component)
+            rowsByKey.getOrPut(key) { mutableListOf() }.add(rowPanel to control)
             return true
         }
-
-        /**
-         * 把控件包进左对齐的 FlowLayout。
-         *
-         * 外层格子照旧吃掉横向剩余空间（fill + weightx），但 FlowLayout 不会拉伸子组件 ——
-         * 控件保持自然宽度。旧版直接给控件 `weightx = 1.0` + `fill = HORIZONTAL`，
-         * 文本框/下拉会被拉满整行宽度，就是「又矮又长的条条」的来源。
-         */
-        private fun naturalWidth(component: JComponent): JComponent =
-            JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
-                isOpaque = false
-                add(component)
-            }
 
         /** 可折叠子配置组：组键命中的字段作为组头，组体默认收起（展开状态跨重渲染保留） */
         private fun renderGroup(
@@ -1836,11 +1811,10 @@ class TaskLauncherPanel(private val project: Project) {
             // 组头字段（始终可见）；其 boolean 行内子字段留在组体内
             if (headerField != null && fieldsByKey.containsKey(headerField)) {
                 val field = fieldsByKey.getValue(headerField)
-                val fieldLabel = JBLabel("${field.displayKey ?: field.key}:")
                 val control = createFieldComponent(field, task)
-                val component = withFieldDescription(field, control)
+                val fieldRow = SchemaFieldUi.row(field, control)
                 paramFields[headerField] = valueControlOf(control)
-                rowsByKey.getOrPut(headerField) { mutableListOf() }.add(fieldLabel to component)
+                rowsByKey.getOrPut(headerField) { mutableListOf() }.add(fieldRow to control)
                 inlineRules[headerField]?.let { rules ->
                     // 该标题字段自身的内联子字段默认渲染在组内；但若同一批 key 也出现在
                     // configGroups 的 children 里，下面的循环会渲染它们，此处必须跳过，
@@ -1857,14 +1831,15 @@ class TaskLauncherPanel(private val project: Project) {
                 }
                 val headerPanel = JPanel(BorderLayout(6, 0))
                 headerPanel.isOpaque = false
-                headerPanel.add(fieldLabel, BorderLayout.WEST)
-                headerPanel.add(component, BorderLayout.CENTER)
+                headerPanel.add(fieldRow, BorderLayout.CENTER)
                 headerPanel.add(toggle, BorderLayout.EAST)
                 val groupPanel = buildGroupPanel(labelOf = null, header = headerPanel, body = body)
                 addToContainer(container, groupPanel)
+                groupEntries.add(Triple(groupPanel, body, true))
             } else {
                 val groupPanel = buildGroupPanel(labelOf = label, header = null, body = body, toggle = toggle)
                 addToContainer(container, groupPanel)
+                groupEntries.add(Triple(groupPanel, body, false))
             }
 
             val childKeys = children.distinct().filter { it != headerField }
@@ -1904,10 +1879,8 @@ class TaskLauncherPanel(private val project: Project) {
                 paramPanel.revalidate()
                 paramPanel.repaint()
             }
-            if (stateKey in openConfigGroups) {
-                body.isVisible = true
-                toggle.text = "▲"
-            }
+            body.isVisible = stateKey in openConfigGroups
+            toggle.text = if (body.isVisible) "▲" else "▼"
             return toggle
         }
 
@@ -1922,14 +1895,18 @@ class TaskLauncherPanel(private val project: Project) {
             if (header != null) {
                 north.add(header, BorderLayout.CENTER)
             } else {
+                val title = JBLabel(labelOf.orEmpty()).apply { font = font.deriveFont(Font.BOLD) }
+                north.add(title, BorderLayout.CENTER)
                 val east = JPanel(java.awt.FlowLayout(java.awt.FlowLayout.RIGHT, 4, 0))
                 east.isOpaque = false
                 toggle?.let { east.add(it) }
                 north.add(east, BorderLayout.EAST)
             }
+            north.border = BorderFactory.createEmptyBorder(3, 6, 3, 6)
             body.isOpaque = false
+            body.border = BorderFactory.createEmptyBorder(4, 4, 4, 4)
             return JPanel(BorderLayout()).apply {
-                border = BorderFactory.createTitledBorder(labelOf ?: "")
+                border = BorderFactory.createLineBorder(JBColor.border())
                 isOpaque = false
                 add(north, BorderLayout.NORTH)
                 add(body, BorderLayout.CENTER)
@@ -2005,6 +1982,10 @@ class TaskLauncherPanel(private val project: Project) {
                     label.isVisible = v
                     component.isVisible = v
                 }
+            }
+            // 子组先于父组：父组内没有可见字段或子组时隐藏，组头自身有开关的保留。
+            for ((panel, body, hasHeaderField) in groupEntries.asReversed()) {
+                panel.isVisible = hasHeaderField || body.components.any { it.isVisible }
             }
             paramPanel.revalidate()
             paramPanel.repaint()
