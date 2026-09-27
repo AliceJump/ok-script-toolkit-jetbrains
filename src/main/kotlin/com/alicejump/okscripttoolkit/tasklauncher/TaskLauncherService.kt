@@ -13,6 +13,10 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.nio.file.StandardCopyOption
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.attribute.FileTime
 import com.alicejump.okscripttoolkit.core.forEachField
 
 /**
@@ -455,10 +459,17 @@ class TaskLauncherService(private val project: Project) {
 
     // ── Task config persistence ───────────────────────────────────────
 
-    // getTaskConfig 在参数面板每次渲染/取值时都会被调用（EDT），
-    // 缓存整份 store，写入时同步更新，避免每次都读盘
-    @Volatile
+    // getTaskConfig 在参数面板每次渲染/取值时都会被调用（EDT），缓存整份 store。
+    // 每次只读取文件属性；外部编辑或 Git 切换文件后重新加载，避免下次保存覆盖新内容。
     private var configStoreCache: TaskConfigStore? = null
+    private data class ConfigFileStamp(val modified: FileTime, val size: Long)
+    private var configStoreStamp: ConfigFileStamp? = null
+
+    private fun configFileStamp(path: Path): ConfigFileStamp? {
+        if (!Files.exists(path)) return null
+        val attributes = Files.readAttributes(path, BasicFileAttributes::class.java)
+        return ConfigFileStamp(attributes.lastModifiedTime(), attributes.size())
+    }
 
     /**
      * 保护 `configStoreCache` 的「读 → 改 → 写 → 回填缓存」整条序列。
@@ -475,8 +486,9 @@ class TaskLauncherService(private val project: Project) {
     fun loadTaskConfigs(): TaskConfigStore = synchronized(storeLock) { loadTaskConfigsLocked() }
 
     private fun loadTaskConfigsLocked(): TaskConfigStore {
-        configStoreCache?.let { return it }
         val configFile = Paths.get(getWorkspaceRoot(), TASKS_CONFIG_FILE).toFile()
+        val stamp = configFileStamp(configFile.toPath())
+        configStoreCache?.takeIf { configStoreStamp == stamp }?.let { return it }
         val store = if (!configFile.exists()) {
             TaskConfigStore()
         } else {
@@ -488,6 +500,7 @@ class TaskLauncherService(private val project: Project) {
             }
         }
         configStoreCache = store
+        configStoreStamp = stamp
         return store
     }
 
@@ -529,14 +542,23 @@ class TaskLauncherService(private val project: Project) {
         return TaskConfigStore(projects = projects)
     }
 
-    fun saveTaskConfigs(store: TaskConfigStore) {
-        val configFile = Paths.get(getWorkspaceRoot(), TASKS_CONFIG_FILE).toFile()
-        configFile.parentFile?.mkdirs()
+    private fun saveTaskConfigs(store: TaskConfigStore) {
+        val path = Paths.get(getWorkspaceRoot(), TASKS_CONFIG_FILE)
+        Files.createDirectories(path.parent)
+        val temp = Files.createTempFile(path.parent, "ok-script-toolkit-tasks-", ".tmp")
         try {
-            objectMapper.writerWithDefaultPrettyPrinter().writeValue(configFile, store)
+            objectMapper.writerWithDefaultPrettyPrinter().writeValue(temp.toFile(), store)
+            try {
+                Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING)
+            }
+            configStoreStamp = configFileStamp(path)
         } catch (e: Exception) {
             LOG.error("Failed to save task configs", e)
             throw e
+        } finally {
+            Files.deleteIfExists(temp)
         }
     }
 
