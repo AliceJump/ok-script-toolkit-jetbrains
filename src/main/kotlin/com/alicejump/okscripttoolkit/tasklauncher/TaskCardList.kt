@@ -133,6 +133,9 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
     /** 当前选中（右栏详情对应）的任务 key */
     private var selectedKey: String? = null
 
+    /** 程序化回写勾选框时抑制回调（否则 refresh 会把状态当成用户操作再推一遍） */
+    private var programmaticToggle = false
+
     init {
         isOpaque = false
     }
@@ -317,7 +320,7 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
      * - **外框色 = 任务性质**：触发 = 紫（[TaskLauncherTheme.TRIGGER]），
      *   一次性 = 青（[TaskLauncherTheme.ONETIME]）；
      * - **内框色 = 当前运行情况**：绿 = 正在运行、蓝 = 已入列、灰 = 未运行、红 = schema 异常；
-     * - 类型动作 = **一个不带文字的按钮**（触发任务翻图标表示启用 / 停用轮询，一次性 = ▶启动）；
+     * - 类型动作 = **不带文字的控件**（触发任务 = 复选框，一次性 = ▶ 图标按钮）；
      * - 类型 / 状态 / 类名的文字语义进 tooltip。
      *
      * 两层框之间留 2px 缝，两个颜色互不干扰。
@@ -351,17 +354,33 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
         private val descriptionArea = SchemaFieldUi.WrappingDescription(descriptionOf())
 
         /**
-         * 类型动作：**一个不带文字的按钮**。
-         * 触发任务 = 启用/停用轮询（图标随状态翻），一次性任务 = ▶启动。
+         * 类型动作（卡片上唯一常驻控件，都**不带文字**）：
+         * - 触发任务 = **复选框**（勾选即入列轮询；语义最直白、最省地方，不能拿按钮替）；
+         * - 一次性任务 = ▶ 图标按钮（无边框 + 零内边距，否则 Swing 默认按钮会撑得很大）。
          */
-        private val actionButton: JButton = if (isTrigger) {
-            JButton().apply {
+        private val triggerCheckbox: JCheckBox? = if (isTrigger) {
+            JCheckBox().apply {
+                isOpaque = false
                 isFocusable = false
-                addActionListener { host.onToggleTrigger(task, !host.isTriggerEnabled(cardKey)) }
+                margin = Insets(0, 0, 0, 0)
+                addActionListener {
+                    if (!programmaticToggle) host.onToggleTrigger(task, isSelected)
+                }
             }
+        } else {
+            null
+        }
+        private val runButton: JButton? = if (isTrigger) {
+            null
         } else {
             JButton(AllIcons.RunConfigurations.TestState.Run).apply {
                 isFocusable = false
+                // 平台的无边框按钮样式（有 hover 反馈但不占边框/内边距）；下面两条是兜底，
+                // 万一该属性不被识别也还是紧凑按钮，不会退化成撑满一行的大按钮。
+                putClientProperty("JButton.buttonType", "borderless")
+                isBorderPainted = false
+                isContentAreaFilled = false
+                margin = Insets(0, 0, 0, 0)
                 toolTipText = OkScriptToolkitBundle.message("taskLauncher.run")
                 addActionListener { host.onRunTask(task) }
             }
@@ -373,7 +392,7 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
             val titleRow = JPanel(BorderLayout(6, 0))
             titleRow.isOpaque = false
             titleRow.add(nameLabel, BorderLayout.CENTER)
-            titleRow.add(actionButton, BorderLayout.EAST)
+            (triggerCheckbox ?: runButton)?.let { titleRow.add(it, BorderLayout.EAST) }
 
             add(titleRow, BorderLayout.NORTH)
             add(descriptionArea, BorderLayout.CENTER)
@@ -468,14 +487,18 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
             border = cardBorder()
             // 颜色撤掉文字后，语义只能靠 tooltip 讲清楚（类型 chip / 状态文字 / 类名都在这）
             toolTipText = "${kindLabel()} \u00b7 $statusText \u00b7 $cardKey"
-            if (isTrigger) {
-                val enabled = host.isTriggerEnabled(cardKey)
-                actionButton.icon = if (enabled) AllIcons.Actions.Suspend else AllIcons.Actions.Execute
-                actionButton.toolTipText = OkScriptToolkitBundle.message(
-                    if (enabled) "taskLauncher.disableTrigger" else "taskLauncher.enableTrigger",
-                )
-            } else {
-                actionButton.isEnabled = status.launchEnabled
+            programmaticToggle = true
+            try {
+                triggerCheckbox?.let { checkbox ->
+                    val enabled = host.isTriggerEnabled(cardKey)
+                    if (checkbox.isSelected != enabled) checkbox.isSelected = enabled
+                    checkbox.toolTipText = OkScriptToolkitBundle.message(
+                        if (enabled) "taskLauncher.disableTrigger" else "taskLauncher.enableTrigger",
+                    )
+                }
+                runButton?.isEnabled = status.launchEnabled
+            } finally {
+                programmaticToggle = false
             }
             repaint()
         }
