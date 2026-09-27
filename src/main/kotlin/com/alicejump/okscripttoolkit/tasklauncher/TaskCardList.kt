@@ -172,6 +172,11 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
         selectedCard?.scrollRectToVisible(cardRectOf(selectedCard))
     }
 
+    fun clearSelection() {
+        selectedKey = null
+        cardsByKey.values.forEach { it.setSelected(false) }
+    }
+
     private fun cardRectOf(card: TaskCard) = java.awt.Rectangle(0, 0, card.width, card.height)
 
     private fun rebuild() {

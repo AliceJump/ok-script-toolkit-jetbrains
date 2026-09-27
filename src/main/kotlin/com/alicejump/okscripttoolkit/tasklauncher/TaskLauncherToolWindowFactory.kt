@@ -694,6 +694,12 @@ class TaskLauncherPanel(private val project: Project) {
         hoverTimer?.stop()
     }
 
+    private fun dismissTaskHover() {
+        cancelTaskHover()
+        activeHoverPopup?.takeIf { !it.isDisposed }?.cancel()
+        activeHoverPopup = null
+    }
+
     // ── 右详情区：任务头 ──────────────────────────────────────────────
 
     /**
@@ -1608,7 +1614,9 @@ class TaskLauncherPanel(private val project: Project) {
         val projectDir = detectProjectPath()
         val unset = OkScriptToolkitBundle.message("taskLauncher.envUnset")
         val python = detectPythonPath()
-        val sandbox = if (projectDir.isBlank()) unset else RunDir.forProject(projectDir)
+        val sandbox = if (projectDir.isBlank() || !ProjectDirResolution.isExistingDirectory(projectDir)) {
+            unset
+        } else RunDir.forProject(projectDir)
         val snapshots = if (tasks.isEmpty()) {
             unset
         } else {
@@ -1735,6 +1743,9 @@ class TaskLauncherPanel(private val project: Project) {
         // 即使新路径无效，也要先作废仍在后台运行的旧探针。
         val generation = ++loadGeneration
         val projectDir = checkedProjectPath(statusLabel, "taskLauncher.noProject") ?: run {
+            val failure = statusLabel.text
+            clearDisplayedProject()
+            statusLabel.text = failure
             progressBar.isIndeterminate = false
             progressBar.isVisible = false
             return
@@ -1834,6 +1845,38 @@ class TaskLauncherPanel(private val project: Project) {
         }
     }
 
+    /** Invalid project settings must not leave the previous project's editable tasks on screen. */
+    private fun clearDisplayedProject() {
+        globalSaveTimer.stop()
+        flushPendingGlobalSave()
+        dismissTaskHover()
+        displayedProjectDir = ""
+        fullSchemaProjectDir = ""
+        fullSchemaLocale = null
+        configModule = "src.config"
+        schemas = emptyMap()
+        tasks = emptyList()
+        globalConfigGroups = emptyList()
+        multiAccountInfo = TaskLauncherService.MultiAccountInfo()
+        enabledTriggers.clear()
+        uiCollapseState = emptyMap()
+        detailTask = null
+        paramFields.clear()
+        currentRenderer = null
+        visibilityRefresher = null
+        taskCardList.clearSelection()
+        taskCardList.setTasks(emptyList())
+        showDetailPlaceholder()
+        refreshAccountSummary()
+        refreshEnvironmentInfo()
+        renderConfigPage()
+        val state = runnerStateForDisplay()
+        syncHealthBar(state)
+        renderTaskStatuses(state)
+        schemaWarningLabel.isVisible = false
+        schemaWarningLabel.toolTipText = null
+    }
+
     /**
      * 采集失败时的降级结果：只列出任务、不带参数。
      *
@@ -1916,6 +1959,10 @@ class TaskLauncherPanel(private val project: Project) {
             uiCollapseState = taskService.loadUiState(sourceProjectDir)
 
             // 重建卡片列表（触发/一次性分组 + groupName 二级分组 + 搜索过滤都在 TaskListGrouping）
+            if (previousProjectDir != sourceProjectDir) {
+                dismissTaskHover()
+                taskCardList.clearSelection()
+            }
             taskCardList.setTasks(tasks)
             refreshEnvironmentInfo()
             // 只读值已原地刷新；组/项目/折叠不变时保留正在编辑的配置控件与焦点。
@@ -1933,8 +1980,11 @@ class TaskLauncherPanel(private val project: Project) {
 
             // 参数面板开着时跟随刷新（对齐 VS Code：重渲染后 refreshDrawer 重挂新表单）
             val previousSelection = detailTask?.let { taskKeyOf(it) }
-            if (previousSelection != null && tasks.any { taskKeyOf(it) == previousSelection }) {
-                loadTaskParams(detailTask!!)
+            val selectedTask = if (previousProjectDir == sourceProjectDir) {
+                tasks.firstOrNull { taskKeyOf(it) == previousSelection }
+            } else null
+            if (selectedTask != null) {
+                loadTaskParams(selectedTask)
             } else {
                 detailTask = null
                 showDetailPlaceholder()
