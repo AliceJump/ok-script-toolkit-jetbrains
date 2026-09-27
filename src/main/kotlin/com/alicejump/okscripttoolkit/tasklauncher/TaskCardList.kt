@@ -6,12 +6,15 @@ import com.alicejump.okscripttoolkit.tasklauncher.TaskLauncherService.TaskSchema
 import com.intellij.icons.AllIcons
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
+import com.intellij.util.ui.WrapLayout
 import com.intellij.util.ui.UIUtil
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Font
+import java.awt.FontMetrics
+import java.awt.Graphics
 import java.awt.GridBagConstraints
 import java.awt.GridBagLayout
 import java.awt.Insets
@@ -25,16 +28,16 @@ import javax.swing.JPanel
 import javax.swing.Scrollable
 
 /**
- * 单张任务卡的执行状态（对齐 VS Code 侧 taskCard.js 的 cardState → 徽标语义）。
+ * 单张任务卡的执行状态。
  *
- * [text] / [tone] 与状态列同源（工厂的 statusCellFor）；[showBadge] 对齐 webview
- * 「没有可展示事件就不画徽标」（一次性任务既不在队也不在跑时只留状态点）；
- * [launchEnabled] 对齐 webview 的 launch.disabled（排队中 / 执行中 / 执行器跨项目时禁用）。
+ * [text] / [tone] 与状态列同源（工厂的 statusCellFor）。卡片上**不写状态文字** ——
+ * 颜色就是唯一的状态载体（见 [TaskRowState.statusTone] 的色语义），[text] 只进 tooltip，
+ * 让「颜色什么意思」可查。`launchEnabled` 对齐 webview 的 launch.disabled
+ * （排队中 / 执行中 / 执行器跨项目时禁用）。
  */
 internal data class TaskCardStatus(
     val text: String,
     val tone: Int,
-    val showBadge: Boolean,
     val launchEnabled: Boolean,
 )
 
@@ -57,6 +60,44 @@ internal interface TaskCardHost {
     /** 悬停 800ms 后弹只读摘要（宿主持有弹层单例与抑制窗口） */
     fun onTaskHover(task: TaskInfo, anchor: JComponent)
     fun onTaskHoverEnd()
+}
+
+/**
+ * 单行省略标签：宽度不够时按像素截断并补「…」。
+ *
+ * `JLabel` 默认是**硬裁剪** —— 窄工具窗里表现为「字被切掉一半」，看不出后面还有内容，
+ * 也不知道自己少了什么。这里改成绘制时截断（完整文本留在 tooltip 里）。
+ *
+ * 只在 `BorderLayout.CENTER` 里用：WEST/EAST 拿 preferred 宽度、CENTER 拿剩余宽度，
+ * 于是「两端的信息永不裁切、只有中间的文本会省略」。
+ */
+internal class EllipsizingLabel(text: String = "") : JBLabel(text) {
+
+    override fun paintComponent(g: Graphics) {
+        if (isOpaque) {
+            g.color = background
+            g.fillRect(0, 0, width, height)
+        }
+        val metrics = g.getFontMetrics(font)
+        val available = width - insets.left - insets.right
+        val shown = if (available <= 0) "" else ellipsize(text.orEmpty(), metrics, available)
+        if (shown.isEmpty()) return
+        val previous = g.color
+        g.color = if (isEnabled) foreground else UIUtil.getLabelDisabledForeground()
+        val baseline = insets.top + (height - insets.top - insets.bottom - metrics.height) / 2 + metrics.ascent
+        g.drawString(shown, insets.left, baseline)
+        g.color = previous
+    }
+
+    /** 逐字符收缩到「截断 + …」放得下为止（二分容易差一个字符，字符数本来就不多） */
+    private fun ellipsize(full: String, metrics: FontMetrics, available: Int): String {
+        if (metrics.stringWidth(full) <= available) return full
+        val dots = "\u2026"
+        if (metrics.stringWidth(dots) > available) return ""
+        var end = full.length
+        while (end > 0 && metrics.stringWidth(full.substring(0, end) + dots) > available) end--
+        return full.substring(0, end) + dots
+    }
 }
 
 /**
@@ -211,7 +252,7 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
         foldKey: String,
         small: Boolean,
     ): JComponent {
-        val row = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
+        val row = JPanel(WrapLayout(FlowLayout.LEFT, 4, 0))
         row.isOpaque = false
         val chevron = JBLabel(if (collapsed) "▶" else "▼")
         if (small) chevron.font = chevron.font.deriveFont(chevron.font.size2D - 2f)
@@ -275,25 +316,42 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
     /**
      * 一张精简任务卡（article.task-card 的 Swing 等价物，IA 重设计后瘦身）。
      *
-     * 状态点 + 名称 + 类型 chip + 状态徽标 + 类名·模块；类型动作（启用勾选 / ▶启动）
-     * 是唯一常驻控件。参数表单与 ⇄/⟲ 快照操作全部移到右栏详情页 ——
-     * 点击卡片主体 = 选中（高亮描边）+ 右栏加载详情。
+     * **卡片不写「触发 / 一次性」与状态文字，全用颜色表达**（用户要求：文字 chip 占地方）：
+     * - **外框色 = 任务性质**：触发 = 紫（[TaskLauncherTheme.TRIGGER]），
+     *   一次性 = 青（[TaskLauncherTheme.ONETIME]）；
+     * - **内框色 = 当前运行情况**：绿 = 正在运行、蓝 = 已入列、灰 = 未运行、红 = schema 异常。
+     *
+     * 两层框之间留 2px 缝，两个颜色互不干扰。文字语义进 tooltip（「触发 · 正在运行」）。
+     *
+     * 布局是**两行**（窄工具窗是常态）：第一行 = 任务名 + 类型动作（启用勾选 / ▶启动），
+     * 第二行 = 类名·模块。每行都是 `BorderLayout`：两端拿 preferred 宽度**永不裁切**，
+     * 中间的自由文本拿剩余宽度、放不下就省略成「…」。之前是单个 `FlowLayout` 一行塞五件
+     * 东西 —— FlowLayout 的 preferredLayoutSize 只算**一行**，一旦换行，多出来的那行
+     * 会被父容器按「一行高」给的高度裁掉，窄窗里正好把右侧的 chip 与徽标切没了（用户反馈「露一半」）。
+     *
+     * 参数表单与 ⇄/⟲ 快照操作全部移到详情页；点击卡片主体 = 选中 + 加载详情。
      */
-    private inner class TaskCard(val task: TaskInfo) : JPanel(BorderLayout(8, 0)) {
+    private inner class TaskCard(val task: TaskInfo) : JPanel(BorderLayout(0, 2)) {
 
         val cardKey: String = TaskSchemaMerge.keyOf(task)
         private val kind: String = host.kindOf(task)
         private val isTrigger = kind == TaskRowState.TRIGGER
 
-        private val dot = TaskLauncherTheme.HealthDot()
-        private val nameLabel = JBLabel(displayName()).apply {
+        /** 外框色：任务性质（不随运行状态变） */
+        private val kindColor: JBColor =
+            if (isTrigger) TaskLauncherTheme.TRIGGER else TaskLauncherTheme.ONETIME
+
+        /** 内框色：当前运行情况（[refresh] 更新） */
+        private var statusColor: Color = UIUtil.getLabelDisabledForeground()
+        private var statusText: String = ""
+
+        private val nameLabel = EllipsizingLabel(displayName()).apply {
             font = font.deriveFont(Font.BOLD)
             toolTipText = cardKey
         }
-        private val kindChip = JBLabel()
-        private val statusBadge = JBLabel().apply { isVisible = false }
-        private val classLine: JBLabel = JBLabel("${task.className} · ${task.module}").apply {
+        private val classLine = EllipsizingLabel("${task.className} · ${task.module}").apply {
             foreground = UIUtil.getContextHelpForeground()
+            toolTipText = "${task.className} · ${task.module}"
         }
 
         private val triggerCheckbox = if (isTrigger) JCheckBox(OkScriptToolkitBundle.message("taskLauncher.enableTrigger")) else null
@@ -305,23 +363,10 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
 
         init {
             isOpaque = false
-            border = cardBorder(selected = false)
 
-            TaskLauncherTheme.styleChip(
-                kindChip,
-                if (isTrigger) TaskLauncherTheme.TRIGGER else TaskLauncherTheme.ONETIME,
-                OkScriptToolkitBundle.message(
-                    if (isTrigger) "taskLauncher.triggerTask" else "taskLauncher.oneTimeTask",
-                ),
-            )
-
-            val titleRow = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
+            val titleRow = JPanel(BorderLayout(6, 0))
             titleRow.isOpaque = false
-            titleRow.add(dot)
-            titleRow.add(nameLabel)
-            titleRow.add(kindChip)
-            titleRow.add(statusBadge)
-            titleRow.add(classLine)
+            titleRow.add(nameLabel, BorderLayout.CENTER)
 
             val actions = JPanel(FlowLayout(FlowLayout.RIGHT, 4, 0))
             actions.isOpaque = false
@@ -338,12 +383,13 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
                 button.addActionListener { host.onRunTask(task) }
                 actions.add(button)
             }
+            titleRow.add(actions, BorderLayout.EAST)
 
-            add(titleRow, BorderLayout.CENTER)
-            add(actions, BorderLayout.EAST)
+            add(titleRow, BorderLayout.NORTH)
+            add(classLine, BorderLayout.CENTER)
 
             // 悬停高亮 + 悬停弹层 + 主体点击（按钮 / 勾选框消费自己的事件，不会重复触发）
-            addMouseListener(object : MouseAdapter() {
+            val cardMouse = object : MouseAdapter() {
                 override fun mouseEntered(e: MouseEvent) {
                     if (cardKey != selectedKey) {
                         background = TaskLauncherTheme.rowBackground()
@@ -365,27 +411,48 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
                 override fun mouseClicked(e: MouseEvent) {
                     host.onTaskActivated(task)
                 }
-            })
+            }
+            addMouseListener(cardMouse)
+            // Swing 事件不冒泡：标签会把点击「吃掉」，而卡片大半面积都是文字 ——
+            // 不转发的话「点击卡片即选中」只在卡片留白处生效。按钮 / 勾选框自己消费，跳过。
+            forwardMouse(titleRow, cardMouse)
 
             refresh(host.cardStatusOf(task))
         }
 
-        private fun cardBorder(selected: Boolean): javax.swing.border.Border =
-            BorderFactory.createCompoundBorder(
-                BorderFactory.createEmptyBorder(3, 3, 3, 3),
+        /** 把卡片级鼠标监听挂到纯展示子组件上（递归下钻容器） */
+        private fun forwardMouse(container: java.awt.Container, listener: MouseAdapter) {
+            for (child in container.components) {
+                if (child is JButton || child is JCheckBox) continue
+                child.addMouseListener(listener)
+                if (child is java.awt.Container) forwardMouse(child, listener)
+            }
+        }
+
+        /**
+         * 双层色框：外框 = 任务性质，内框 = 当前运行情况（两层之间 2px 缝）。
+         * 选中态把外框加粗到 2px 并铺底 —— **外框色仍归「性质」所有**，不被选中态顶掉。
+         */
+        private fun cardBorder(): javax.swing.border.Border {
+            val selected = cardKey == selectedKey
+            return BorderFactory.createCompoundBorder(
+                BorderFactory.createEmptyBorder(2, 2, 2, 2),
                 BorderFactory.createCompoundBorder(
-                    BorderFactory.createLineBorder(
-                        if (selected) TaskLauncherTheme.SELECTION else JBColor.border(),
-                        1,
-                        true,
+                    BorderFactory.createLineBorder(kindColor, if (selected) 2 else 1, true),
+                    BorderFactory.createCompoundBorder(
+                        BorderFactory.createEmptyBorder(2, 2, 2, 2),
+                        BorderFactory.createCompoundBorder(
+                            BorderFactory.createLineBorder(statusColor, 1, true),
+                            BorderFactory.createEmptyBorder(4, 6, 4, 6),
+                        ),
                     ),
-                    BorderFactory.createEmptyBorder(6, 8, 6, 8),
                 ),
             )
+        }
 
-        /** 选中态：描边用聚焦色 + 常亮底色（运行器页跳转定位也走这里） */
+        /** 选中态：外框加粗 + 常亮底色（运行器页跳转定位也走这里） */
         fun setSelected(selected: Boolean) {
-            border = cardBorder(selected)
+            border = cardBorder()
             if (selected) {
                 background = TaskLauncherTheme.rowHoverBackground()
                 isOpaque = true
@@ -399,13 +466,12 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
         private fun displayName(): String =
             host.schemaOf(task)?.displayName ?: task.displayName
 
-        /** 原地刷新执行状态（对齐 webview updateRunningState 对单卡做的事） */
+        /** 原地刷新执行状态：换内框色 + 更新 tooltip（卡片上没有状态文字了） */
         fun refresh(status: TaskCardStatus) {
-            dot.color = dotColor(status.tone)
-            statusBadge.isVisible = status.showBadge
-            if (status.showBadge) {
-                TaskLauncherTheme.styleChip(statusBadge, TaskLauncherTheme.colorForTone(status.tone), status.text)
-            }
+            statusColor = statusColorForTone(status.tone)
+            statusText = status.text
+            border = cardBorder()
+            toolTipText = "${kindLabel()} \u00b7 $statusText"
             programmaticToggle = true
             try {
                 triggerCheckbox?.let { checkbox ->
@@ -416,9 +482,15 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
             } finally {
                 programmaticToggle = false
             }
+            repaint()
         }
 
-        private fun dotColor(tone: Int): Color =
+        /** 颜色撤掉文字后，语义只能靠 tooltip 讲清楚 */
+        private fun kindLabel(): String = OkScriptToolkitBundle.message(
+            if (isTrigger) "taskLauncher.triggerTask" else "taskLauncher.oneTimeTask",
+        )
+
+        private fun statusColorForTone(tone: Int): Color =
             if (tone == TaskRowState.TONE_NEUTRAL) UIUtil.getLabelDisabledForeground()
             else TaskLauncherTheme.colorForTone(tone)
     }

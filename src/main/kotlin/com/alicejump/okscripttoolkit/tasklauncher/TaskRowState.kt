@@ -17,15 +17,27 @@ internal object TaskRowState {
     const val TRIGGER = "trigger"
     const val ONETIME = "onetime"
 
-    /** 状态语义色调（实际颜色见 TaskLauncherPanel 的 COLOR_*，那里才需要 JBColor） */
+    /**
+     * 状态语义色调（实际颜色见 TaskLauncherTheme.colorForTone，那里才需要 JBColor）。
+     *
+     * 任务卡不再写状态文字，**颜色就是唯一的状态载体**：
+     * 绿 = 正在运行、蓝 = 已入列、灰 = 未运行、红 = schema 异常。
+     */
     const val TONE_NEUTRAL = 0
     const val TONE_GOOD = 1
+    /** 保留：警告色仍在调色板里（如 schema 相关的旁路提示），但当前不由 [statusTone] 产出 */
     const val TONE_WARN = 2
     const val TONE_BAD = 3
 
     /**
+     * 「已入列」独立于 [TONE_WARN]：入列是「已经排上队了」而不是「有问题」，
+     * 所以走蓝色（[TaskLauncherTheme.RUN]）而不是警告琥珀色。
+     */
+    const val TONE_ENQUEUED = 4
+
+    /**
      * 状态色调。判定优先级与状态文案一一对应：
-     * 正在跑 > 触发任务的入列态 > 一次性任务排队 > schema 健康度 > 就绪。
+     * 正在跑 > 触发任务的入列态 > 一次性任务排队 > schema 健康度 > 未运行。
      */
     fun statusTone(
         kind: String,
@@ -36,8 +48,8 @@ internal object TaskRowState {
         schemaError: Boolean,
     ): Int = when {
         running -> TONE_GOOD
-        kind == TRIGGER -> if (enabled) TONE_WARN else TONE_NEUTRAL
-        queued -> TONE_WARN
+        kind == TRIGGER -> if (enabled) TONE_ENQUEUED else TONE_NEUTRAL
+        queued -> TONE_ENQUEUED
         schemaBroken || schemaError -> TONE_BAD
         else -> TONE_NEUTRAL
     }

@@ -34,20 +34,22 @@ internal object TaskLauncherTheme {
     /** --err：控制命令错误 / 异常退出 */
     val ERR = JBColor(0xDB3B4B, 0xF26D6D)
 
-    /** 触发任务标识紫（沿用迁移前配色） */
+    /** 触发任务标识紫（沿用迁移前配色）—— 任务卡**外框**色之一 */
     val TRIGGER = JBColor(0x7A5AF8, 0x9B8AFB)
 
-    /** 一次性任务标识蓝（沿用迁移前 JBColor.BLUE 语义，但走双值适配暗色） */
-    val ONETIME = JBColor(0x1F66C4, 0x6690D6)
+    /**
+     * 一次性任务标识**青**——任务卡外框色之一。
+     *
+     * 从蓝改成青：任务卡不再写状态文字后，外框讲「性质」、内框讲「运行情况」，
+     * 而「已入列」占了蓝色（[RUN]）。两者同为蓝会分不清，故一次性任务改用青色。
+     */
+    val ONETIME = JBColor(0x00838F, 0x4DD0E1)
 
     /** JSON 字段校验描边：解析合法 */
     val BORDER_OK = JBColor(0x287828, 0x4CAF50)
 
     /** JSON 字段校验描边：解析非法（沿用迁移前字面量，视觉零变化） */
     val BORDER_ERR = JBColor(0xB42828, 0xEF5350)
-
-    /** 选中态描边（任务卡选中 = 聚焦色；取平台 Component.focusColor，随主题） */
-    val SELECTION = JBColor.namedColor("Component.focusColor", JBColor(0x3574F0, 0x548AF7))
 
     // ── 行级可点击区（#10 两层语义之二：无描边浅底，hover 增强） ────────
 
@@ -68,6 +70,8 @@ internal object TaskLauncherTheme {
         TaskRowState.TONE_GOOD -> OK
         TaskRowState.TONE_WARN -> WARN
         TaskRowState.TONE_BAD -> ERR
+        // 已入列 = 蓝（RUN 同色：都是「已经排上队/在跑流程里」的那一类状态）
+        TaskRowState.TONE_ENQUEUED -> RUN
         // 中性 tone = 前景色。注意 JBColor.foreground() 在部分平台版本里声明返回 Color
         // 而不是 JBColor，这里用双值构造保住 JBColor 类型（styleChip 需要）。
         else -> JBColor(UIUtil.getLabelForeground(), UIUtil.getLabelForeground())

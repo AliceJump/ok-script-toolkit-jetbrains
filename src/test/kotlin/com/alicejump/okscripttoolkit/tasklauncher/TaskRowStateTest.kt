@@ -9,6 +9,9 @@ import kotlin.test.assertEquals
  * 这条规则是「看起来像 UI、其实是数据约定」的东西，改起来很容易悄悄破坏：
  * 状态色调的判定优先级（正在跑 > 触发任务的入列态 > 一次性任务排队 > schema 健康度）。
  *
+ * 任务卡改成「外框讲性质、内框讲运行情况」后，**色调就是卡片上唯一的状态载体**
+ * （文字 chip 已撤掉），所以这里的期望值等价于「用户看到的颜色」。
+ *
  * 历史：本文件原有一套「勾选列模型值 / 操作列渲染器」的测试，服务于旧版三列平铺
  * JTable（触发任务画复选框、一次性任务画运行按钮）。任务列表改版为卡片列表
  * （[TaskCardListPanel]）后，那套规则随 TaskRowState 里的表格时代代码一起移除。
@@ -34,8 +37,9 @@ class TaskRowStateTest {
 
     @Test
     fun `trigger tone follows the enqueue state and ignores schema health`() {
+        // 已勾选 = 已入列 = 蓝（不是警告色：入列不是「有问题」）
         assertEquals(
-            TaskRowState.TONE_WARN,
+            TaskRowState.TONE_ENQUEUED,
             TaskRowState.statusTone(TaskRowState.TRIGGER, false, true, false, false, false),
         )
         assertEquals(
@@ -51,8 +55,9 @@ class TaskRowStateTest {
 
     @Test
     fun `onetime tone covers queue and schema health`() {
+        // 排队中 = 已入列 = 蓝
         assertEquals(
-            TaskRowState.TONE_WARN,
+            TaskRowState.TONE_ENQUEUED,
             TaskRowState.statusTone(TaskRowState.ONETIME, false, false, true, false, false),
         )
         assertEquals(

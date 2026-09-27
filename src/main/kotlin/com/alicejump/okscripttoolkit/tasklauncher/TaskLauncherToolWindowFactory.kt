@@ -28,6 +28,7 @@ import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTabbedPane
 import com.intellij.util.ui.UIUtil
+import com.intellij.util.ui.WrapLayout
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.content.ContentManagerEvent
 import com.intellij.ui.content.ContentManagerListener
@@ -89,6 +90,15 @@ class TaskLauncherPanel(private val project: Project) {
         private const val TAB_TASKS = 0
         private const val TAB_RUNNER = 2
 
+        /**
+         * 任务页改用**上下分栏**的宽度阈值（px）。
+         * 再窄时左右分栏两边都不够用 —— 右侧工具窗默认停靠宽度就在这个值以下。
+         */
+        private const val TASK_PAGE_STACK_WIDTH = 560
+
+        /** 配置页二级导航宽度（px）：放得下中文导航项，又不至于白占宽窗的地方 */
+        private const val CONFIG_NAV_WIDTH = 118
+
         /** 配置页二级导航：CardLayout 的键（顺序与导航列表一一对应） */
         private const val NAV_GLOBAL = "config.global"
         private const val NAV_ACCOUNT = "config.account"
@@ -114,11 +124,12 @@ class TaskLauncherPanel(private val project: Project) {
     private val taskSearchField = SearchTextField(false)
 
     /** 执行队列条（#queueStrip 的等价物）：一次性队列非空时显示任务名 chips */
-    private val queueStrip = JPanel(FlowLayout(FlowLayout.LEFT, 4, 1)).apply {
+    private val queueStrip = JPanel(WrapLayout(FlowLayout.LEFT, 4, 1)).apply {
         isOpaque = false
         isVisible = false
     }
-    private val statusLabel = JBLabel()
+    /** 状态栏瞬时消息：可能很长（保存错误 / 加载进度）⇒ 省略而不是把右侧进度条挤掉 */
+    private val statusLabel = EllipsizingLabel()
     private val schemaWarningLabel = JBLabel().apply {
         foreground = TaskLauncherTheme.WARN
         isVisible = false
@@ -139,7 +150,18 @@ class TaskLauncherPanel(private val project: Project) {
 
     /** 任务页顶部的执行器状态胶囊：点击跳运行器页（运行态完整视图在那边） */
     private val executorPillDot = TaskLauncherTheme.HealthDot()
-    private val executorPillLabel = JBLabel()
+    /** 状态文案可能很长（「执行器运行中 · N 个触发任务已入列」）⇒ 窄窗里省略而不是把刷新按钮挤掉 */
+    private val executorPillLabel = EllipsizingLabel()
+
+    // ── 任务页的两个半区（分栏方向随宽度自适应，见 applyTaskPageOrientation）──
+    /** 半区一：搜索 + 执行器胶囊 + 队列条 + 任务卡列表 */
+    private val taskListHost = JPanel(BorderLayout())
+    /** 半区二：当前任务详情（头部 / 参数 / 页脚） */
+    private val taskDetailPane = JPanel(BorderLayout())
+    private var taskPageHost: JPanel? = null
+    private var taskSplitter: com.intellij.openapi.ui.Splitter? = null
+    /** 当前是否上下分栏（true = 列表在上、详情在下） */
+    private var taskPageStacked = true
 
     // ── 运行器页（执行器状态 / 队列与轮询 / 执行环境 / 游戏连接）─────
     // ⚠️ 必须声明在 init 块之前：Kotlin 按文本顺序执行初始化器，
@@ -152,8 +174,8 @@ class TaskLauncherPanel(private val project: Project) {
     private val runnerResumeButton = JButton(OkScriptToolkitBundle.message("taskLauncher.resume"))
     private val runnerStopCurrentButton = JButton(OkScriptToolkitBundle.message("taskLauncher.stopCurrent"))
     private val runnerCloseButton = JButton(OkScriptToolkitBundle.message("taskLauncher.closeExecutor"))
-    private val runnerQueuePanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 1))
-    private val runnerPollingPanel = JPanel(FlowLayout(FlowLayout.LEFT, 4, 1))
+    private val runnerQueuePanel = JPanel(WrapLayout(FlowLayout.LEFT, 4, 1))
+    private val runnerPollingPanel = JPanel(WrapLayout(FlowLayout.LEFT, 4, 1))
     /** 执行环境卡取值（长路径不截断，见 [wrappingValueLabel]） */
     private val envProjectRootValue = wrappingValueLabel()
     private val envPythonValue = wrappingValueLabel()
@@ -207,12 +229,12 @@ class TaskLauncherPanel(private val project: Project) {
     private var displayedProjectDir = ""
 
     // ── 右侧详情区（选中谁就显示谁）──
-    private val detailTitle = JBLabel()
+    private val detailTitle = EllipsizingLabel()
     private val detailKindChip = JBLabel()
     private val detailStateChip = JBLabel()
     private val detailActionButton = JButton()
-    /** 类名·模块（详情区第二行，等宽字体弱化色） */
-    private val detailClassLine = JBLabel().apply { foreground = UIUtil.getContextHelpForeground() }
+    /** 类名·模块（详情区第二行，弱化色；窄窗里省略而不是硬裁一半） */
+    private val detailClassLine = EllipsizingLabel().apply { foreground = UIUtil.getContextHelpForeground() }
     /** 任务描述：完整换行展示（IA 重设计：描述给足空间，不再单行截断） */
     private val detailDescription = JTextArea().apply {
         isEditable = false
@@ -375,6 +397,8 @@ class TaskLauncherPanel(private val project: Project) {
             else -> OkScriptToolkitBundle.message("taskLauncher.executorIdle")
         }
         executorPillLabel.text = statusText
+        // 窄窗里胶囊文案会省略，完整状态留在 tooltip
+        executorPillLabel.toolTipText = statusText
         runnerStatusLabel.text = statusText
 
         // 执行器生命周期按钮（运行器页；原工具栏在 IA 重设计后移除）
@@ -469,77 +493,13 @@ class TaskLauncherPanel(private val project: Project) {
         globalSaveTimer.addActionListener { flushPendingGlobalSave() }
 
         // ── 任务页 ─────────────────────────────────────────────
-        taskSearchField.textEditor.emptyText.setText(OkScriptToolkitBundle.message("taskLauncher.searchTasks"))
-        taskSearchField.toolTipText = OkScriptToolkitBundle.message("taskLauncher.searchTasks")
-        taskSearchField.addDocumentListener(object : DocumentListener {
-            override fun insertUpdate(e: DocumentEvent?) = applySearch()
-            override fun removeUpdate(e: DocumentEvent?) = applySearch()
-            override fun changedUpdate(e: DocumentEvent?) = applySearch()
-        })
-
-        val refreshButton = JButton(AllIcons.Actions.Refresh).apply {
-            toolTipText = OkScriptToolkitBundle.message("taskLauncher.refresh")
-            isFocusable = false
-            addActionListener { loadTasks() }
-        }
-
-        // 执行器状态胶囊：运行态摘要 + 点击跳运行器页（运行态的完整视图在那边）
-        val pill = JPanel(FlowLayout(FlowLayout.LEFT, 6, 2)).apply {
-            isOpaque = false
-            add(executorPillDot)
-            add(executorPillLabel)
-            border = BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(JBColor.border(), 1, true),
-                BorderFactory.createEmptyBorder(2, 10, 2, 10),
-            )
-            cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
-            toolTipText = OkScriptToolkitBundle.message("taskLauncher.runnerTabHint")
-            addMouseListener(object : java.awt.event.MouseAdapter() {
-                override fun mouseClicked(e: java.awt.event.MouseEvent) {
-                    tabbedPane.selectedIndex = TAB_RUNNER
-                }
-            })
-        }
-
-        val taskToolbar = JPanel(BorderLayout(8, 0))
-        taskToolbar.isOpaque = false
-        taskToolbar.border = BorderFactory.createEmptyBorder(8, 8, 4, 8)
-        taskToolbar.add(taskSearchField, BorderLayout.CENTER)
-        val toolbarEast = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0))
-        toolbarEast.isOpaque = false
-        toolbarEast.add(pill)
-        toolbarEast.add(refreshButton)
-        taskToolbar.add(toolbarEast, BorderLayout.EAST)
-
-        val listScrollPane = JBScrollPane(taskCardList)
-        listScrollPane.border = BorderFactory.createEmptyBorder()
-        queueStrip.border = BorderFactory.createEmptyBorder(0, 8, 2, 8)
-
-        val taskListPane = JPanel(BorderLayout())
-        taskListPane.isOpaque = false
-        taskListPane.add(taskToolbar, BorderLayout.NORTH)
-        taskListPane.add(queueStrip, BorderLayout.SOUTH)
-        // 队列条夹在工具栏与列表之间：外层再套一层 BorderLayout
-        val listHost = JPanel(BorderLayout())
-        listHost.isOpaque = false
-        listHost.add(taskListPane, BorderLayout.NORTH)
-        listHost.add(listScrollPane, BorderLayout.CENTER)
-
-        val paramScrollPane = JBScrollPane(paramPanel)
-        paramScrollPane.border = BorderFactory.createEmptyBorder()
-
-        val detailPane = JPanel(BorderLayout())
-        detailPane.add(buildDetailHeader(), BorderLayout.NORTH)
-        detailPane.add(paramScrollPane, BorderLayout.CENTER)
-        detailPane.add(buildDetailFooter(), BorderLayout.SOUTH)
-
-        val splitPane = com.intellij.openapi.ui.Splitter(false, 0.42f)
-        splitPane.firstComponent = listHost
-        splitPane.secondComponent = detailPane
-
+        wireTaskPageActions()
+        buildTaskPagePanes()
         val taskPage = JPanel(BorderLayout())
         taskPage.isOpaque = false
-        taskPage.add(splitPane, BorderLayout.CENTER)
+        taskPageHost = taskPage
+        // 先按「窄」建起来（首次布局前拿不到真实宽度），componentResized 时按真实宽度校正
+        applyTaskPageOrientation(force = true)
 
         // ── 其余页签 ───────────────────────────────────────────
         tabbedPane = JBTabbedPane()
@@ -549,16 +509,18 @@ class TaskLauncherPanel(private val project: Project) {
         tabbedPane.addTab(OkScriptToolkitBundle.message("taskLauncher.tabTools"), buildToolsPage())
 
         // ── 状态栏（跨页签常驻）：[健康点][瞬时消息][schema 警告] …… [进度条] ──
-        val healthRow = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
+        // 用 BorderLayout 而不是 FlowLayout：消息长短不定，FlowLayout 在窄窗里
+        // 会把后面的 schema 警告直接切掉；这里让消息自己省略、警告始终可见。
+        val healthRow = JPanel(BorderLayout(6, 0))
         healthRow.isOpaque = false
-        healthRow.add(healthDot)
-        healthRow.add(statusLabel)
-        healthRow.add(schemaWarningLabel)
+        healthRow.add(healthDot, BorderLayout.WEST)
+        healthRow.add(statusLabel, BorderLayout.CENTER)
+        healthRow.add(schemaWarningLabel, BorderLayout.EAST)
 
         val statusBar = JPanel(BorderLayout(8, 0))
         statusBar.border = BorderFactory.createEmptyBorder(2, 4, 2, 4)
         statusBar.add(healthRow, BorderLayout.CENTER)
-        progressBar.preferredSize = Dimension(120, 20)
+        progressBar.preferredSize = Dimension(90, 20)
         progressBar.isVisible = false
         val statusEast = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0))
         statusEast.isOpaque = false
@@ -568,8 +530,136 @@ class TaskLauncherPanel(private val project: Project) {
         mainPanel.layout = BorderLayout()
         mainPanel.add(tabbedPane, BorderLayout.CENTER)
         mainPanel.add(statusBar, BorderLayout.SOUTH)
+        // 工具窗宽度变了就重算任务页分栏方向（只在跨过阈值那一次真的重建 Splitter）
+        mainPanel.addComponentListener(object : java.awt.event.ComponentAdapter() {
+            override fun componentResized(e: java.awt.event.ComponentEvent) {
+                applyTaskPageOrientation()
+            }
+        })
 
         showDetailPlaceholder()
+    }
+
+    /**
+     * 任务页里**只该挂一次**的监听器。
+     *
+     * 分栏方向切换会重建 `Splitter`（两个半区面板本身复用，见 [applyTaskPageOrientation]），
+     * 监听器若写在构建函数里就会重复挂 —— 点一次任务触发两次 `loadTaskParams`。
+     */
+    private fun wireTaskPageActions() {
+        taskSearchField.textEditor.emptyText.setText(OkScriptToolkitBundle.message("taskLauncher.searchTasks"))
+        taskSearchField.toolTipText = OkScriptToolkitBundle.message("taskLauncher.searchTasks")
+        taskSearchField.addDocumentListener(object : DocumentListener {
+            override fun insertUpdate(e: DocumentEvent?) = applySearch()
+            override fun removeUpdate(e: DocumentEvent?) = applySearch()
+            override fun changedUpdate(e: DocumentEvent?) = applySearch()
+        })
+        detailActionButton.addActionListener { onDetailAction() }
+        detailSyncButton.addActionListener { detailTask?.let { syncTaskDefault(it) } }
+        detailResetButton.addActionListener { detailTask?.let { resetTaskDefault(it) } }
+    }
+
+    /**
+     * 任务页的两个半区（只建一次，分栏方向切换时复用）：
+     * 半区一 = 搜索 + 执行器胶囊 + 队列条 + 卡片列表；半区二 = 当前任务详情与参数。
+     *
+     * 工具条**分两行**：搜索框一行、状态胶囊 + 刷新一行。挤在一行时胶囊的长文案
+     * 会按 preferred 宽度吃掉整行，`BorderLayout.CENTER` 里的搜索框被压到看不见。
+     */
+    private fun buildTaskPagePanes() {
+        val refreshButton = JButton(AllIcons.Actions.Refresh).apply {
+            toolTipText = OkScriptToolkitBundle.message("taskLauncher.refresh")
+            isFocusable = false
+            addActionListener { loadTasks() }
+        }
+
+        // 执行器状态胶囊：运行态摘要 + 点击跳运行器页（运行态的完整视图在那边）
+        val openRunnerTab = object : java.awt.event.MouseAdapter() {
+            override fun mouseClicked(e: java.awt.event.MouseEvent) {
+                tabbedPane.selectedIndex = TAB_RUNNER
+            }
+        }
+        val pill = JPanel(BorderLayout(6, 0)).apply {
+            isOpaque = false
+            border = BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(JBColor.border(), 1, true),
+                BorderFactory.createEmptyBorder(3, 10, 3, 10),
+            )
+            cursor = java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.HAND_CURSOR)
+            toolTipText = OkScriptToolkitBundle.message("taskLauncher.runnerTabHint")
+            add(executorPillDot, BorderLayout.WEST)
+            add(executorPillLabel, BorderLayout.CENTER)
+            // 子标签会吃掉点击（Swing 事件不冒泡）⇒ 三处挂同一个监听
+            addMouseListener(openRunnerTab)
+            executorPillDot.addMouseListener(openRunnerTab)
+            executorPillLabel.addMouseListener(openRunnerTab)
+        }
+
+        val toolbar = JPanel(BorderLayout(0, 4))
+        toolbar.isOpaque = false
+        toolbar.border = BorderFactory.createEmptyBorder(8, 8, 4, 8)
+        toolbar.add(taskSearchField, BorderLayout.NORTH)
+        val pillRow = JPanel(BorderLayout(6, 0))
+        pillRow.isOpaque = false
+        pillRow.add(pill, BorderLayout.CENTER)
+        pillRow.add(refreshButton, BorderLayout.EAST)
+        toolbar.add(pillRow, BorderLayout.SOUTH)
+
+        val listScrollPane = JBScrollPane(taskCardList)
+        listScrollPane.border = BorderFactory.createEmptyBorder()
+        queueStrip.border = BorderFactory.createEmptyBorder(0, 8, 2, 8)
+
+        val taskListPane = JPanel(BorderLayout())
+        taskListPane.isOpaque = false
+        taskListPane.add(toolbar, BorderLayout.NORTH)
+        taskListPane.add(queueStrip, BorderLayout.SOUTH)
+        // 队列条夹在工具栏与列表之间：外层再套一层 BorderLayout
+        taskListHost.removeAll()
+        taskListHost.isOpaque = false
+        taskListHost.add(taskListPane, BorderLayout.NORTH)
+        taskListHost.add(listScrollPane, BorderLayout.CENTER)
+
+        val paramScrollPane = JBScrollPane(paramPanel)
+        paramScrollPane.border = BorderFactory.createEmptyBorder()
+        taskDetailPane.removeAll()
+        taskDetailPane.isOpaque = false
+        taskDetailPane.add(buildDetailHeader(), BorderLayout.NORTH)
+        taskDetailPane.add(paramScrollPane, BorderLayout.CENTER)
+        taskDetailPane.add(buildDetailFooter(), BorderLayout.SOUTH)
+    }
+
+    /**
+     * 任务页分栏方向随宽度自适应。
+     *
+     * 这个工具窗默认停靠右侧、宽度只有三四百像素：左右分栏时左列表只占 42%（约 150px），
+     * 任务卡与参数表单两边都不够用（用户反馈任务卡「露一半」）。窄时改成**上下分栏**
+     * （列表在上、详情在下），两个半区都能用满整宽；把工具窗拉宽或弹出成独立窗口后再回到左右分栏。
+     *
+     * 只换 `Splitter`，两个半区面板复用 —— 重建面板会重复挂监听器。
+     */
+    private fun applyTaskPageOrientation(force: Boolean = false) {
+        val host = taskPageHost ?: return
+        val width = host.width
+        if (!force && width <= 0) return
+        val stacked = width < TASK_PAGE_STACK_WIDTH
+        if (!force && host.componentCount > 0 && stacked == taskPageStacked) return
+        taskPageStacked = stacked
+
+        // 先摘掉旧 Splitter 的两个组件（setXxxComponent(null) 只做 remove，不会再 add）
+        taskSplitter?.let {
+            it.firstComponent = null
+            it.secondComponent = null
+        }
+        host.removeAll()
+        // Splitter 的 boolean 是「分栏轴是否沿高度」：true = 上下分栏，false = 左右分栏
+        val splitter = com.intellij.openapi.ui.Splitter(stacked, 0.42f)
+        splitter.firstComponent = taskListHost
+        splitter.secondComponent = taskDetailPane
+        splitter.setDividerWidth(4)
+        taskSplitter = splitter
+        host.add(splitter, BorderLayout.CENTER)
+        host.revalidate()
+        host.repaint()
     }
 
     // ── 左列表：搜索 / 队列条 / 悬停（表格渲染器已由 TaskCardListPanel 取代） ──
@@ -623,24 +713,31 @@ class TaskLauncherPanel(private val project: Project) {
      */
     private fun buildDetailHeader(): JPanel {
         detailTitle.font = detailTitle.font.deriveFont(Font.BOLD)
-        val titleRow = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
+        // 名称拿剩余宽度（放不下就省略），两个 chip 拿 preferred 宽度永不裁切 ——
+        // FlowLayout 在窄窗里会把后面的 chip 直接切掉（与任务卡同款坑）。
+        val chips = JPanel(WrapLayout(FlowLayout.RIGHT, 6, 0))
+        chips.isOpaque = false
+        chips.add(detailKindChip)
+        chips.add(detailStateChip)
+        val titleRow = JPanel(BorderLayout(6, 0))
         titleRow.isOpaque = false
-        titleRow.add(detailTitle)
-        titleRow.add(detailKindChip)
-        titleRow.add(detailStateChip)
+        titleRow.add(detailTitle, BorderLayout.CENTER)
+        titleRow.add(chips, BorderLayout.EAST)
 
-        detailActionButton.addActionListener { onDetailAction() }
+        // 监听器在 wireTaskPageActions() 里挂一次（本函数会随分栏方向切换被重调）
         val actionRow = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0))
         actionRow.isOpaque = false
         actionRow.add(detailActionButton)
 
-        // 纵向：标题行 → 类名·模块 → 描述（描述随宽度完整换行，高度自适应）
+        // 纵向：标题行 → 类名·模块 → 主操作 → 描述（描述随宽度完整换行，高度自适应）
         val identity = JPanel()
         identity.layout = BoxLayout(identity, BoxLayout.Y_AXIS)
         identity.isOpaque = false
         identity.add(titleRow)
         detailClassLine.alignmentX = java.awt.Component.LEFT_ALIGNMENT
         identity.add(detailClassLine)
+        actionRow.alignmentX = java.awt.Component.LEFT_ALIGNMENT
+        identity.add(actionRow)
         detailDescription.alignmentX = java.awt.Component.LEFT_ALIGNMENT
         identity.add(detailDescription)
 
@@ -653,14 +750,17 @@ class TaskLauncherPanel(private val project: Project) {
 
     /** 详情页脚：⇄/⟲ 快照操作（IA 重设计后从卡片挪来，作用于当前选中任务）+ 自动保存提示 */
     private fun buildDetailFooter(): JPanel {
-        detailSyncButton.addActionListener { detailTask?.let { syncTaskDefault(it) } }
-        detailResetButton.addActionListener { detailTask?.let { resetTaskDefault(it) } }
-        val hint = mutedLabel(OkScriptToolkitBundle.message("taskLauncher.autosaveHint"))
-        val row = JPanel(FlowLayout(FlowLayout.LEFT, 6, 4))
+        // 监听器在 wireTaskPageActions() 里挂一次（本函数会随分栏方向切换被重调）
+        val hint = SchemaFieldUi.WrappingDescription(OkScriptToolkitBundle.message("taskLauncher.autosaveHint"))
+        val buttons = JPanel(WrapLayout(FlowLayout.LEFT, 6, 4))
+        buttons.isOpaque = false
+        buttons.add(detailSyncButton)
+        buttons.add(detailResetButton)
+        // 按钮拿 preferred 宽度、提示文字拿剩余宽度：窄窗里提示换行，按钮不会被挤掉
+        val row = JPanel(BorderLayout(6, 0))
         row.isOpaque = false
-        row.add(detailSyncButton)
-        row.add(detailResetButton)
-        row.add(hint)
+        row.add(buttons, BorderLayout.WEST)
+        row.add(hint, BorderLayout.CENTER)
         return JPanel(BorderLayout()).apply {
             isOpaque = false
             border = BorderFactory.createCompoundBorder(
@@ -721,6 +821,14 @@ class TaskLauncherPanel(private val project: Project) {
         label.foreground = UIUtil.getLabelDisabledForeground()
         return label
     }
+
+    /**
+     * 弱化**可换行**提示（长句专用）。
+     *
+     * [mutedLabel] 是单行标签 —— 窄工具窗里会被硬裁剪（正是「东西看不全」的来源之一）；
+     * 长提示一律走这个：按宽度换行、高度自适应。
+     */
+    private fun mutedHint(text: String): JTextArea = SchemaFieldUi.WrappingDescription(text)
 
     private fun openAccountEditor() {
         val projectDir = checkedProjectPath(statusLabel, "taskLauncher.noProject") ?: return
@@ -853,7 +961,7 @@ class TaskLauncherPanel(private val project: Project) {
         detailTitle.text = task.displayName
         styleChip(
             detailKindChip,
-            if (isTrigger) COLOR_TRIGGER else JBColor.BLUE,
+            if (isTrigger) COLOR_TRIGGER else TaskLauncherTheme.ONETIME,
             OkScriptToolkitBundle.message(
                 if (isTrigger) "taskLauncher.triggerTask" else "taskLauncher.oneTimeTask",
             ),
@@ -896,14 +1004,14 @@ class TaskLauncherPanel(private val project: Project) {
         runnerCloseButton.addActionListener { closeExecutor() }
 
         val statusCard = pageCard(OkScriptToolkitBundle.message("taskLauncher.runnerExecStatus")) { body ->
-            val head = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0))
+            val head = JPanel(WrapLayout(FlowLayout.LEFT, 6, 0))
             head.isOpaque = false
             head.add(runnerDot)
             head.add(runnerStatusLabel)
             head.add(runnerCurrentChip)
             body.add(head)
 
-            val buttons = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
+            val buttons = JPanel(WrapLayout(FlowLayout.LEFT, 4, 0))
             buttons.isOpaque = false
             buttons.add(runnerStartButton)
             buttons.add(runnerPauseButton)
@@ -932,7 +1040,7 @@ class TaskLauncherPanel(private val project: Project) {
             body.add(envRow(OkScriptToolkitBundle.message("taskLauncher.envPython"), envPythonValue))
             body.add(envRow(OkScriptToolkitBundle.message("taskLauncher.envSandbox"), envSandboxValue))
             body.add(envRow(OkScriptToolkitBundle.message("taskLauncher.envSnapshots"), envSnapshotsValue))
-            val buttons = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
+            val buttons = JPanel(WrapLayout(FlowLayout.LEFT, 4, 0))
             buttons.isOpaque = false
             buttons.add(settingsButton)
             buttons.add(rescanButton)
@@ -957,7 +1065,7 @@ class TaskLauncherPanel(private val project: Project) {
         gameStatusLabel.foreground = UIUtil.getContextHelpForeground()
         toolboxStatusLabel.foreground = UIUtil.getContextHelpForeground()
         val gameCard = pageCard(OkScriptToolkitBundle.message("taskLauncher.runnerGame")) { body ->
-            val buttons = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
+            val buttons = JPanel(WrapLayout(FlowLayout.LEFT, 4, 0))
             buttons.isOpaque = false
             buttons.add(connectGameButton)
             buttons.add(disconnectGameButton)
@@ -968,7 +1076,9 @@ class TaskLauncherPanel(private val project: Project) {
         }
 
         refreshEnvironmentInfo()
-        return scrollablePage(pageGrid(listOf(statusCard, queueCard, envCard, gameCard)))
+        // 单列而不是两列网格：工具窗默认只有三四百像素宽，两列时每张卡不到 180px，
+        // 卡里的「键 = 值」行与按钮全被挤坏。
+        return singleColumnPage(listOf(statusCard, queueCard, envCard, gameCard))
     }
 
     /**
@@ -999,18 +1109,19 @@ class TaskLauncherPanel(private val project: Project) {
             val index = nav.selectedIndex.coerceIn(NAV_KEYS.indices)
             (cards.layout as java.awt.CardLayout).show(cards, NAV_KEYS[index])
         }
+        // 固定宽度的二级导航，不用比例分栏：比例在窄工具窗里会把导航压到 90px 以下
+        // （中文导航项放不下），在宽窗里又会白占几百像素；固定宽度两头都合适。
         val navScroll = JBScrollPane(nav)
-        navScroll.border = BorderFactory.createEmptyBorder()
-        navScroll.preferredSize = Dimension(170, 0)
-
-        val split = com.intellij.openapi.ui.Splitter(false, 0.24f)
-        split.firstComponent = navScroll
-        split.secondComponent = cards
-        split.setDividerWidth(1)
+        navScroll.border = BorderFactory.createMatteBorder(0, 0, 0, 1, JBColor.border())
+        navScroll.preferredSize = Dimension(CONFIG_NAV_WIDTH, 0)
+        val navHost = JPanel(BorderLayout())
+        navHost.isOpaque = false
+        navHost.add(navScroll, BorderLayout.CENTER)
 
         val page = JPanel(BorderLayout())
         page.isOpaque = false
-        page.add(split, BorderLayout.CENTER)
+        page.add(navHost, BorderLayout.WEST)
+        page.add(cards, BorderLayout.CENTER)
         return page
     }
 
@@ -1022,7 +1133,7 @@ class TaskLauncherPanel(private val project: Project) {
      */
     private fun buildToolsPage(): JPanel {
         val card = pageCard(OkScriptToolkitBundle.message("taskLauncher.tabTools")) { body ->
-            body.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.toolsHint")))
+            body.add(mutedHint(OkScriptToolkitBundle.message("taskLauncher.toolsHint")))
             body.add(
                 toolRow(
                     OkScriptToolkitBundle.message("taskLauncher.toolCharacterTitle"),
@@ -1167,7 +1278,7 @@ class TaskLauncherPanel(private val project: Project) {
         text.layout = BoxLayout(text, BoxLayout.Y_AXIS)
         text.isOpaque = false
         text.add(titleLabel)
-        text.add(mutedLabel(description))
+        text.add(mutedHint(description))
 
         val open = JButton(OkScriptToolkitBundle.message("taskLauncher.toolOpen"))
         open.addActionListener { action() }
@@ -1199,7 +1310,7 @@ class TaskLauncherPanel(private val project: Project) {
     private fun renderGlobalConfig() {
         globalConfigHost.removeAll()
         if (globalConfigGroups.isEmpty()) {
-            globalConfigHost.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.configGlobalEmpty")))
+            globalConfigHost.add(mutedHint(OkScriptToolkitBundle.message("taskLauncher.configGlobalEmpty")))
         } else {
             for (group in globalConfigGroups) globalConfigHost.add(globalConfigCard(group))
         }
@@ -1213,7 +1324,7 @@ class TaskLauncherPanel(private val project: Project) {
     private fun buildGlobalConfigSection(): JPanel {
         renderGlobalConfig()
         val card = pageCard(OkScriptToolkitBundle.message("taskLauncher.configNavGlobal")) { body ->
-            body.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.configGlobalHint")))
+            body.add(mutedHint(OkScriptToolkitBundle.message("taskLauncher.configGlobalHint")))
             body.add(globalConfigHost)
         }
         return singleColumnPage(listOf(card))
@@ -1314,7 +1425,7 @@ class TaskLauncherPanel(private val project: Project) {
         openButton.addActionListener { openAccountEditor() }
         accountSummaryLabel.foreground = UIUtil.getContextHelpForeground()
         val card = pageCard(OkScriptToolkitBundle.message("taskLauncher.configNavAccount")) { body ->
-            body.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.configAccountHint")))
+            body.add(mutedHint(OkScriptToolkitBundle.message("taskLauncher.configAccountHint")))
             body.add(accountSummaryLabel)
             body.add(openButton)
         }
@@ -1326,7 +1437,7 @@ class TaskLauncherPanel(private val project: Project) {
         val settingsButton = JButton(OkScriptToolkitBundle.message("taskLauncher.openSettings"))
         settingsButton.addActionListener { openSettings() }
         val card = pageCard(OkScriptToolkitBundle.message("taskLauncher.configNavProject")) { body ->
-            body.add(mutedLabel(OkScriptToolkitBundle.message("taskLauncher.configProjectHint")))
+            body.add(mutedHint(OkScriptToolkitBundle.message("taskLauncher.configProjectHint")))
             body.add(envRow(OkScriptToolkitBundle.message("taskLauncher.envProjectRoot"), projectRootValue))
             body.add(envRow(OkScriptToolkitBundle.message("taskLauncher.envPython"), projectPythonValue))
             body.add(envRow(OkScriptToolkitBundle.message("taskLauncher.envSandbox"), projectSandboxValue))
@@ -2875,7 +2986,7 @@ class TaskLauncherPanel(private val project: Project) {
     }
 
     /** 状态单元格：文案 + 语义色调 + 徽标/启动按钮的可用性（卡片与详情区 chip 共用） */
-    private data class StatusCell(val text: String, val tone: Int, val badge: Boolean, val launchEnabled: Boolean)
+    private data class StatusCell(val text: String, val tone: Int, val launchEnabled: Boolean)
 
     /** 状态：触发任务看入列 / 轮询，一次性任务看排队 / 执行 / schema 健康度 */
     private fun statusCellFor(
@@ -2906,8 +3017,6 @@ class TaskLauncherPanel(private val project: Project) {
             schema?.error != null -> OkScriptToolkitBundle.message("taskLauncher.schemaError")
             else -> readyText
         }
-        // 徽标语义对齐 webview：一次性任务没有事件（就绪）时不画徽标，其余状态都画
-        val badge = text != readyText
         // ▶启动按钮：执行器属于别的项目 / 该任务正排队或执行中时禁用（对齐 webview launch.disabled）
         val launchEnabled = !taskRunner.isActive() && executorMatchesProject() &&
             state.current != key && !state.onetimeQueue.contains(key)
@@ -2921,7 +3030,6 @@ class TaskLauncherPanel(private val project: Project) {
                 schemaBroken = schema?.broken == true,
                 schemaError = schema?.error != null,
             ),
-            badge = badge,
             launchEnabled = launchEnabled,
         )
     }
@@ -2990,7 +3098,7 @@ class TaskLauncherPanel(private val project: Project) {
 
         override fun cardStatusOf(task: TaskLauncherService.TaskInfo): TaskCardStatus {
             val cell = statusCellFor(task, runnerStateForDisplay())
-            return TaskCardStatus(cell.text, cell.tone, cell.badge, cell.launchEnabled)
+            return TaskCardStatus(cell.text, cell.tone, cell.launchEnabled)
         }
 
         override fun isCollapsed(foldKey: String): Boolean = uiCollapseState[foldKey] == true
