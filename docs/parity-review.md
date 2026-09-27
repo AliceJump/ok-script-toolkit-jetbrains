@@ -29,6 +29,8 @@ Next review should override this table and update the status.
 > （控制台重构、配置接管 Phase 1-6、健康度条 / 运行中心 / 悬停弹层及它们的 Kotlin 移植）
 > 记录在 [`design-parity.md`](design-parity.md)，未并入本表 —— 请把两份文档与代码放在一起读。
 
+> **2026-09-27 · v1.15 分支补充**：任务启动器现已分为「任务 / 配置 / 运行器 / 工具」四页；任务卡点击后在详情栏查看描述与参数，卡片上不再有重复的「参数」按钮。任务字段、账号覆盖和全局配置编辑器共用字段控件。主仓 `python/` 是两端共同的扫描、账号和执行核心；子仓构建时打包同一份脚本与 JSON Schema。`OK_TOOLKIT_RUN_DIR` 现由两个宿主显式传给探针、账号网关与执行器。本表其余旧条目仍以 v1.8.0 为历史基线。
+
 ---
 
 ## 结论概览
@@ -104,8 +106,8 @@ Next review should override this table and update the status.
   `tasklauncher/TaskCardListPanel` —— 触发任务在前、一次性任务按 `schema.groupName`
   二级分组（可折叠、带计数、未分组兜底，折叠状态落 tasks.json `uiState`，键与
   父仓 webview 的 `taskGroupCollapsed::*` 一致）；卡片 = 状态点 + 名称 + 类型 chip +
-  状态徽标 + 类名·模块 + 描述 + 动作（⚙参数 / ⇄同步 default / ⟲恢复默认 /
-  启用勾选或 ▶启动）；带搜索框（搜索激活时忽略折叠）与执行队列条；执行器状态
+  状态徽标 + 类名·模块 + 描述 + 类型动作（启用勾选或 ▶启动）；点击卡片在详情栏
+  打开完整描述、参数、同步与恢复默认；带搜索框（搜索激活时忽略折叠）与执行队列条；执行器状态
   推送走逐卡原地刷新。编排规则收敛到纯对象 `TaskListGrouping.kt`
   （`TaskListGroupingTest.kt` 钉住），⇄/⟲ 语义对齐父仓 `syncDefaultToSnapshot`
   / `resetSnapshotToDefault`（并集扩张 / 出厂值、孤儿键保留）。差异仅剩载体：

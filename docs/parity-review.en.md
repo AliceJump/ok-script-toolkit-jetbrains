@@ -31,6 +31,14 @@ Next review should override this table and update the status.
 > [`design-parity.md`](design-parity.md) and is not folded into this table —
 > read both documents together with the code.
 
+> **2026-09-27 · v1.15 branch addendum:** the task launcher now has Tasks, Configuration,
+> Runner, and Tools pages. Selecting a task card opens its full description and parameters
+> in the details pane; the redundant Parameters button was removed. Task, account override,
+> and global configuration editors use the same field controls. Both plugins package the
+> Python runtime and JSON Schema from the main repository. Both hosts explicitly pass
+> `OK_TOOLKIT_RUN_DIR` to the schema probe, account gateway, and executor. The remaining
+> rows below retain the historical v1.8.0 baseline.
+
 ---
 
 ## Summary

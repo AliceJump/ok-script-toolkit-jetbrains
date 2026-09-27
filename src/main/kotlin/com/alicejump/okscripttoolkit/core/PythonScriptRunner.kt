@@ -41,9 +41,8 @@ class PythonScriptRunner(private val project: Project) {
      * [env] 是**追加**到继承环境之上的宿主变量（如 `OK_TOOLKIT_RUN_DIR`），不会清空
      * 父进程环境 —— Python 仍需要 PATH 等基础变量才能启动。
      *
-     * ⚠️ 脚本侧读取方式**不统一**：`run_executor.py` / `probe_task_schemas.py` 读环境变量
-     * `OK_TOOLKIT_RUN_DIR`；`account_store.py` 走 `--run-dir` 命令行参数。传错方式不会报错，
-     * 只会悄悄读写项目 `configs/`。
+     * 执行器、探针与账号网关都读取 `OK_TOOLKIT_RUN_DIR`；宿主调用时必须显式传入，
+     * 否则脚本会回退到默认路径或项目自身的 `configs/`。
      */
     fun runSync(
         pythonPath: String,
@@ -150,6 +149,8 @@ object PythonScriptLocator {
         // probe_task_schemas.py 与 run_executor.py 都 `import project_store`
         // （按项目声明定位「自建全局配置 store」的模块），同款风险：漏掉就整批全局配置消失。
         "project_store.py",
+        // probe_task_schemas.py 与 account_store.py 共用项目配置路径与账号 store 定位。
+        "project_runtime.py",
         "account_store.py",
         "capture_game_window.py",
         "probe_window_config.py",
