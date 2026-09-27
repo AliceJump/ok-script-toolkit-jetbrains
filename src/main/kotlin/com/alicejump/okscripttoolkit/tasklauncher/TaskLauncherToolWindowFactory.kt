@@ -8,6 +8,7 @@ import com.alicejump.okscripttoolkit.core.RunDir
 import com.alicejump.okscripttoolkit.toolbox.ToolboxService
 import com.alicejump.okscripttoolkit.ui.ToolbarAction
 import com.alicejump.okscripttoolkit.ui.openCharacterManager
+import com.alicejump.okscripttoolkit.ui.openTemplateGalleryEditor
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.intellij.ui.JBColor
@@ -1204,6 +1205,12 @@ class TaskLauncherPanel(private val project: Project) {
                     OkScriptToolkitBundle.message("taskLauncher.toolTemplatesTitle"),
                     OkScriptToolkitBundle.message("taskLauncher.toolTemplatesDesc"),
                 ) { showToolWindow("ok-script Templates") },
+            )
+            body.add(
+                toolRow(
+                    OkScriptToolkitBundle.message("action.openTemplatesEditor.text"),
+                    OkScriptToolkitBundle.message("action.openTemplatesEditor.description"),
+                ) { openTemplateGalleryEditor(project) },
             )
             body.add(
                 toolRow(

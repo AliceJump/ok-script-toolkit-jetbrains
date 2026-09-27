@@ -35,6 +35,13 @@
             extensions="okcharacters"/>
         <fileEditorProvider implementation="com.alicejump.okscripttoolkit.ui.CharacterManagerEditorProvider"/>
 
+        <fileType
+            name="ok-script Template Gallery"
+            implementationClass="com.alicejump.okscripttoolkit.ui.TemplateGalleryFileType"
+            fieldName="INSTANCE"
+            extensions="oktemplates"/>
+        <fileEditorProvider implementation="com.alicejump.okscripttoolkit.ui.TemplateGalleryEditorProvider"/>
+
         <codeInsight.declarativeInlayProvider
             language="Python"
             providerId="ok.script.toolkit.python"
@@ -97,6 +104,11 @@
             <add-to-group group-id="ToolsMenu" anchor="last"/>
             <keyboard-shortcut keymap="$default" first-keystroke="control alt T"/>
             <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt T"/>
+        </action>
+        <action
+            id="com.alicejump.okscripttoolkit.OpenTemplateGalleryEditor"
+            class="com.alicejump.okscripttoolkit.ui.OpenTemplateGalleryEditorAction">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
         <action
             id="com.alicejump.okscripttoolkit.ShowTasks"

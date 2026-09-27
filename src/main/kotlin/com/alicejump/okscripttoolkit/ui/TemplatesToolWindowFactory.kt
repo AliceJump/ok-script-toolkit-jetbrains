@@ -74,7 +74,7 @@ class TemplatesToolWindowFactory : ToolWindowFactory, DumbAware {
     }
 }
 
-private class TemplateGalleryPanel(private val project: Project) : com.intellij.openapi.Disposable {
+internal class TemplateGalleryPanel(private val project: Project) : com.intellij.openapi.Disposable {
     companion object {
         private val LOG = Logger.getInstance(TemplateGalleryPanel::class.java)
         private const val THUMB_HEIGHT = ThumbGridPolicy.THUMB_HEIGHT
@@ -98,6 +98,7 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
         Thread(r, "ok-script-template-thumb").apply { isDaemon = true }
     }
     private val renderGeneration = java.util.concurrent.atomic.AtomicInteger(0)
+    private val reloadGeneration = java.util.concurrent.atomic.AtomicInteger(0)
     private var gridCols = 5
     @Volatile
     private var disposed = false
@@ -166,17 +167,21 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
     }
 
     private fun reload(force: Boolean) {
+        val generation = reloadGeneration.incrementAndGet()
         // 数据刷新含全量目录扫描与文件 IO，移出 EDT
         CompletableFuture.runAsync {
             data.refresh(force)
             val features = data.features()
             SwingUtilities.invokeLater {
+                if (disposed || generation != reloadGeneration.get()) return@invokeLater
                 thumbs.clear()
                 templates = features
                 renderGrid()
             }
         }
     }
+
+    fun refresh() = reload(true)
 
     private fun applyFilter() = renderGrid()
 
