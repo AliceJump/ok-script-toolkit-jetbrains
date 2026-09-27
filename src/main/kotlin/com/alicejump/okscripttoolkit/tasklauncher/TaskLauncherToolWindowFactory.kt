@@ -1439,22 +1439,24 @@ class TaskLauncherPanel(private val project: Project) {
                 insets = Insets(0, 0, 6, 0)
             })
         }
-        val rowsByKey = linkedMapOf<String, JPanel>()
-        for (control in controls) {
-            val row = SchemaFieldUi.row(control.field, control.component)
-            rowsByKey[control.field.key] = row
-            form.add(row, GridBagConstraints().apply {
-                gridx = 0
-                gridy = rowIndex++
-                weightx = 1.0
-                fill = GridBagConstraints.HORIZONTAL
-                anchor = GridBagConstraints.NORTHWEST
-                insets = Insets(0, 0, 0, 0)
-            })
-        }
-        GlobalConfigEditor.installVisibility(controls, rowsByKey, form)
+        GlobalConfigEditor.addFieldRows(
+            form, controls, rowIndex, Insets(0, 0, 0, 0),
+            isOpen = { section -> uiCollapseState[globalOptionFoldKey(group, section)] == false },
+            onOpenChanged = { section, open ->
+                val key = globalOptionFoldKey(group, section)
+                uiCollapseState = uiCollapseState + (key to !open)
+                try {
+                    taskService.saveUiStateValue(key, !open, root)
+                } catch (e: Exception) {
+                    LOG.warn("Failed to persist global option group state", e)
+                }
+            },
+        )
         return form
     }
+
+    private fun globalOptionFoldKey(group: TaskLauncherService.GlobalConfigGroup, section: String): String =
+        "globalOptionCollapsed::${group.name}::$section"
 
     /** 折叠状态落 uiState（与任务卡折叠同一套持久化）并重建页面；失败只记日志，不影响交互 */
     private fun setGlobalGroupCollapsed(foldKey: String, collapsed: Boolean) {

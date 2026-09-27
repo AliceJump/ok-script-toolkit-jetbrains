@@ -2,7 +2,9 @@ package com.alicejump.okscripttoolkit.tasklauncher
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.project.Project
+import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBScrollPane
 import java.awt.BorderLayout
 import java.awt.Component
@@ -12,6 +14,7 @@ import java.awt.GridBagLayout
 import java.awt.Insets
 import java.awt.Rectangle
 import javax.swing.DefaultListCellRenderer
+import javax.swing.JButton
 import javax.swing.JCheckBox
 import javax.swing.JComboBox
 import javax.swing.JComponent
@@ -25,6 +28,7 @@ import javax.swing.JTextField
 import javax.swing.ListSelectionModel
 import javax.swing.Scrollable
 import javax.swing.SpinnerNumberModel
+import javax.swing.SwingConstants
 import javax.swing.text.JTextComponent
 
 /** An editor for the same global config snapshot that is injected into run_executor.py. */
@@ -72,18 +76,7 @@ internal object GlobalConfigEditor {
                 insets = Insets(8, 12, 8, 12)
             })
         }
-        val rowsByKey = linkedMapOf<String, JPanel>()
-        for (control in controls) {
-            val row = SchemaFieldUi.row(control.field, control.component)
-            rowsByKey[control.field.key] = row
-            form.add(row, GridBagConstraints().apply {
-                gridx = 0; gridy = rowIndex++; weightx = 1.0
-                fill = GridBagConstraints.HORIZONTAL
-                anchor = GridBagConstraints.NORTHWEST
-                insets = Insets(1, 8, 1, 8)
-            })
-        }
-        installVisibility(controls, rowsByKey, form)
+        rowIndex = addFieldRows(form, controls, rowIndex, Insets(1, 8, 1, 8), defaultOpen = accountOverride)
         form.add(JPanel().apply { isOpaque = false }, GridBagConstraints().apply {
             gridx = 0; gridy = rowIndex; weighty = 1.0; fill = GridBagConstraints.BOTH
         })
@@ -151,11 +144,118 @@ internal object GlobalConfigEditor {
         }
     }
 
+    private data class OptionSection(val id: String, val parent: String, val label: String, val children: List<String>)
+
+    /** Render non-boolean sub_configs as option groups, sharing one control for keys in several choices. */
+    internal fun addFieldRows(
+        form: JPanel,
+        controls: List<FieldControl>,
+        startRow: Int,
+        rowInsets: Insets,
+        defaultOpen: Boolean = false,
+        isOpen: (String) -> Boolean = { defaultOpen },
+        onOpenChanged: (String, Boolean) -> Unit = { _, _ -> },
+    ): Int {
+        val byKey = controls.associateBy { it.field.key }
+        val sections = mutableListOf<OptionSection>()
+        for (control in controls) {
+            if (control.booleanControl != null) continue
+            val rules = control.field.type?.get("sub_configs") as? Map<*, *> ?: continue
+            val labels = control.field.type["sub_config_labels"] as? Map<*, *>
+            for ((choice, children) in rules) {
+                val keys = when (children) {
+                    is String -> listOf(children)
+                    is List<*> -> children.filterIsInstance<String>()
+                    else -> emptyList()
+                }.distinct().filter { it != control.field.key && it in byKey }
+                if (keys.isEmpty()) continue
+                val choiceKey = choice.toString()
+                sections += OptionSection(
+                    id = "${control.field.key}::$choiceKey",
+                    parent = control.field.key,
+                    label = labels?.get(choice)?.toString() ?: choiceKey,
+                    children = keys,
+                )
+            }
+        }
+        val sectionsByParent = sections.groupBy { it.parent }
+        val childCounts = sections.flatMap { it.children }.groupingBy { it }.eachCount()
+        val uniqueChildren = childCounts.filterValues { it == 1 }.keys
+        val rowsByKey = linkedMapOf<String, JPanel>()
+        val sectionViews = mutableListOf<Pair<JPanel, List<String>>>()
+        val rowCounters = hashMapOf<JPanel, Int>(form to startRow)
+        val rendered = hashSetOf<String>()
+
+        fun addRow(container: JPanel, component: JComponent) {
+            val row = rowCounters.getOrDefault(container, 0)
+            rowCounters[container] = row + 1
+            container.add(component, GridBagConstraints().apply {
+                gridx = 0; gridy = row; weightx = 1.0
+                fill = GridBagConstraints.HORIZONTAL
+                anchor = GridBagConstraints.NORTHWEST
+                insets = rowInsets
+            })
+        }
+
+        lateinit var renderField: (String, JPanel) -> Unit
+        fun renderSection(section: OptionSection, container: JPanel) {
+            val keys = section.children.filter { it in uniqueChildren }
+            if (keys.isEmpty()) return
+            val body = JPanel(GridBagLayout()).apply { isOpaque = false }
+            val expanded = isOpen(section.id)
+            body.isVisible = expanded
+            val button = JButton(
+                section.label,
+                if (expanded) AllIcons.General.ArrowDown else AllIcons.General.ArrowRight,
+            ).apply {
+                horizontalAlignment = SwingConstants.LEFT
+                isBorderPainted = false
+                isContentAreaFilled = false
+            }
+            button.addActionListener {
+                val open = !body.isVisible
+                body.isVisible = open
+                button.icon = if (open) AllIcons.General.ArrowDown else AllIcons.General.ArrowRight
+                onOpenChanged(section.id, open)
+                form.revalidate()
+                form.repaint()
+            }
+            val panel = JPanel(BorderLayout(0, 4)).apply {
+                isOpaque = false
+                border = javax.swing.BorderFactory.createCompoundBorder(
+                    javax.swing.BorderFactory.createLineBorder(JBColor.border()),
+                    javax.swing.BorderFactory.createEmptyBorder(4, 8, 6, 8),
+                )
+                add(button, BorderLayout.NORTH)
+                add(body, BorderLayout.CENTER)
+            }
+            addRow(container, panel)
+            sectionViews += panel to keys
+            keys.forEach { renderField(it, body) }
+        }
+
+        renderField = { key, container ->
+            val control = byKey[key]
+            if (control != null && rendered.add(key)) {
+                val row = SchemaFieldUi.row(control.field, control.component)
+                rowsByKey[key] = row
+                addRow(container, row)
+                sectionsByParent[key].orEmpty().forEach { renderSection(it, container) }
+            }
+        }
+        controls.filter { it.field.key !in uniqueChildren }.forEach { renderField(it.field.key, form) }
+        // Bad or cyclic metadata must not make a field disappear.
+        controls.forEach { renderField(it.field.key, form) }
+        installVisibility(controls, rowsByKey, form, sectionViews)
+        return rowCounters.getOrDefault(form, startRow)
+    }
+
     /** Boolean sub_configs follow the same inline visibility rules as task parameters. */
     internal fun installVisibility(
         controls: List<FieldControl>,
         rowsByKey: Map<String, JPanel>,
         form: JPanel,
+        optionSections: List<Pair<JPanel, List<String>>> = emptyList(),
     ) {
         val byKey = controls.associateBy { it.field.key }
         val rules = linkedMapOf<String, Map<Boolean, List<String>>>()
@@ -190,6 +290,9 @@ internal object GlobalConfigEditor {
         }
         val refresh = {
             rowsByKey.forEach { (key, row) -> row.isVisible = visible(key) }
+            optionSections.forEach { (section, keys) ->
+                section.isVisible = keys.any { rowsByKey[it]?.isVisible == true }
+            }
             form.revalidate()
             form.repaint()
         }
