@@ -141,8 +141,7 @@ class TemplateAssetDataServiceCocoTest {
         assertEquals(20, listed.height)
         assertEquals(1, listed.annotations.size)
 
-        service.deleteImage(diskFile)
-        service.save()
+        assertTrue(service.deleteImage(diskFile))
         assertTrue(!diskFile.exists())
         assertEquals(null, service.getImageEntryForFile("shot_001.png"))
         val afterDelete = com.fasterxml.jackson.databind.ObjectMapper().readTree(
@@ -202,5 +201,73 @@ class TemplateAssetDataServiceCocoTest {
         )))
         assertEquals(null, service.getImageEntryForFile("missing.png"))
         assertTrue(service.categories().isEmpty())
+    }
+
+    @Test
+    fun `screenshot dimension repair preserves image id and annotations`() {
+        val root = TestTmp.create("ok-coco-screenshot-repair")
+        val service = serviceAt(root)
+        val image = service.addImageEntry("shot.png", 0, 0)
+        val category = service.getOrCreateCategory("icon")
+        service.replaceAnnotationsForImage(image.id, listOf(category.id to intArrayOf(1, 2, 3, 4)))
+        assertTrue(service.save())
+
+        assertTrue(service.registerImageAndSave("shot.png", 120, 80))
+        val restored = serviceAt(root)
+        val repaired = assertNotNull(restored.getImageEntryForFile("shot.png"))
+        assertEquals(image.id, repaired.id)
+        assertEquals(120 to 80, repaired.width to repaired.height)
+        assertEquals(category.id, restored.getAnnotationsForImage(image.id).single().categoryId)
+    }
+
+    @Test
+    fun `failed import rolls back copied image and COCO state`() {
+        val root = TestTmp.create("ok-coco-import-failure")
+        val service = serviceAt(root)
+        val source = root.resolve("source.png")
+        javax.imageio.ImageIO.write(java.awt.image.BufferedImage(2, 2,
+            java.awt.image.BufferedImage.TYPE_INT_RGB), "png", source)
+        val targetDir = root.resolve("ok_templates").apply { mkdirs() }
+        assertTrue(targetDir.resolve("coco_annotations.json").mkdir())
+
+        assertEquals(0, service.importImages(listOf(source), targetDir))
+        assertEquals(null, service.getImageEntryForFile("1.png"))
+        assertFalse(targetDir.resolve("1.png").exists())
+    }
+
+    @Test
+    fun `successful import skips orphan filenames and persists image dimensions`() {
+        val root = TestTmp.create("ok-coco-import-success")
+        val service = serviceAt(root)
+        val source = root.resolve("source.png")
+        javax.imageio.ImageIO.write(java.awt.image.BufferedImage(3, 2,
+            java.awt.image.BufferedImage.TYPE_INT_RGB), "png", source)
+        val targetDir = root.resolve("ok_templates").apply { mkdirs() }
+        targetDir.resolve("1.png").writeBytes(byteArrayOf(1))
+
+        assertEquals(1, service.importImages(listOf(source), targetDir))
+        assertTrue(targetDir.resolve("2.png").isFile)
+        val restored = serviceAt(root)
+        val image = assertNotNull(restored.getImageEntryForFile("2.png"))
+        assertEquals(3 to 2, image.width to image.height)
+        assertEquals(null, restored.getImageEntryForFile("1.png"))
+    }
+
+    @Test
+    fun `failed delete restores image file and COCO entry`() {
+        val root = TestTmp.create("ok-coco-delete-failure")
+        val service = serviceAt(root)
+        val targetDir = root.resolve("ok_templates").apply { mkdirs() }
+        val imageFile = targetDir.resolve("shot.png").apply { writeBytes(byteArrayOf(1, 2, 3)) }
+        val image = service.addImageEntry(imageFile.name, 10, 10)
+        assertTrue(service.save())
+        val coco = targetDir.resolve("coco_annotations.json")
+        assertTrue(coco.delete())
+        assertTrue(coco.mkdir())
+
+        assertFalse(service.deleteImage(imageFile))
+        assertTrue(imageFile.exists())
+        assertEquals(image, service.getImageEntryForFile(imageFile.name))
+        assertTrue(targetDir.listFiles()?.none { it.name.startsWith(".ok-delete-") } == true)
     }
 }

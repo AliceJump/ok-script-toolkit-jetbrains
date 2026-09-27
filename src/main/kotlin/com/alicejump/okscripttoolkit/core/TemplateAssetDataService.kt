@@ -268,6 +268,7 @@ class TemplateAssetDataService(private val project: Project) {
      */
     private var projectDir: String = ""
 
+    @Synchronized
     fun load(projectDir: String, templatesDir: String): CocoData {
         this.projectDir = projectDir
         templateFolder = templateDir(projectDir, templatesDir)
@@ -286,14 +287,16 @@ class TemplateAssetDataService(private val project: Project) {
         return cocoData
     }
 
-    fun save() {
-        writeCoco(cocoData)
-    }
+    @Synchronized
+    fun save(): Boolean = writeCoco(cocoData)
+
+    private fun copyCoco(): CocoData = parseCoco(serializeCoco(cocoData))
 
     /** 所有编辑作为一次写盘提交；失败时不改动服务中的 COCO 状态。 */
+    @Synchronized
     fun saveAnnotationEdits(edits: List<CocoAnnotationEdit>): Boolean {
         if (edits.isEmpty()) return true
-        val updated = parseCoco(serializeCoco(cocoData))
+        val updated = copyCoco()
         for (edit in edits) {
             val image = updated.findImageByFileName(edit.fileName) ?: run {
                 val size = edit.imageSize ?: return false
@@ -305,6 +308,24 @@ class TemplateAssetDataService(private val project: Project) {
                 val category = updated.getOrCreateCategory(categoryName)
                 updated.addAnnotation(image.id, category.id, bbox)
             }
+        }
+        if (!writeCoco(updated)) return false
+        cocoData = updated
+        return true
+    }
+
+    /** 截图登记一次性提交；补旧图片尺寸时保留原有 ID、分类和标注。 */
+    @Synchronized
+    fun registerImageAndSave(fileName: String, width: Int, height: Int): Boolean {
+        val updated = copyCoco()
+        val existing = updated.findImageByFileName(fileName)
+        if (existing == null) {
+            updated.addImage(fileName, width, height)
+        } else if (existing.width == 0 || existing.height == 0) {
+            val index = updated.images.indexOf(existing)
+            updated.images[index] = existing.copy(width = width, height = height)
+        } else {
+            return true
         }
         if (!writeCoco(updated)) return false
         cocoData = updated
@@ -390,13 +411,35 @@ class TemplateAssetDataService(private val project: Project) {
         cocoData.setAnnotationsForImage(imageId, annotations)
     }
 
-    fun deleteImage(file: File) {
-        val imgEntry = cocoData.findImageByFileName(file.name)
-        if (imgEntry != null) {
-            cocoData.removeImage(imgEntry.id)
-        }
-        if (file.exists()) {
-            file.delete()
+    @Synchronized
+    fun deleteImage(file: File): Boolean {
+        val updated = copyCoco()
+        updated.findImageByFileName(file.name)?.let { updated.removeImage(it.id) }
+        var staged: Path? = null
+        try {
+            if (file.exists()) {
+                val temporary = Files.createTempFile(file.parentFile.toPath(), ".ok-delete-", ".tmp")
+                staged = temporary
+                Files.move(file.toPath(), temporary, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            }
+            if (!writeCoco(updated)) {
+                staged?.let { Files.move(it, file.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING) }
+                return false
+            }
+            cocoData = updated
+            staged?.let { temp ->
+                runCatching { Files.deleteIfExists(temp) }
+                    .onFailure { LOG.warn("Failed to clean staged template image ${file.name}", it) }
+            }
+            return true
+        } catch (e: Exception) {
+            LOG.warn("Failed to delete template image ${file.name}", e)
+            staged?.let { temp ->
+                if (Files.exists(temp) && !file.exists()) {
+                    runCatching { Files.move(temp, file.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING) }
+                }
+            }
+            return false
         }
     }
 
@@ -747,10 +790,15 @@ class TemplateAssetDataService(private val project: Project) {
      * 仅支持裁剪/打包管线的 PNG/JPEG/BMP，重命名为数字序号并注册进 COCO，
      * 全部完成后一次性 save；返回成功导入的数量（失败的文件跳过）。
      */
+    @Synchronized
     fun importImages(sourceFiles: List<File>, targetDir: File): Int {
-        targetDir.mkdirs()
+        if (!targetDir.isDirectory && !targetDir.mkdirs()) return 0
 
         val extensions = setOf("png", "jpg", "jpeg", "bmp")
+        val updated = copyCoco()
+        val copied = mutableListOf<File>()
+        val occupiedNames = targetDir.listFiles()?.mapTo(mutableSetOf()) { it.nameWithoutExtension } ?: mutableSetOf()
+        occupiedNames.addAll(updated.images.map { it.fileName.substringBeforeLast('.') })
         var count = 0
         for (sourceFile in sourceFiles) {
             try {
@@ -758,19 +806,35 @@ class TemplateAssetDataService(private val project: Project) {
                 val ext = sourceFile.extension.lowercase()
                 if (ext !in extensions) continue
 
-                val targetName = nextImageName() + "." + ext
+                var next = 1
+                while (next.toString() in occupiedNames) next++
+                val targetName = "$next.$ext"
                 val targetFile = File(targetDir, targetName)
-                if (targetFile.exists()) continue
-                Files.copy(sourceFile.toPath(), targetFile.toPath())
+                val staged = Files.createTempFile(targetDir.toPath(), ".ok-import-", ".tmp")
+                try {
+                    Files.copy(sourceFile.toPath(), staged, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                    Files.move(staged, targetFile.toPath())
+                } finally {
+                    Files.deleteIfExists(staged)
+                }
+                copied.add(targetFile)
+                occupiedNames.add(next.toString())
 
-                val (w, h) = readImageDimensions(targetFile)
-                addImageEntry(targetName, w, h)
+                val (w, h) = readImageHeaderSize(targetFile) ?: (0 to 0)
+                updated.addImage(targetName, w, h)
                 count++
             } catch (_: Exception) {
                 // 跳过失败的文件
             }
         }
-        if (count > 0) save()
+        if (count > 0 && !writeCoco(updated)) {
+            copied.forEach { file ->
+                runCatching { Files.deleteIfExists(file.toPath()) }
+                    .onFailure { LOG.warn("Failed to roll back imported image ${file.name}", it) }
+            }
+            return 0
+        }
+        if (count > 0) cocoData = updated
         return count
     }
 }

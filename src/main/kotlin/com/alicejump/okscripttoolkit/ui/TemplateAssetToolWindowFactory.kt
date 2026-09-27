@@ -373,11 +373,16 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             )
             if (confirm == JOptionPane.YES_OPTION) {
                 // 文件删除 + COCO 写盘移出 EDT
-                CompletableFuture.runAsync {
+                CompletableFuture.supplyAsync {
                     data.deleteImage(img.file)
-                    data.save()
-                }.thenRun {
-                    SwingUtilities.invokeLater { loadData() }
+                }.whenComplete { deleted, error ->
+                    SwingUtilities.invokeLater {
+                        if (error != null || deleted != true) {
+                            notify(OkScriptToolkitBundle.message("templateAsset.deleteFailed", img.name),
+                                NotificationType.ERROR)
+                        }
+                        loadData()
+                    }
                 }
             }
         }
@@ -411,6 +416,8 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
                     NotificationType.INFORMATION,
                 )
                 loadData()
+            } else {
+                notify(OkScriptToolkitBundle.message("templateAsset.importFailed"), NotificationType.ERROR)
             }
         }
     }
@@ -487,28 +494,22 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
                 return
             }
             data.load(projectDir, settings.okTemplatesDirectory())
-            val existingImage = data.getImageEntryForFile(file.name)
-            if (existingImage != null) {
-                // Image already in COCO, update dimensions if needed
-                if (existingImage.width == 0 || existingImage.height == 0) {
-                    val (w, h) = data.readImageHeaderSize(file) ?: (0 to 0)
-                    if (w > 0 && h > 0) {
-                        data.removeImageEntry(existingImage.id)
-                        data.addImageEntry(file.name, w, h)
-                    }
-                }
-            } else {
-                // New image: read dimensions from file BEFORE adding to COCO
-                val (w, h) = data.readImageHeaderSize(file) ?: (0 to 0)
-                data.addImageEntry(file.name, w, h)
+            val (w, h) = data.readImageHeaderSize(file) ?: (0 to 0)
+            if (!data.registerImageAndSave(file.name, w, h)) {
+                val message = OkScriptToolkitBundle.message("templateAsset.cocoSaveFailed")
+                statusLabel.text = message
+                notify(message, NotificationType.ERROR)
+                return
             }
-            data.save()
             val text = OkScriptToolkitBundle.message("templateAsset.screenshotSaved", file.name)
             statusLabel.text = text
             notify(text, NotificationType.INFORMATION)
             loadData()
         } catch (e: Exception) {
-            statusLabel.text = "Error: ${e.message}"
+            LOG.warn("Failed to register captured template image ${file.name}", e)
+            val message = OkScriptToolkitBundle.message("templateAsset.cocoSaveFailed")
+            statusLabel.text = message
+            notify(message, NotificationType.ERROR)
         }
     }
 
