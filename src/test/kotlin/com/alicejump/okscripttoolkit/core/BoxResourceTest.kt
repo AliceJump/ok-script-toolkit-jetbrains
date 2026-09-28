@@ -149,6 +149,20 @@ class BoxResourceTest {
             listOf(edit("1.png", "screen.a"), edit("2.png", "screen.a")),
         )
         assertEquals("duplicate", conflict.error)
+        assertTrue(BoxResource.isStorableRect(doubleArrayOf(0.0, 0.0, 1.0, 1.0)))
+        assertFalse(BoxResource.isStorableRect(doubleArrayOf(-0.1, 0.0, 0.5, 0.5)))
+        val outside = BoxResource.replaceAuthoringImages(
+            existing,
+            listOf(
+                BoxResource.ImageReplacement(
+                    "1.png",
+                    100,
+                    100,
+                    listOf(BoxResource.ReplacementBox("screen.a", -10, 0, 20, 20)),
+                ),
+            ),
+        )
+        assertEquals("rect", outside.error)
         val applied = BoxResource.replaceAuthoringImages(
             existing,
             listOf(edit("1.png", "screen.a"), edit("2.png", "screen.b")),

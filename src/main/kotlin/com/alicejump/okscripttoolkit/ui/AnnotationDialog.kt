@@ -402,7 +402,7 @@ class AnnotationDialog(
     }
 
     override fun doOKAction() {
-        val saved = try {
+        val error = try {
             stashCurrent()
             if (editingBoxes) {
                 saveBoxEdits()
@@ -416,14 +416,19 @@ class AnnotationDialog(
                         },
                     )
                 }
-                data.saveAnnotationEdits(edits)
+                if (data.saveAnnotationEdits(edits)) null else "write"
             }
         } catch (e: Exception) {
             LOG.error("Failed to save annotations for ${currentImage.name}", e)
-            false
+            "write"
         }
-        if (!saved) {
-            Messages.showErrorDialog(project, OkScriptToolkitBundle.message("annotation.saveFailed"),
+        if (error != null) {
+            val key = when (error) {
+                "duplicate" -> "annotation.generateDuplicate"
+                "rect" -> "annotation.rectInvalid"
+                else -> "annotation.saveFailed"
+            }
+            Messages.showErrorDialog(project, OkScriptToolkitBundle.message(key),
                 OkScriptToolkitBundle.message("annotation.title", currentImage.name))
             return
         }
@@ -479,6 +484,7 @@ class AnnotationDialog(
             val key = when (error) {
                 "duplicate" -> "annotation.generateDuplicate"
                 "write", "parse" -> "annotation.saveFailed"
+                "rect" -> "annotation.rectInvalid"
                 else -> "annotation.pathInvalid"
             }
             Messages.showErrorDialog(project, OkScriptToolkitBundle.message(key),
@@ -489,11 +495,11 @@ class AnnotationDialog(
             OkScriptToolkitBundle.message("annotation.generateTitle"))
     }
 
-    private fun saveBoxEdits(): Boolean {
+    private fun saveBoxEdits(): String? {
         val catalog = project.service<BoxCatalogService>()
         val edits = mutableListOf<BoxResource.ImageReplacement>()
         for (session in sessionByFile.values.filter { it.dirty }) {
-            val size = session.newSize ?: return false
+            val size = session.newSize ?: return "image"
             val boxes = session.boxes.map { box ->
                 BoxResource.ReplacementBox(
                     box.categoryName,
@@ -508,12 +514,17 @@ class AnnotationDialog(
             }
             edits += BoxResource.ImageReplacement(session.fileName, size.first, size.second, boxes)
         }
-        return catalog.commitImageEdits(edits) == null
+        return catalog.commitImageEdits(edits)
     }
 
     /** 全项目分类名唯一性索引：分类名 -> 已占用它的文件名（不含当前图，对齐 VSCode 版校验语义） */
     private fun buildTakenCategories(currentFile: String): Map<String, String> {
-        if (editingBoxes) return project.service<BoxCatalogService>().pathOwnersExcept(currentFile)
+        if (editingBoxes) {
+            val taken = project.service<BoxCatalogService>().pathOwnersExcept(currentFile).toMutableMap()
+            val current = sessionByFile[currentFile] ?: session?.takeIf { it.fileName == currentFile }
+            current?.boxes?.forEach { taken.putIfAbsent(it.categoryName, currentFile) }
+            return taken
+        }
         val categories = data.categories()
         val taken = mutableMapOf<String, String>()
         for (img in data.listImages()) {

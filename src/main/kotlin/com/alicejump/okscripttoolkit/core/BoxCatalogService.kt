@@ -89,6 +89,7 @@ class BoxCatalogService(private val project: Project) {
     }
 
     fun addBox(path: String, image: String, rect: DoubleArray): String? {
+        if (!BoxResource.isStorableRect(rect)) return "rect"
         val pathError = BoxResource.pathError(path)
         if (pathError != null) return pathError
         val file = BoxResource.imageFileName(image)

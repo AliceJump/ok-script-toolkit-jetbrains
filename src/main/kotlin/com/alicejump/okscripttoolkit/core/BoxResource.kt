@@ -137,6 +137,7 @@ object BoxResource {
                     rectForSave(box.original, PixelBox(box.x, box.y, box.w, box.h), edit.width, edit.height)
                         ?: return ReplaceResult(existing, "rect")
                 }
+                if (!isStorableRect(rect)) return ReplaceResult(existing, "rect")
                 next += AuthoringBox(box.path, image, rect)
             }
             current = kept + next
@@ -255,6 +256,13 @@ object BoxResource {
         if (requireImage && image.isEmpty()) return "image"
         if (readRect(entry.path("rect")) == null) return "rect"
         return "entry"
+    }
+
+    /** 与 [readRect] 同一组约束。写盘前拒绝，避免下次读取把整个文件判为损坏。 */
+    fun isStorableRect(rect: DoubleArray): Boolean {
+        if (rect.size != 4 || rect.any { !it.isFinite() }) return false
+        if (rect[0] < 0 || rect[1] < 0 || rect[2] > 1 || rect[3] > 1) return false
+        return rect[0] < rect[2] && rect[1] < rect[3]
     }
 
     private fun readRect(node: com.fasterxml.jackson.databind.JsonNode): DoubleArray? {
