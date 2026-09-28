@@ -101,20 +101,7 @@ class AnnotationDialog(
     private val nextButton = JButton(OkScriptToolkitBundle.message("annotation.next"))
     private val navLabel = JBLabel()
     private val colorLabel = JBLabel(" ")
-    private val hintLabel = object : JTextArea(OkScriptToolkitBundle.message("annotation.hint")) {
-        override fun getPreferredSize(): Dimension {
-            val available = (parent?.width ?: 0).takeIf { it > 0 } ?: 660
-            super.setSize(available, Int.MAX_VALUE)
-            return super.getPreferredSize().apply { width = available }
-        }
-    }.apply {
-        isEditable = false
-        isFocusable = false
-        isOpaque = false
-        lineWrap = true
-        wrapStyleWord = true
-        border = null
-    }
+    private val hintLabel = WrappingHint(OkScriptToolkitBundle.message("annotation.hint"))
 
     /** 每张图一份编辑会话（导航后保留，OK 时统一写回改动过的图） */
     private inner class ImageSession(
@@ -1337,5 +1324,41 @@ class AnnotationDialog(
             addRow("annotation.h", hField)
             return form
         }
+    }
+}
+
+/**
+ * 底部说明。期望宽度取父容器内容区，最小宽度不跟随父容器。
+ * 直接用父容器总宽度时，边距会被再加一次，对话框会按最小尺寸一次次变宽。
+ */
+internal class WrappingHint(text: String) : JTextArea(text) {
+    init {
+        isEditable = false
+        isFocusable = false
+        isOpaque = false
+        lineWrap = true
+        wrapStyleWord = true
+        border = null
+    }
+
+    override fun getPreferredSize(): Dimension {
+        val available = availableWidth()
+        if (width != available || height <= 0) {
+            super.setSize(available, Int.MAX_VALUE)
+        }
+        return super.getPreferredSize().apply { width = available }
+    }
+
+    override fun getMinimumSize(): Dimension = Dimension(0, preferredSize.height)
+
+    private fun availableWidth(): Int {
+        val host = parent ?: return FALLBACK_WIDTH
+        if (host.width <= 0) return FALLBACK_WIDTH
+        val insets = host.insets
+        return (host.width - insets.left - insets.right).coerceAtLeast(1)
+    }
+
+    private companion object {
+        const val FALLBACK_WIDTH = 660
     }
 }
