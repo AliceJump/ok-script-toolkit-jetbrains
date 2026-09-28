@@ -368,8 +368,13 @@ class TemplateAssetDataService(private val project: Project) {
             ?.sortedByDescending { it.lastModified() }
             ?.map { file ->
                 val imgEntry = cocoData.findImageByFileName(file.name)
-                val width = imgEntry?.width ?: readImageWidth(file)
-                val height = imgEntry?.height ?: readImageHeight(file)
+                val header = if (imgEntry == null || imgEntry.width <= 0 || imgEntry.height <= 0) {
+                    readImageHeaderSize(file)
+                } else {
+                    null
+                }
+                val width = header?.first ?: imgEntry?.width ?: 0
+                val height = header?.second ?: imgEntry?.height ?: 0
                 val annotations = if (imgEntry != null) {
                     cocoData.annotationsForImage(imgEntry.id)
                 } else {
@@ -756,22 +761,10 @@ class TemplateAssetDataService(private val project: Project) {
 
     fun readImageDimensions(file: File): Pair<Int, Int> {
         val imgEntry = cocoData.images.find { it.fileName == file.name }
-        if (imgEntry != null) return imgEntry.width to imgEntry.height
-        return readImageWidth(file) to readImageHeight(file)
-    }
-
-    private fun readImageWidth(file: File): Int {
-        return try {
-            val img = ImageIO.read(file) ?: return 0
-            img.width
-        } catch (_: Exception) { 0 }
-    }
-
-    private fun readImageHeight(file: File): Int {
-        return try {
-            val img = ImageIO.read(file) ?: return 0
-            img.height
-        } catch (_: Exception) { 0 }
+        if (imgEntry != null && imgEntry.width > 0 && imgEntry.height > 0) {
+            return imgEntry.width to imgEntry.height
+        }
+        return readImageHeaderSize(file) ?: ((imgEntry?.width ?: 0) to (imgEntry?.height ?: 0))
     }
 
     /**

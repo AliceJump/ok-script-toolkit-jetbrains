@@ -153,6 +153,27 @@ class TemplateAssetDataServiceCocoTest {
     }
 
     @Test
+    fun `image dimensions can be read from a header without decoding pixels`() {
+        val root = TestTmp.create("ok-coco-header-size")
+        val templates = root.resolve("ok_templates").apply { mkdirs() }
+        val image = templates.resolve("header-only.png")
+        val encoded = java.io.ByteArrayOutputStream().also { out ->
+            javax.imageio.ImageIO.write(java.awt.image.BufferedImage(7, 5, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", out)
+        }.toByteArray()
+        image.writeBytes(encoded.copyOfRange(0, 33)) // PNG signature + IHDR; no pixel data to decode.
+
+        val coco = CocoData()
+        coco.addImage(image.name, 0, 0)
+        templates.resolve("coco_annotations.json")
+            .writeText(TemplateAssetDataService.serializeCoco(coco).toPrettyString())
+
+        val service = serviceAt(root)
+        assertEquals(7 to 5, service.readImageHeaderSize(image))
+        val listed = service.listImages().single()
+        assertEquals(7 to 5, listed.width to listed.height)
+    }
+
+    @Test
     fun `annotation edits save all images as one COCO update`() {
         val root = TestTmp.create("ok-coco-annotation-save")
         val service = serviceAt(root)

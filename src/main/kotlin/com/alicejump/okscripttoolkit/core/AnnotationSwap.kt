@@ -72,6 +72,15 @@ object AnnotationSwap {
     fun scaleBoxes(boxes: List<IntArray>, from: Size?, to: Size?): List<IntArray> =
         boxes.map { scaleBox(it, from, to) }
 
+    /** 未声明的分类 ID 无法按原分类写回；拒绝交换以免生成新的字面分类。 */
+    fun namedBoxes(
+        annotations: List<CocoAnnotation>,
+        categoryNames: Map<Int, String>,
+    ): List<Pair<String, IntArray>>? {
+        if (annotations.any { it.categoryId !in categoryNames }) return null
+        return annotations.map { categoryNames.getValue(it.categoryId) to it.bbox }
+    }
+
     /** Build both complete edits by destination image, so neither side can keep its own boxes. */
     fun editsForSwap(
         sourceFileName: String,

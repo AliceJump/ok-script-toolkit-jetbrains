@@ -4,6 +4,7 @@ import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -26,6 +27,15 @@ class AnnotationSwapTest {
     private val small = AnnotationSwap.Size(800, 600)
 
     private fun box(x: Int, y: Int, w: Int, h: Int) = intArrayOf(x, y, w, h)
+
+    @Test
+    fun `unknown category IDs must not become new category names during swap`() {
+        val annotation = CocoAnnotation(1, 1, 42, box(1, 2, 3, 4), 12)
+        assertNull(AnnotationSwap.namedBoxes(listOf(annotation), emptyMap()))
+        val named = AnnotationSwap.namedBoxes(listOf(annotation), mapOf(42 to "existing"))!!
+        assertEquals("existing", named.single().first)
+        assertContentEquals(annotation.bbox, named.single().second)
+    }
 
     // ── 1. 同尺寸恒等 ───────────────────────────────────────────────
 

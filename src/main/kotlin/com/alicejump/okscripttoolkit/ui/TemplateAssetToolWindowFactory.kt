@@ -384,8 +384,12 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         }
 
         val categoryNames = data.categories().associate { it.id to it.name }
-        val sourceBoxes = boxesOf(source, categoryNames)
-        val targetBoxes = boxesOf(target, categoryNames)
+        val sourceBoxes = AnnotationSwap.namedBoxes(source.annotations, categoryNames)
+        val targetBoxes = AnnotationSwap.namedBoxes(target.annotations, categoryNames)
+        if (sourceBoxes == null || targetBoxes == null) {
+            notify(OkScriptToolkitBundle.message("templateAsset.swapFailed"), NotificationType.ERROR)
+            return
+        }
         // 两边都空 ⇒ 交换是个空操作。这里直接说清楚，而不是弹一个 "0 ⇄ 0" 的确认框。
         if (sourceBoxes.isEmpty() && targetBoxes.isEmpty()) {
             notify(OkScriptToolkitBundle.message("templateAsset.swapNothing"), NotificationType.INFORMATION)
@@ -438,29 +442,16 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         }
     }
 
-    /** 分类 id → 名。分类名就是交换时**原样带走**的那个东西（交换不产生新分类）。 */
-    private fun boxesOf(img: TemplateImage, categoryNames: Map<Int, String>): List<Pair<String, IntArray>> =
-        img.annotations.map { (categoryNames[it.categoryId] ?: "#${it.categoryId}") to it.bbox }
-
     /**
      * 图片的真实尺寸，供比例映射用。
      *
-     * `TemplateImage` 的宽高在 COCO 里可能是 0（老数据），那时退回整图解码。
-     * 走到解码分支的情形极少 —— `listImages()` 已经用同一套兜底填过宽高；
-     * 两者都拿不到就返回 null，让调用方**拒绝交换**，而不是按 1 倍瞎搬。
+     * `TemplateImage` 的宽高在 COCO 里可能是 0（老数据），那时只读图片头。
+     * 两者都拿不到就返回 null，让调用方拒绝交换。
      */
     private fun resolveSize(img: TemplateImage): AnnotationSwap.Size? {
         if (img.width > 0 && img.height > 0) return AnnotationSwap.Size(img.width, img.height)
-        return try {
-            val read = javax.imageio.ImageIO.read(img.file)
-            if (read != null && read.width > 0 && read.height > 0) {
-                AnnotationSwap.Size(read.width, read.height)
-            } else {
-                null
-            }
-        } catch (_: Exception) {
-            null
-        }
+        val (width, height) = data.readImageHeaderSize(img.file) ?: return null
+        return if (width > 0 && height > 0) AnnotationSwap.Size(width, height) else null
     }
 
     /** 缩略图解码只在后台线程做，完成后回填到仍显示中的卡片（网格重渲染会换新 label）；
