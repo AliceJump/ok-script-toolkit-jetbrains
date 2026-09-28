@@ -52,6 +52,11 @@ data class CocoCategory(
     val supercategory: String = "",
 )
 
+/** 归一化文件名 key：basename → 小写 → 去扩展名（对齐 VS Code filenameKey）。 */
+fun cocoFilenameKey(name: String): String =
+    name.substringAfterLast('/').substringAfterLast('\\')
+        .lowercase(Locale.ROOT).replace(Regex("\\.[^.]+$"), "")
+
 data class CocoData(
     val images: MutableList<CocoImage> = mutableListOf(),
     val annotations: MutableList<CocoAnnotation> = mutableListOf(),
@@ -61,9 +66,7 @@ data class CocoData(
      * 归一化文件名 key：basename → 小写 → 去扩展名（对齐 VS Code filenameKey）。
      * COCO 的 file_name 与磁盘实际大小写不一致（Windows 上很常见）时也要能对上。
      */
-    fun filenameKey(name: String): String =
-        name.substringAfterLast('/').substringAfterLast('\\')
-            .lowercase(Locale.ROOT).replace(Regex("\\.[^.]+$"), "")
+    fun filenameKey(name: String): String = cocoFilenameKey(name)
 
     fun findImageByFileName(fileName: String): CocoImage? {
         val key = filenameKey(fileName)
@@ -314,6 +317,53 @@ class TemplateAssetDataService(private val project: Project) {
         return true
     }
 
+    enum class SwapSaveResult { SAVED, CHANGED, FAILED }
+
+    /**
+     * 交换用的真实尺寸：先读图片头，读不到再用 COCO 记录（与 VS Code `resolveImageSize` 同序）。
+     * COCO 里的旧尺寸可能早已不是磁盘上那张图的尺寸。
+     */
+    @Synchronized
+    fun swapImageSize(file: File): Pair<Int, Int>? {
+        readImageHeaderSize(file)?.takeIf { it.first > 0 && it.second > 0 }?.let { return it }
+        val entry = cocoData.findImageByFileName(file.name) ?: return null
+        return if (entry.width > 0 && entry.height > 0) entry.width to entry.height else null
+    }
+
+    /**
+     * 交换写盘：在同一把锁内核对确认前的快照，再整体提交。
+     * - 两张图仍在磁盘上，且尺寸与确认时一致（图片可能被外部删除或替换）；
+     * - 磁盘 COCO 仍存在且与内存完全一致 —— 外部只改第三张图也不能被旧内存整份覆盖；
+     * - 两张图的当前标注仍是确认前的快照（IDE 内其他编辑器经本服务写入的修改）。
+     */
+    @Synchronized
+    fun saveSwapEdits(
+        expected: Map<String, List<Pair<String, IntArray>>>,
+        expectedSizes: Map<File, Pair<Int, Int>>,
+        edits: List<CocoAnnotationEdit>,
+    ): SwapSaveResult {
+        // A deleted image would otherwise fall back to its COCO size and still pass.
+        for ((file, size) in expectedSizes) {
+            if (!file.isFile || swapImageSize(file) != size) return SwapSaveResult.CHANGED
+        }
+        val file = cocoFile?.toFile() ?: return SwapSaveResult.FAILED
+        if (!file.isFile) return SwapSaveResult.CHANGED
+        val disk = try {
+            parseCoco(JSON.readTree(file))
+        } catch (e: Exception) {
+            LOG.warn("Failed to re-read COCO data before swap", e)
+            return SwapSaveResult.FAILED
+        }
+        if (serializeCoco(disk) != serializeCoco(cocoData)) return SwapSaveResult.CHANGED
+        val names = cocoData.categories.associate { it.id to it.name }
+        for ((fileName, boxes) in expected) {
+            val current = cocoData.findImageByFileName(fileName)?.let { cocoData.annotationsForImage(it.id) }.orEmpty()
+            val named = AnnotationSwap.namedBoxes(current, names) ?: return SwapSaveResult.CHANGED
+            if (!AnnotationSwap.sameBoxes(named, boxes)) return SwapSaveResult.CHANGED
+        }
+        return if (saveAnnotationEdits(edits)) SwapSaveResult.SAVED else SwapSaveResult.FAILED
+    }
+
     /** 截图登记一次性提交；补旧图片尺寸时保留原有 ID、分类和标注。 */
     @Synchronized
     fun registerImageAndSave(fileName: String, width: Int, height: Int): Boolean {
@@ -368,8 +418,13 @@ class TemplateAssetDataService(private val project: Project) {
             ?.sortedByDescending { it.lastModified() }
             ?.map { file ->
                 val imgEntry = cocoData.findImageByFileName(file.name)
-                val width = imgEntry?.width ?: readImageWidth(file)
-                val height = imgEntry?.height ?: readImageHeight(file)
+                val header = if (imgEntry == null || imgEntry.width <= 0 || imgEntry.height <= 0) {
+                    readImageHeaderSize(file)
+                } else {
+                    null
+                }
+                val width = header?.first ?: imgEntry?.width ?: 0
+                val height = header?.second ?: imgEntry?.height ?: 0
                 val annotations = if (imgEntry != null) {
                     cocoData.annotationsForImage(imgEntry.id)
                 } else {
@@ -756,22 +811,10 @@ class TemplateAssetDataService(private val project: Project) {
 
     fun readImageDimensions(file: File): Pair<Int, Int> {
         val imgEntry = cocoData.images.find { it.fileName == file.name }
-        if (imgEntry != null) return imgEntry.width to imgEntry.height
-        return readImageWidth(file) to readImageHeight(file)
-    }
-
-    private fun readImageWidth(file: File): Int {
-        return try {
-            val img = ImageIO.read(file) ?: return 0
-            img.width
-        } catch (_: Exception) { 0 }
-    }
-
-    private fun readImageHeight(file: File): Int {
-        return try {
-            val img = ImageIO.read(file) ?: return 0
-            img.height
-        } catch (_: Exception) { 0 }
+        if (imgEntry != null && imgEntry.width > 0 && imgEntry.height > 0) {
+            return imgEntry.width to imgEntry.height
+        }
+        return readImageHeaderSize(file) ?: ((imgEntry?.width ?: 0) to (imgEntry?.height ?: 0))
     }
 
     /**

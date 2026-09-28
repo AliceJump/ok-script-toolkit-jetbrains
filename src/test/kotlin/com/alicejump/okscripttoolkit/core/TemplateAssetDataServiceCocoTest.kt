@@ -153,6 +153,27 @@ class TemplateAssetDataServiceCocoTest {
     }
 
     @Test
+    fun `image dimensions can be read from a header without decoding pixels`() {
+        val root = TestTmp.create("ok-coco-header-size")
+        val templates = root.resolve("ok_templates").apply { mkdirs() }
+        val image = templates.resolve("header-only.png")
+        val encoded = java.io.ByteArrayOutputStream().also { out ->
+            javax.imageio.ImageIO.write(java.awt.image.BufferedImage(7, 5, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", out)
+        }.toByteArray()
+        image.writeBytes(encoded.copyOfRange(0, 33)) // PNG signature + IHDR; no pixel data to decode.
+
+        val coco = CocoData()
+        coco.addImage(image.name, 0, 0)
+        templates.resolve("coco_annotations.json")
+            .writeText(TemplateAssetDataService.serializeCoco(coco).toPrettyString())
+
+        val service = serviceAt(root)
+        assertEquals(7 to 5, service.readImageHeaderSize(image))
+        val listed = service.listImages().single()
+        assertEquals(7 to 5, listed.width to listed.height)
+    }
+
+    @Test
     fun `annotation edits save all images as one COCO update`() {
         val root = TestTmp.create("ok-coco-annotation-save")
         val service = serviceAt(root)
@@ -168,6 +189,148 @@ class TemplateAssetDataServiceCocoTest {
         val newImage = restored.getImageEntryForFile("new.png")!!
         assertEquals(50 to 40, newImage.width to newImage.height)
         assertEquals(listOf(5, 6, 7, 8), restored.getAnnotationsForImage(newImage.id).single().bbox.toList())
+    }
+
+    @Test
+    fun `swapping annotations writes the other images boxes to each destination`() {
+        val root = TestTmp.create("ok-coco-annotation-swap")
+        val service = serviceAt(root)
+        val source = service.addImageEntry("source.png", 200, 100)
+        val target = service.addImageEntry("target.png", 100, 50)
+        val sourceCategory = service.getOrCreateCategory("source-mark")
+        val targetCategory = service.getOrCreateCategory("target-mark")
+        service.replaceAnnotationsForImage(source.id, listOf(sourceCategory.id to intArrayOf(20, 10, 40, 20)))
+        service.replaceAnnotationsForImage(target.id, listOf(targetCategory.id to intArrayOf(30, 10, 20, 10)))
+        assertTrue(service.save())
+
+        val edits = AnnotationSwap.editsForSwap(
+            "source.png", AnnotationSwap.Size(200, 100), listOf("source-mark" to intArrayOf(20, 10, 40, 20)),
+            "target.png", AnnotationSwap.Size(100, 50), listOf("target-mark" to intArrayOf(30, 10, 20, 10)),
+        )
+        assertEquals(listOf("source.png", "target.png"), edits.map { it.fileName })
+        assertTrue(service.saveAnnotationEdits(edits))
+
+        val restored = serviceAt(root)
+        val names = restored.categories().associate { it.id to it.name }
+        val sourceAnnotation = restored.getAnnotationsForImage(source.id).single()
+        val targetAnnotation = restored.getAnnotationsForImage(target.id).single()
+        assertEquals("target-mark", names[sourceAnnotation.categoryId])
+        assertEquals(listOf(60, 20, 40, 20), sourceAnnotation.bbox.toList())
+        assertEquals("source-mark", names[targetAnnotation.categoryId])
+        assertEquals(listOf(10, 5, 20, 10), targetAnnotation.bbox.toList())
+    }
+
+    @Test
+    fun `swap save rejects snapshots changed in memory or on disk`() {
+        val root = TestTmp.create("ok-coco-annotation-swap-snapshot")
+        val service = serviceAt(root)
+        val source = service.addImageEntry("source.png", 10, 10)
+        val target = service.addImageEntry("target.png", 10, 10)
+        val category = service.getOrCreateCategory("mark")
+        service.replaceAnnotationsForImage(source.id, listOf(category.id to intArrayOf(1, 1, 2, 2)))
+        assertTrue(service.save())
+        val expected = mapOf(
+            "source.png" to listOf("mark" to intArrayOf(1, 1, 2, 2)),
+            "target.png" to emptyList<Pair<String, IntArray>>(),
+        )
+        val edits = AnnotationSwap.editsForSwap(
+            "source.png", AnnotationSwap.Size(10, 10), expected.getValue("source.png"),
+            "target.png", AnnotationSwap.Size(10, 10), emptyList(),
+        )
+        val cocoFile = root.resolve("ok_templates/coco_annotations.json")
+        val sizes = swapSizes(root)
+
+        // Another in-IDE editor saved new boxes for the target through the shared service.
+        assertTrue(service.saveAnnotationEdits(listOf(
+            CocoAnnotationEdit("target.png", null, listOf("mark" to intArrayOf(3, 3, 1, 1))),
+        )))
+        val afterInIdeEdit = cocoFile.readText()
+        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, service.saveSwapEdits(expected, sizes, edits))
+        assertEquals(afterInIdeEdit, cocoFile.readText())
+
+        // The stale service still matches its own memory; only the external write on disk differs.
+        val stale = serviceAt(root)
+        val staleExpected = mapOf(
+            "source.png" to listOf("mark" to intArrayOf(1, 1, 2, 2)),
+            "target.png" to listOf("mark" to intArrayOf(3, 3, 1, 1)),
+        )
+        assertTrue(serviceAt(root).saveAnnotationEdits(listOf(
+            CocoAnnotationEdit("source.png", null, listOf("mark" to intArrayOf(9, 9, 1, 1))),
+            CocoAnnotationEdit("target.png", null, emptyList()),
+        )))
+        val afterExternalEdit = cocoFile.readText()
+        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, stale.saveSwapEdits(staleExpected, sizes, edits))
+        assertEquals(afterExternalEdit, cocoFile.readText())
+
+        val fresh = serviceAt(root)
+        val current = mapOf(
+            "source.png" to listOf("mark" to intArrayOf(9, 9, 1, 1)),
+            "target.png" to emptyList<Pair<String, IntArray>>(),
+        )
+        val freshEdits = AnnotationSwap.editsForSwap(
+            "source.png", AnnotationSwap.Size(10, 10), current.getValue("source.png"),
+            "target.png", AnnotationSwap.Size(10, 10), emptyList(),
+        )
+        assertEquals(TemplateAssetDataService.SwapSaveResult.SAVED, fresh.saveSwapEdits(current, sizes, freshEdits))
+        val restored = serviceAt(root)
+        assertTrue(restored.getAnnotationsForImage(source.id).isEmpty())
+        assertEquals(listOf(9, 9, 1, 1), restored.getAnnotationsForImage(target.id).single().bbox.toList())
+    }
+
+    /** Placeholder images without a readable header, so the size comes from COCO. */
+    private fun swapSizes(root: java.io.File): Map<java.io.File, Pair<Int, Int>> {
+        val dir = root.resolve("ok_templates").apply { mkdirs() }
+        return listOf("source.png", "target.png").associate { name ->
+            dir.resolve(name).apply { if (!exists()) writeBytes(byteArrayOf(1)) } to (10 to 10)
+        }
+    }
+
+    @Test
+    fun `swap save rejects other COCO changes, a deleted COCO file and replaced images`() {
+        val root = TestTmp.create("ok-coco-annotation-swap-whole")
+        val service = serviceAt(root)
+        service.addImageEntry("source.png", 10, 10)
+        service.addImageEntry("target.png", 10, 10)
+        service.addImageEntry("third.png", 10, 10)
+        assertTrue(service.save())
+        val expected = mapOf(
+            "source.png" to emptyList<Pair<String, IntArray>>(),
+            "target.png" to emptyList<Pair<String, IntArray>>(),
+        )
+        val edits = AnnotationSwap.editsForSwap(
+            "source.png", AnnotationSwap.Size(10, 10), emptyList(),
+            "target.png", AnnotationSwap.Size(10, 10), emptyList(),
+        )
+        val cocoFile = root.resolve("ok_templates/coco_annotations.json")
+        val sizes = swapSizes(root)
+
+        // An external writer touched only a third image; the stale memory must not overwrite it.
+        assertTrue(serviceAt(root).saveAnnotationEdits(listOf(
+            CocoAnnotationEdit("third.png", null, listOf("mark" to intArrayOf(1, 1, 1, 1))),
+        )))
+        val afterThirdEdit = cocoFile.readText()
+        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, service.saveSwapEdits(expected, sizes, edits))
+        assertEquals(afterThirdEdit, cocoFile.readText())
+
+        val deleted = serviceAt(root)
+        assertTrue(cocoFile.delete())
+        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, deleted.saveSwapEdits(expected, sizes, edits))
+        assertFalse(cocoFile.exists(), "a deleted COCO file must not be recreated from stale memory")
+
+        assertTrue(deleted.save())
+        val replaced = serviceAt(root)
+        val target = root.resolve("ok_templates/target.png")
+        javax.imageio.ImageIO.write(java.awt.image.BufferedImage(4, 3, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", target)
+        assertEquals(4 to 3, replaced.swapImageSize(target), "the image header wins over stale COCO dimensions")
+        val beforeReplace = cocoFile.readText()
+        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, replaced.saveSwapEdits(expected, sizes, edits))
+        assertEquals(beforeReplace, cocoFile.readText())
+
+        // A deleted image must not pass by falling back to its COCO size.
+        assertTrue(target.delete())
+        assertEquals(10 to 10, replaced.swapImageSize(target))
+        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, replaced.saveSwapEdits(expected, sizes, edits))
+        assertEquals(beforeReplace, cocoFile.readText())
     }
 
     @Test
