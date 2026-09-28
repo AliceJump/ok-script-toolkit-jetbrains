@@ -150,4 +150,29 @@ class GlobalSnapshotRulesTest {
         assertTrue(snapshot.isEmpty())
         assertEquals(0, added)
     }
+
+    @Test
+    fun `inline save preserves untouched null and later snapshot changes`() {
+        val current = mapOf<String, Any?>(
+            "nullable" to null,
+            "edited" to "old",
+            "other_group_orphan" to "newer",
+        )
+        val initial = mapOf<String, Any?>("nullable" to "", "edited" to "old")
+        val result = GlobalSnapshotRules.mergeEdited(current, initial, mapOf("edited" to "new"))
+        assertEquals(null, result["nullable"])
+        assertEquals("new", result["edited"])
+        assertEquals("newer", result["other_group_orphan"])
+    }
+
+    @Test
+    fun `returning an edited field to its initial value is a no-op`() {
+        val current = mapOf<String, Any?>("field" to null, "orphan" to 1)
+        val result = GlobalSnapshotRules.mergeEdited(
+            current,
+            initialValues = mapOf("field" to ""),
+            editedValues = mapOf("field" to ""),
+        )
+        assertEquals(current, result)
+    }
 }

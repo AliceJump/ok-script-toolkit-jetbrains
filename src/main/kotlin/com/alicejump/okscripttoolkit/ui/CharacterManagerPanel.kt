@@ -207,6 +207,13 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         val detailScroll = JBScrollPane(detailInner)
         detailScroll.border = JBUI.Borders.empty(8)
 
+        // ⚠️ 必须显式给最小尺寸，否则分隔条**拖不动**：`Splitter` 默认
+        // honorComponentsMinimumSize = true，可拖范围由子组件的最小尺寸算出，
+        // 而 `JList` 的最小尺寸 = 首选尺寸（按最宽单元格算）⇒ 左侧最小比例几乎等于
+        // 当前比例。EffectPicker 早先也是同一个坑（那里已显式写了 minimumSize）。
+        left.minimumSize = Dimension(180, 120)
+        detailScroll.minimumSize = Dimension(220, 120)
+
         val splitter = Splitter(false, 0.32f)
         splitter.firstComponent = left
         splitter.secondComponent = detailScroll

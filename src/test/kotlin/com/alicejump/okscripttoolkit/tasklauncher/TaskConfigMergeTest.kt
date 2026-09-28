@@ -129,6 +129,33 @@ class TaskConfigMergeTest {
         )
     }
 
+    @Test
+    fun `editing one field does not change untouched numeric values or concurrent fields`() {
+        val latest = storeWith(mapOf("/proj" to projectOf(taskEntries = mapOf(
+            "m::A" to config("counter" to 5_000_000_000L, "other" to "external").copy(
+                extraArgs = "--latest", env = mapOf("MODE" to "latest"),
+            ),
+        ))))
+        val staleForm = config("enabled" to true).copy(extraArgs = "--old", env = mapOf("MODE" to "old"))
+        val saved = TaskConfigMerge.withUserTaskSnapshot(latest, "/proj", "m::A", staleForm)
+
+        assertEquals(
+            mapOf("counter" to 5_000_000_000L, "other" to "external", "enabled" to true),
+            saved.projects["/proj"]?.tasks?.get("m::A")?.params,
+        )
+        assertEquals("--latest", saved.projects["/proj"]?.tasks?.get("m::A")?.extraArgs)
+        assertEquals(mapOf("MODE" to "latest"), saved.projects["/proj"]?.tasks?.get("m::A")?.env)
+    }
+
+    @Test
+    fun `pending edits survive a second field change and newer value wins`() {
+        val combined = TaskConfigMerge.combineEdits(
+            config("first" to "draft", "shared" to 1),
+            config("second" to true, "shared" to 2),
+        )
+        assertEquals(mapOf("first" to "draft", "second" to true, "shared" to 2), combined.params)
+    }
+
     private fun storeWith(
         projectEntries: Map<String, TaskConfigStore.ProjectConfig> = emptyMap(),
     ): TaskConfigStore = TaskConfigStore(projects = projectEntries)
@@ -416,5 +443,65 @@ class TaskConfigMergeTest {
             "对照实现（copy 整对象）在这个顺序下『碰巧』保住了勾选，说明缺陷只在并发交错时暴露 —— " +
                 "所以正确的修法不是改 copy 的写法，而是给读-改-写序列上锁 + 把合并规则收敛到本对象",
         )
+    }
+
+    // ── withUiState（任务卡分组折叠，对齐 VS Code uiState）────────────
+
+    /** 折叠键写入：只换自己的键，任务参数 / 勾选 / 全局快照都不得被带走 */
+    @Test
+    fun `writing a ui collapse key keeps tasks, triggers and global configs`() {
+        val original = storeWith(
+            mapOf(
+                "/proj" to TaskConfigStore.ProjectConfig(
+                    tasks = mapOf("m::A" to config("x" to 1)),
+                    enabledTriggers = listOf("m::T1"),
+                    globalConfigs = mapOf("战斗配置" to mapOf("dps" to 9)),
+                ),
+            ),
+        )
+
+        val updated = TaskConfigMerge.withUiState(original, "/proj", "taskGroupCollapsed::trigger", true)
+
+        assertEquals(true, updated.projects["/proj"]?.uiState?.get("taskGroupCollapsed::trigger"))
+        assertEquals(
+            mapOf("x" to 1),
+            updated.projects["/proj"]?.tasks?.get("m::A")?.params,
+            "写折叠键不得动任务参数",
+        )
+        assertEquals(listOf("m::T1"), updated.projects["/proj"]?.enabledTriggers, "写折叠键不得动勾选集合")
+        assertEquals(
+            mapOf("dps" to 9),
+            updated.projects["/proj"]?.globalConfigs?.get("战斗配置"),
+            "写折叠键不得动全局快照",
+        )
+    }
+
+    /** 同一折叠键重复写（切换多次）以最后一次为准；别的折叠键原样保留 */
+    @Test
+    fun `rewriting a collapse key overwrites it and keeps sibling keys`() {
+        val original = storeWith(
+            mapOf(
+                "/proj" to TaskConfigStore.ProjectConfig(
+                    uiState = mapOf(
+                        "taskGroupCollapsed::trigger" to true,
+                        "taskGroupCollapsed::onetime::战斗" to true,
+                    ),
+                ),
+            ),
+        )
+
+        val updated = TaskConfigMerge.withUiState(original, "/proj", "taskGroupCollapsed::trigger", false)
+
+        assertEquals(false, updated.projects["/proj"]?.uiState?.get("taskGroupCollapsed::trigger"))
+        assertEquals(true, updated.projects["/proj"]?.uiState?.get("taskGroupCollapsed::onetime::战斗"))
+    }
+
+    /** 首次写折叠键：项目根尚不存在时应新建 */
+    @Test
+    fun `writing a collapse key into an unseen project root creates it`() {
+        val updated = TaskConfigMerge.withUiState(storeWith(), "/fresh", "taskGroupCollapsed::onetime", true)
+
+        assertEquals(mapOf("taskGroupCollapsed::onetime" to true), updated.projects["/fresh"]?.uiState)
+        assertEquals(emptyMap<String, TaskConfig>(), updated.projects["/fresh"]?.tasks)
     }
 }

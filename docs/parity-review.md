@@ -29,6 +29,8 @@ Next review should override this table and update the status.
 > （控制台重构、配置接管 Phase 1-6、健康度条 / 运行中心 / 悬停弹层及它们的 Kotlin 移植）
 > 记录在 [`design-parity.md`](design-parity.md)，未并入本表 —— 请把两份文档与代码放在一起读。
 
+> **2026-09-27 · v1.15 分支补充**：任务启动器现已分为「任务 / 配置 / 运行器 / 工具」四页；任务卡点击后在详情栏查看描述与参数，卡片上不再有重复的「参数」按钮。任务字段、账号覆盖和全局配置编辑器共用字段控件。主仓 `python/` 是两端共同的扫描、账号和执行核心；子仓构建时打包同一份脚本与 JSON Schema。`OK_TOOLKIT_RUN_DIR` 现由两个宿主显式传给探针、账号网关与执行器。本表其余旧条目仍以 v1.8.0 为历史基线。
+
 ---
 
 ## 结论概览
@@ -99,6 +101,18 @@ Next review should override this table and update the status.
 - 参数控件：bool/数字/下拉/多选/级联下拉/条件序列 JSON/configGroups 分组、
   **列表字段 ModifyListDialog 弹窗**、**option_labels/category_labels 本地化标签**、
   **字段描述渲染**、**sub_configs 子配置树**
+- **任务卡列表（2026-09-27）**：任务列表由「操作/任务/状态」三列平铺 JTable
+  （probe 顺序直出、无分组、无搜索）改版为与父仓任务页同构的卡片列表
+  `tasklauncher/TaskCardListPanel` —— 触发任务在前、一次性任务按 `schema.groupName`
+  二级分组（可折叠、带计数、未分组兜底，折叠状态落 tasks.json `uiState`，键与
+  父仓 webview 的 `taskGroupCollapsed::*` 一致）；卡片只显示任务名与介绍，
+  类型和运行状态由双层边框颜色表示，类名与模块名放在 tooltip，另有无文字的
+  类型动作（启用勾选或 ▶启动）；点击卡片在详情栏
+  打开完整描述、参数、同步与恢复默认；带搜索框（搜索激活时忽略折叠）与执行队列条；执行器状态
+  推送走逐卡原地刷新。编排规则收敛到纯对象 `TaskListGrouping.kt`
+  （`TaskListGroupingTest.kt` 钉住），⇄/⟲ 语义对齐父仓 `syncDefaultToSnapshot`
+  / `resetSnapshotToDefault`（并集扩张 / 出厂值、孤儿键保留）。差异仅剩载体：
+  父仓参数走抽屉，子仓保留右栏分割视图
 - 角色面板（只读+技能 CRUD+强化组）、状态栏/表头去硬编码英文
   - ⚠️ 2026-09-20 复核并修复：**同步技能的保护粒度两端不一致**（P3-6）。
     父仓允许对同步技能改数值/效果，只锁 `skill_id`/`name`/`skill_type`/`element`/`description`；
@@ -143,7 +157,7 @@ Next review should override this table and update the status.
 |---|---|---|---|
 | 1 | 标注编辑器**改动即存**：当前为 OK/Cancel 语义（`doOKAction` 时统一写回，Cancel 全弃），父仓为改动即落盘 | 低 | 设计取舍，非缺陷 |
 | 2 | 编辑器大画廊双入口（编辑器内嵌大画廊视图） | 低 | 待办 |
-| 3 | 任务卡片式 UI（VSCode 任务列表为卡片布局） | 低 | 待办 |
+| 3 | ~~任务卡片式 UI（VSCode 任务列表为卡片布局）~~ | 低 | **已完成（2026-09-27）**，见「已对齐 · 任务卡列表」 |
 | 4 | lastPythonEditor 跟踪（插入表达式定位最近编辑器） | 低 | 待办 |
 | 5 | 注释面板命令（VSCode 有独立 `openAnnotationEditor` 命令；子仓无对应 Action，只能从素材管理器进入） | 低 | 待办 |
 

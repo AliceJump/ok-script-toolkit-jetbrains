@@ -1,6 +1,7 @@
 package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
+import com.alicejump.okscripttoolkit.core.AnnotatedImageCache
 import com.alicejump.okscripttoolkit.core.FeatureTemplate
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
@@ -47,7 +48,6 @@ import java.awt.event.ComponentEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.image.BufferedImage
-import java.nio.file.Files
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -74,7 +74,7 @@ class TemplatesToolWindowFactory : ToolWindowFactory, DumbAware {
     }
 }
 
-private class TemplateGalleryPanel(private val project: Project) : com.intellij.openapi.Disposable {
+internal class TemplateGalleryPanel(private val project: Project) : com.intellij.openapi.Disposable {
     companion object {
         private val LOG = Logger.getInstance(TemplateGalleryPanel::class.java)
         private const val THUMB_HEIGHT = ThumbGridPolicy.THUMB_HEIGHT
@@ -85,6 +85,7 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
     private val data = project.service<OkProjectDataService>()
     /** 缩略图磁盘缓存：命中时连原图都不用解码（见 `requestThumbs` 的懒解码） */
     private val thumbCache = TemplateThumbCache.getInstance(project)
+    private val annotatedCache = AnnotatedImageCache(thumbCache.directory.toPath().resolve("annotated"))
     private var templates = emptyList<FeatureTemplate>()
     private val gridPanel = JBPanel<JBPanel<*>>(GridLayout(0, 5, ThumbGridPolicy.HGAP_VALUE, ThumbGridPolicy.HGAP_VALUE))
     private val gridWrap = JPanel(BorderLayout()).apply { isOpaque = false }
@@ -98,6 +99,7 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
         Thread(r, "ok-script-template-thumb").apply { isDaemon = true }
     }
     private val renderGeneration = java.util.concurrent.atomic.AtomicInteger(0)
+    private val reloadGeneration = java.util.concurrent.atomic.AtomicInteger(0)
     private var gridCols = 5
     @Volatile
     private var disposed = false
@@ -166,17 +168,21 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
     }
 
     private fun reload(force: Boolean) {
+        val generation = reloadGeneration.incrementAndGet()
         // 数据刷新含全量目录扫描与文件 IO，移出 EDT
         CompletableFuture.runAsync {
             data.refresh(force)
             val features = data.features()
             SwingUtilities.invokeLater {
+                if (disposed || generation != reloadGeneration.get()) return@invokeLater
                 thumbs.clear()
                 templates = features
                 renderGrid()
             }
         }
     }
+
+    fun refresh() = reload(true)
 
     private fun applyFilter() = renderGrid()
 
@@ -417,13 +423,11 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
             val (imagePath, bbox) = data.findOkTemplateCocoEntry(template.name)
                 ?: (template.imagePath to template.bbox)
             renderAnnotatedImage(template.name, imagePath, bbox.toList())
-        }.thenAccept { path ->
-            if (path == null) {
-                openRawSource(template)
-                return@thenAccept
-            }
+        }.whenComplete { path, error ->
+            if (error != null) LOG.warn("Failed to open annotated image for ${template.name}", error)
             SwingUtilities.invokeLater {
-                val file = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(path)
+                if (project.isDisposed) return@invokeLater
+                val file = path?.let { LocalFileSystem.getInstance().refreshAndFindFileByNioFile(it) }
                 if (file != null) {
                     OpenFileDescriptor(project, file).navigate(true)
                 } else {
@@ -444,6 +448,10 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
         bbox: List<Int>,
     ): java.nio.file.Path? {
         return try {
+            if (bbox.size != 4) return null
+            val bboxArray = bbox.toIntArray()
+            val contentHash = thumbCache.contentHash(imagePath) ?: return null
+            annotatedCache.cachedPath(contentHash, bboxArray)?.let { return it }
             val file = imagePath.toFile()
             if (!file.exists()) return null
             val original = ImageIO.read(file) ?: return null
@@ -488,10 +496,7 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
             )
             g.dispose()
 
-            val outDir = Files.createTempDirectory("ok-script-toolkit")
-            val out = outDir.resolve("annotated_${templateName}.png")
-            ImageIO.write(scaled, "png", out.toFile())
-            out
+            annotatedCache.store(contentHash, bboxArray, scaled)
         } catch (e: Exception) {
             LOG.warn("Failed to render annotated image for $templateName", e)
             null
@@ -512,6 +517,11 @@ private class TemplateGalleryPanel(private val project: Project) : com.intellij.
 }
 
 class ShowTemplatesAction : AnAction(), DumbAware {
+    init {
+        templatePresentation.text = OkScriptToolkitBundle.message("action.showTemplates.text")
+        templatePresentation.description = OkScriptToolkitBundle.message("action.showTemplates.description")
+    }
+
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         com.intellij.openapi.wm.ToolWindowManager.getInstance(project)

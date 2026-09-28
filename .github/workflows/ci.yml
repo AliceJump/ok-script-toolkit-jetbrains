@@ -17,7 +17,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: AliceJump/ok-script-toolkit
-          ref: v1.14.0
+          # Pin the exact shared core used by this plugin revision.
+          ref: 301885f426b57d5ce585b4da97f33680e39bac54
           path: parent-source
       - uses: actions/setup-java@v5
         with:

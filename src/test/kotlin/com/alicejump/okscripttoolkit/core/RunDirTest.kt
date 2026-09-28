@@ -21,18 +21,18 @@ import kotlin.test.assertTrue
  *     所以"把 Kotlin 的值抄成 Python 的默认值"同样是 bug，不是简化。
  *
  * 断言对象取自 **classpath 上的打包脚本**（`build.gradle.kts` 的 `copyPythonScripts`
- * 从父仓 `../python` 同步进来），因此校验的是**真正会随插件发布的那份**。
+ * 从配置的 `pythonScriptsDir` 同步进来），因此校验的是**真正会随插件发布的那份**。
  *
- * ⚠️ `jetbrains/` 是独立公开仓库，其 CI 只检出自己，`../python` 不可见。只有这种没有
- * 脚本源的情况才用 `assumeTrue` **跳过**（而不是 `return`，也不是让断言恒真）。父仓 CI
- * 带 submodules 检出后，classpath 上缺脚本会直接失败，确保 `copyPythonScripts` 的打包回归
- * 不会掩盖跨语言断言。判据与生产代码同源（`PythonScriptLocator.BUNDLED_SCRIPTS.first()`），
+ * ⚠️ `jetbrains/` 也能独立构建；仅当 Gradle 没拿到共享 Python 源目录时才用
+ * `assumeTrue` 跳过。子仓 CI 将父仓检出到 `parent-source/python`，通过 Gradle 属性
+ * `ok.bundled.python.source` 识别这一目录，因而会执行跨语言断言。源码存在但
+ * classpath 缺脚本时直接失败，确保 `copyPythonScripts` 的打包回归不会掩盖契约断言。
  * 见 [PythonScriptLocatorTest]。
  */
 class RunDirTest {
 
-    private val parentPythonSourcePresent: Boolean
-        get() = File(System.getProperty("user.dir"), "../python").toPath().normalize().toFile().isDirectory
+    private val sharedPythonSourcePresent: Boolean
+        get() = System.getProperty("ok.bundled.python.source")?.let(::File)?.isDirectory == true
 
     private val bundledScriptsPresent: Boolean
         get() = PythonScriptLocator::class.java.classLoader
@@ -40,8 +40,8 @@ class RunDirTest {
 
     private fun requireBundledScripts() {
         assumeTrue(
-            parentPythonSourcePresent,
-            "父仓的 python/ 源目录不存在 —— 只检出了 jetbrains 子仓库，跳过跨语言断言。",
+            sharedPythonSourcePresent,
+            "Gradle 未提供共享 python/ 源目录，跳过跨语言断言。",
         )
         assertTrue(
             bundledScriptsPresent,
@@ -56,89 +56,30 @@ class RunDirTest {
             ?.bufferedReader(Charsets.UTF_8)
             ?.use { it.readText() }
 
-    /**
-     * 真正**读环境变量**的 Python 脚本。
-     *
-     * ⚠️ `account_store.py` **不在这里** —— 它走的是 `--run-dir` 命令行参数（见
-     * [account store takes the run dir as a CLI flag]）。把它错列进来会让本测试恒红，
-     * 而"恒红的断言"和"恒真的断言"一样没有价值。两者的共同约定只有一条：
-     * **沙箱根目录由宿主给出**，不给时各自退回自己的默认值。
-     */
-    private val envReadingScripts = listOf(
-        "probe_task_schemas.py",
-        "run_executor.py",
-    )
-
     // ── 1. 环境变量名：Kotlin 写的必须等于 Python 读的 ────────────────────
 
     @Test
-    fun `every env reading script uses exactly the name Kotlin writes`() {
+    fun `shared Python runtime uses the environment name Kotlin writes`() {
         requireBundledScripts()
-
-        val sources = envReadingScripts.map { name ->
-            val text = bundledScript(name)
-            assertNotNull(text, "$name 必须能从 classpath 读到（否则这条断言没有对象）")
-            assertTrue(text.isNotBlank(), "$name 读出来是空的 —— 断言会退化成恒真")
-            name to text
-        }
-        // 空集包含于任何集合：先保证真的扫到了东西，再看内容。
-        assertTrue(
-            sources.size == envReadingScripts.size,
-            "必须扫到 ${envReadingScripts.size} 个脚本，实际 ${sources.size}",
-        )
-
-        val missing = sources.filter { (_, text) -> RunDir.ENV !in text }.map { it.first }
-        assertTrue(
-            missing.isEmpty(),
-            "这些脚本里没有出现 ${RunDir.ENV}：$missing —— " +
-                "说明 Kotlin 侧的变量名和 Python 侧读的对不上，Python 会静默退回自己的默认沙箱目录。",
-        )
+        val core = assertNotNull(bundledScript("project_runtime.py"))
+        val declared = Regex("""RUN_DIR_ENV\s*=\s*["']([^"']+)["']""").find(core)?.groupValues?.get(1)
+        assertEquals(RunDir.ENV, declared, "两端必须读取同一个环境变量")
+        assertTrue("os.environ.get(RUN_DIR_ENV" in core)
     }
 
-    /**
-     * 破坏性对照：证明上面那条"名字必须出现"的断言**真的能捕获改名**，
-     * 而不是恒真（"扫描类断言恒真"是本仓库踩过的坑）。
-     *
-     * 手法：用**与生产断言完全相同的表达式**，只把被扫的名字换成 `envName` 参数。
-     * 真名字 → 缺失集为空；假名字 → 缺失集必须非空。
-     */
     @Test
-    fun `regression guard - a renamed env var really is detected`() {
+    fun `probe executor and account gateway use the shared sandbox contract`() {
         requireBundledScripts()
-
-        fun missingFor(envName: String): List<String> =
-            envReadingScripts.filter { name ->
-                val text = bundledScript(name) ?: return@filter true
-                envName !in text
-            }
-
-        val bogus = "OK_TOOLKIT_RUN_DIR_RENAMED_FOR_TEST"
-        val missingReal = missingFor(RunDir.ENV)
-        val missingBogus = missingFor(bogus)
-
-        assertTrue(
-            missingBogus.isNotEmpty(),
-            "换成假名字后缺失集必须非空 —— 若这里为空，说明上面的扫描表达式恒真、捕获不到任何改名",
-        )
-        assertTrue(
-            missingBogus.size == envReadingScripts.size,
-            "假名字应在**全部** ${envReadingScripts.size} 个脚本里都缺失，实际缺 ${missingBogus.size} 个：$missingBogus",
-        )
-        assertTrue(
-            missingReal.isEmpty(),
-            "真名字 ${RunDir.ENV} 应当一个都不缺，实际缺：$missingReal",
-        )
+        val probe = assertNotNull(bundledScript("probe_task_schemas.py"))
+        val executor = assertNotNull(bundledScript("run_executor.py"))
+        val account = assertNotNull(bundledScript("account_store.py"))
+        assertTrue("from project_runtime import" in probe && "resolve_run_dir(project_dir)" in probe)
+        assertTrue("from project_runtime import RUN_DIR_ENV" in executor && "os.environ.get(RUN_DIR_ENV" in executor)
+        assertTrue("from project_runtime import RUN_DIR_ENV" in account && "os.environ.get(RUN_DIR_ENV" in account)
     }
 
-    /**
-     * `account_store.py` 的约定**不同**：它收 `--run-dir` 命令行参数，不读环境变量。
-     *
-     * 钉住它是为了让"两套约定"这件事显式化 —— 日后给账号编辑接宿主时，要传的是
-     * `--run-dir`，而不是设环境变量；设错了不会报错，只是**悄悄读写项目 `configs/`**
-     * （脚本里写了"不传 --run-dir 则读写项目 configs，仅诊断用途"）。
-     */
     @Test
-    fun `account store takes the run dir as a CLI flag`() {
+    fun `account store keeps the old CLI flag for compatibility`() {
         requireBundledScripts()
         val text = bundledScript("account_store.py")
         assertNotNull(text, "account_store.py 必须能从 classpath 读到")
@@ -146,12 +87,7 @@ class RunDirTest {
 
         assertTrue(
             "--run-dir" in text,
-            "account_store.py 必须接受 --run-dir（宿主经命令行传沙箱根目录）",
-        )
-        assertFalse(
-            RunDir.ENV in text,
-            "account_store.py 不该读 ${RunDir.ENV} —— 它走 --run-dir。" +
-                "若这里红了，说明约定变了，需要同步改宿主侧传参方式。",
+            "已有的脚本调用方仍可传 --run-dir",
         )
     }
 
@@ -180,13 +116,13 @@ class RunDirTest {
     @Test
     fun `probe legacy default is the other host's dir so a missing env var stays visible`() {
         requireBundledScripts()
-        val text = bundledScript("probe_task_schemas.py")
+        val text = bundledScript("project_runtime.py")
         assertNotNull(text)
 
         val match = Regex("""LEGACY_RUN_DIR_PARTS\s*=\s*\(([^)]*)\)""").find(text)
         assertNotNull(
             match,
-            "probe_task_schemas.py 里找不到 LEGACY_RUN_DIR_PARTS —— 探针的兜底机制被改动了，" +
+            "project_runtime.py 里找不到 LEGACY_RUN_DIR_PARTS —— 探针的兜底机制被改动了，" +
                 "需要重新确认「不传环境变量时会退回哪个目录」",
         )
         val parts = match.groupValues[1]
@@ -242,6 +178,17 @@ class RunDirTest {
             "RunDir.ENV" in service && "RunDir.forProject" in service,
             "TaskLauncherService 必须把 RunDir 传给探针（env = mapOf(RunDir.ENV to RunDir.forProject(...))）。" +
                 "否则探针拿不到沙箱路径，multiAccount.storePath 会退回 .vscode。",
+        )
+    }
+
+    @Test
+    fun `account gateway invocation passes the same run dir env var`() {
+        val service = TestRepoLayout
+            .mainSource("com/alicejump/okscripttoolkit/core/AccountStoreService.kt")
+            .readText()
+        assertTrue(
+            "builder.environment()[RunDir.ENV] = RunDir.forProject(projectDir)" in service,
+            "账号网关必须和探针、执行器使用同一个宿主沙箱",
         )
     }
 

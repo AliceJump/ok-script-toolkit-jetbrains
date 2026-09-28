@@ -92,6 +92,11 @@ fun openCharacterManager(project: Project) {
 }
 
 class ShowCharacterManagerAction : AnAction() {
+    init {
+        templatePresentation.text = OkScriptToolkitBundle.message("action.showCharacters.text")
+        templatePresentation.description = OkScriptToolkitBundle.message("action.showCharacters.description")
+    }
+
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         openCharacterManager(project)

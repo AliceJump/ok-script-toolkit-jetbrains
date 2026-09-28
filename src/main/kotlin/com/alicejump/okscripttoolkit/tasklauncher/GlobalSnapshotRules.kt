@@ -57,4 +57,21 @@ internal object GlobalSnapshotRules {
         }
         return snapshot.toMap()
     }
+
+    /**
+     * Inline form autosave only writes keys whose displayed value actually changed.
+     * [current] is read immediately before saving, so another group or a newer snapshot
+     * cannot be overwritten by controls created from an older probe result.
+     */
+    fun mergeEdited(
+        current: Map<String, Any?>,
+        initialValues: Map<String, Any?>,
+        editedValues: Map<String, Any?>,
+    ): Map<String, Any?> {
+        val snapshot = current.toMutableMap()
+        for ((key, value) in editedValues) {
+            if (value != initialValues[key]) snapshot[key] = value
+        }
+        return snapshot.toMap()
+    }
 }

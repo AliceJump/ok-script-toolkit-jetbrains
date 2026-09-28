@@ -1,6 +1,12 @@
 package com.alicejump.okscripttoolkit.tasklauncher
 
 import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.components.JBLabel
+import java.awt.Component
+import java.awt.Container
+import java.awt.GridBagLayout
+import java.awt.Insets
+import javax.swing.JButton
 import javax.swing.JCheckBox
 import javax.swing.JComboBox
 import javax.swing.JList
@@ -11,9 +17,57 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertFailsWith
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class GlobalConfigEditorTest {
+    @Test
+    fun `option subconfigs form groups unique fields and keeps shared field once`() {
+        val selector = TaskLauncherService.TaskParamField(
+            key = "mode",
+            type = mapOf(
+                "type" to "drop_down",
+                "options" to listOf("delivery", "collection"),
+                "sub_configs" to linkedMapOf(
+                    "delivery" to listOf("shared", "destination"),
+                    "collection" to listOf("shared", "source"),
+                ),
+                "sub_config_labels" to mapOf("delivery" to "Delivery settings", "collection" to "Collection settings"),
+            ),
+        )
+        val fields = listOf(
+            selector,
+            TaskLauncherService.TaskParamField(key = "shared"),
+            TaskLauncherService.TaskParamField(key = "destination"),
+            TaskLauncherService.TaskParamField(key = "source"),
+        )
+        val controls = fields.map { GlobalConfigEditor.makeControl(it, if (it.key == "mode") "delivery" else "value") }
+        val form = JPanel(GridBagLayout())
+        val toggles = mutableMapOf<String, Boolean>()
+        val rows = GlobalConfigEditor.addFieldRows(
+            form, controls, 0, Insets(0, 0, 0, 0),
+            onOpenChanged = { key, open -> toggles[key] = open },
+        )
+
+        fun descendants(component: Component): Sequence<Component> = sequence {
+            yield(component)
+            if (component is Container) component.components.forEach { yieldAll(descendants(it)) }
+        }
+        val labels = descendants(form).filterIsInstance<JBLabel>().map { it.text }.toList()
+        val buttons = descendants(form).filterIsInstance<JButton>().filter { it.text.isNotBlank() }.toList()
+        assertEquals(4, rows) // selector, shared field, and two option groups
+        assertEquals(1, labels.count { it == "shared" })
+        assertEquals(1, labels.count { it == "destination" })
+        assertEquals(1, labels.count { it == "source" })
+        assertEquals(listOf("Delivery settings", "Collection settings"), buttons.map { it.text })
+        val body = (buttons.first().parent as JPanel).components.filterIsInstance<JPanel>().single()
+        assertFalse(body.isVisible)
+        buttons.first().doClick()
+        assertTrue(body.isVisible)
+        assertEquals(true, toggles["mode::delivery"])
+    }
+
     @Test
     fun `account override controls keep schema values and localized dropdown labels`() {
         val field = TaskLauncherService.TaskParamField(
@@ -68,6 +122,27 @@ class GlobalConfigEditorTest {
         val spinner = assertIs<JSpinner>(control.component)
         (spinner.editor as JSpinner.DefaultEditor).textField.text = "7"
         assertEquals(7, control.read())
+    }
+
+    @Test
+    fun `incomplete numeric and JSON text can be restored after a form rebuild`() {
+        var changes = 0
+        val number = GlobalConfigEditor.makeControl(
+            TaskLauncherService.TaskParamField(key = "count"), 3, onChanged = { changes++ },
+        )
+        val numericText = assertNotNull(GlobalConfigEditor.editableText(number))
+        numericText.text = "not a number"
+        assertTrue(changes > 0)
+        assertFailsWith<IllegalArgumentException> { number.read() }
+
+        val field = TaskLauncherService.TaskParamField(key = "payload")
+        val json = GlobalConfigEditor.makeControl(field, mapOf("enabled" to true))
+        val draft = assertNotNull(GlobalConfigEditor.editableText(json))
+        draft.text = "{"
+        assertFailsWith<IllegalArgumentException> { json.read() }
+        val rebuilt = GlobalConfigEditor.makeControl(field, mapOf("enabled" to true))
+        assertNotNull(GlobalConfigEditor.editableText(rebuilt)).text = draft.text
+        assertEquals("{", GlobalConfigEditor.editableText(rebuilt)?.text)
     }
 
     @Test

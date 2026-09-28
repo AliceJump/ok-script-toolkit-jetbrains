@@ -45,6 +45,7 @@ import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
+import javax.swing.JTextArea
 import javax.swing.JToggleButton
 import javax.swing.KeyStroke
 import javax.swing.SwingUtilities
@@ -100,7 +101,20 @@ class AnnotationDialog(
     private val nextButton = JButton(OkScriptToolkitBundle.message("annotation.next"))
     private val navLabel = JBLabel()
     private val colorLabel = JBLabel(" ")
-    private val hintLabel = JBLabel(OkScriptToolkitBundle.message("annotation.hint"))
+    private val hintLabel = object : JTextArea(OkScriptToolkitBundle.message("annotation.hint")) {
+        override fun getPreferredSize(): Dimension {
+            val available = (parent?.width ?: 0).takeIf { it > 0 } ?: 660
+            super.setSize(available, Int.MAX_VALUE)
+            return super.getPreferredSize().apply { width = available }
+        }
+    }.apply {
+        isEditable = false
+        isFocusable = false
+        isOpaque = false
+        lineWrap = true
+        wrapStyleWord = true
+        border = null
+    }
 
     /** 每张图一份编辑会话（导航后保留，OK 时统一写回改动过的图） */
     private inner class ImageSession(
@@ -172,13 +186,10 @@ class AnnotationDialog(
         colorLabel.font = colorLabel.font.deriveFont(Font.PLAIN, 11f)
         hintLabel.font = hintLabel.font.deriveFont(Font.PLAIN, 10f)
         hintLabel.foreground = UIUtil.getContextHelpForeground()
-        // 长文案用 HTML 固定宽度换行，避免把对话框撑宽
-        hintLabel.text = "<html><body style='width:660px'>" +
-            OkScriptToolkitBundle.message("annotation.hint") + "</body></html>"
-        val footer = JPanel(GridLayout(0, 1))
+        val footer = JPanel(BorderLayout(0, 2))
         footer.border = BorderFactory.createEmptyBorder(4, 4, 0, 4)
-        footer.add(colorLabel)
-        footer.add(hintLabel)
+        footer.add(colorLabel, BorderLayout.NORTH)
+        footer.add(hintLabel, BorderLayout.CENTER)
         root.add(footer, BorderLayout.SOUTH)
         return root
     }
@@ -192,46 +203,45 @@ class AnnotationDialog(
         loading = true
         updateNav()
         colorLabel.text = " "
-        Thread {
-            // 简单 map 查找，放在 try 外供 catch 分支复用
-            val cocoImage = data.getImageEntryForFile(target.file.name)
-            try {
+        Thread({
+            var cocoImageId = -1
+            val loaded = runCatching {
+                val cocoImage = data.getImageEntryForFile(target.file.name)
+                cocoImageId = cocoImage?.id ?: -1
                 val buffered = ImageIO.read(target.file)
-                SwingUtilities.invokeLater {
-                    loading = false
-                    if (isDisposed) return@invokeLater
-                    val fresh = ImageSession(
-                        fileName = target.file.name,
-                        boxes = mutableListOf<BoxItem>().also { list ->
-                            val annotations: List<CocoAnnotation> =
-                                cocoImage?.let { data.getAnnotationsForImage(it.id) } ?: emptyList()
-                            val categories: List<CocoCategory> = data.categories()
-                            annotations.forEach { ann ->
-                                val name = categories.firstOrNull { it.id == ann.categoryId }?.name
-                                    ?: "#${ann.categoryId}"
-                                list.add(BoxItem(name, Rect(ann.bbox[0], ann.bbox[1], ann.bbox[2], ann.bbox[3])))
-                            }
-                        },
-                        cocoImageId = cocoImage?.id ?: -1,
-                        // 尚未注册进 COCO 的图（如新截图）也可标注：记住尺寸，保存时自动注册
-                        newSize = buffered?.let { it.width to it.height },
-                    )
+                val annotations: List<CocoAnnotation> =
+                    cocoImage?.let { data.getAnnotationsForImage(it.id) } ?: emptyList()
+                val categories: List<CocoCategory> = data.categories()
+                val boxes = annotations.mapNotNull { ann ->
+                    if (ann.bbox.size < 4) return@mapNotNull null
+                    val name = categories.firstOrNull { it.id == ann.categoryId }?.name ?: "#${ann.categoryId}"
+                    BoxItem(name, Rect(ann.bbox[0], ann.bbox[1], ann.bbox[2], ann.bbox[3]))
+                }.toMutableList()
+                ImageSession(
+                    fileName = target.file.name,
+                    boxes = boxes,
+                    cocoImageId = cocoImageId,
+                    // 尚未注册进 COCO 的图（如新截图）也可标注：记住尺寸，保存时自动注册
+                    newSize = buffered?.let { it.width to it.height },
+                ) to buffered
+            }
+            loaded.exceptionOrNull()?.let { LOG.warn("Failed to open annotation editor for ${target.name}", it) }
+            SwingUtilities.invokeLater {
+                loading = false
+                if (isDisposed) return@invokeLater
+                loaded.onSuccess { (fresh, buffered) ->
                     // 已有会话（本对话框内编辑过/切回的图）优先于磁盘状态
                     val active = sessionByFile.getOrPut(target.file.name) { fresh }
                     canvas.applySession(active, buffered)
-                    updateNav()
                 }
-            } catch (e: Exception) {
-                LOG.warn("Failed to open annotation editor for ${target.name}", e)
-                SwingUtilities.invokeLater {
-                    loading = false
+                loaded.onFailure {
                     canvas.applySession(sessionByFile.getOrPut(target.file.name) {
-                        ImageSession(target.file.name, mutableListOf(), cocoImage?.id ?: -1, null)
+                        ImageSession(target.file.name, mutableListOf(), cocoImageId, null)
                     }, null)
-                    updateNav()
                 }
+                updateNav()
             }
-        }.start()
+        }, "ok-script-annotation-image").apply { isDaemon = true; start() }
     }
 
     private fun stashCurrent() {

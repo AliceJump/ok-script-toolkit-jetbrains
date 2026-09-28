@@ -38,6 +38,13 @@ import com.alicejump.okscripttoolkit.tasklauncher.TaskLauncherService.TaskConfig
  */
 internal object TaskConfigMerge {
 
+    /** Combine edits made before a debounce fires or while an earlier save is being retried. */
+    fun combineEdits(older: TaskConfig, newer: TaskConfig): TaskConfig {
+        val params = LinkedHashMap<String, Any>(older.params.orEmpty())
+        params.putAll(newer.params.orEmpty())
+        return newer.copy(params = params.ifEmpty { null })
+    }
+
     /**
      * 在最新 store 上物化探针字段。首建/重探针的取值也必须在写入锁内判定。
      */
@@ -102,7 +109,7 @@ internal object TaskConfigMerge {
         return store.copy(projects = projects)
     }
 
-    /** 防抖表单快照晚到时，保留其构建后由探针补入的新键；表单里的值仍优先。 */
+    /** 表单只提交编辑过的键，合并进最新快照并保留其余参数与旧版运行字段。 */
     fun withUserTaskSnapshot(
         store: TaskConfigStore,
         projectRoot: String,
@@ -112,7 +119,8 @@ internal object TaskConfigMerge {
         val latest = store.projects[projectRoot]?.tasks?.get(taskKey)
         val params = LinkedHashMap<String, Any>(latest?.params.orEmpty())
         params.putAll(config.params.orEmpty())
-        return withTask(store, projectRoot, taskKey, config.copy(params = params.ifEmpty { null }))
+        val merged = (latest ?: config).copy(params = params.ifEmpty { null })
+        return withTask(store, projectRoot, taskKey, merged)
     }
 
     /**
@@ -166,6 +174,22 @@ internal object TaskConfigMerge {
         val projects = store.projects.toMutableMap()
         val projectConfig = projects[projectRoot] ?: TaskConfigStore.ProjectConfig()
         projects[projectRoot] = projectConfig.copy(globalConfigs = snapshots)
+        return store.copy(projects = projects)
+    }
+
+    /**
+     * 写入单个 UI 折叠键，保留任务参数、勾选集合与全局快照（第四条独立写入路径，
+     * 与前三条同样互不干扰）。已有键被替换，其余键原样保留。
+     */
+    fun withUiState(
+        store: TaskConfigStore,
+        projectRoot: String,
+        key: String,
+        value: Boolean,
+    ): TaskConfigStore {
+        val projects = store.projects.toMutableMap()
+        val projectConfig = projects[projectRoot] ?: TaskConfigStore.ProjectConfig()
+        projects[projectRoot] = projectConfig.copy(uiState = projectConfig.uiState + (key to value))
         return store.copy(projects = projects)
     }
 }
