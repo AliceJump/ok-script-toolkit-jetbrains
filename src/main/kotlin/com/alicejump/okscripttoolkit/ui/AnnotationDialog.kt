@@ -1,12 +1,15 @@
 package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
+import com.alicejump.okscripttoolkit.core.BoxCatalogService
+import com.alicejump.okscripttoolkit.core.BoxResource
 import com.alicejump.okscripttoolkit.core.CocoAnnotation
 import com.alicejump.okscripttoolkit.core.CocoAnnotationEdit
 import com.alicejump.okscripttoolkit.core.CocoCategory
 import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
 import com.alicejump.okscripttoolkit.core.TemplateImage
 import com.alicejump.okscripttoolkit.settings.GlobalPrefs
+import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.Project
@@ -76,6 +79,8 @@ class AnnotationDialog(
     /** ←/→ 可切换的图片集合（通常是素材面板当前过滤结果） */
     private val imageList: List<TemplateImage> = listOf(image),
     startIndex: Int = 0,
+    /** true 时编辑框资源，而不是 COCO 模板标注。 */
+    private val editingBoxes: Boolean = false,
 ) : DialogWrapper(project) {
 
     companion object {
@@ -135,6 +140,8 @@ class AnnotationDialog(
         var dirty: Boolean = false,
         /** 本次对话框内隐藏的条目标记。不落盘，撤销几何时也不恢复它。 */
         val hiddenIds: MutableSet<Int> = mutableSetOf(),
+        /** 打开时的归一化矩形，按条目标记。像素没变时写回原值。 */
+        val sourceRects: MutableMap<Int, DoubleArray> = mutableMapOf(),
     )
 
     private var session: ImageSession? = null
@@ -185,6 +192,12 @@ class AnnotationDialog(
         toolbar.add(prevButton)
         toolbar.add(nextButton)
         toolbar.add(navLabel)
+        if (!editingBoxes) {
+            val generate = JButton(OkScriptToolkitBundle.message("annotation.generateBox"))
+            generate.isFocusable = false
+            generate.addActionListener { generateBoxesFromSelection() }
+            toolbar.add(generate)
+        }
 
         val canvasWrap = JPanel(BorderLayout())
         canvasWrap.add(canvas, BorderLayout.CENTER)
@@ -319,21 +332,35 @@ class AnnotationDialog(
                 val cocoImage = data.getImageEntryForFile(target.file.name)
                 cocoImageId = cocoImage?.id ?: -1
                 val buffered = ImageIO.read(target.file)
-                val annotations: List<CocoAnnotation> =
-                    cocoImage?.let { data.getAnnotationsForImage(it.id) } ?: emptyList()
-                val categories: List<CocoCategory> = data.categories()
+                val size = buffered?.let { it.width to it.height }
                 var nextId = 1
-                val boxes = annotations.mapNotNull { ann ->
-                    if (ann.bbox.size < 4) return@mapNotNull null
-                    val name = categories.firstOrNull { it.id == ann.categoryId }?.name ?: "#${ann.categoryId}"
-                    BoxItem(name, Rect(ann.bbox[0], ann.bbox[1], ann.bbox[2], ann.bbox[3]), nextId++)
-                }.toMutableList()
+                val sourceRects = mutableMapOf<Int, DoubleArray>()
+                val boxes = if (editingBoxes) {
+                    val width = size?.first ?: 0
+                    val height = size?.second ?: 0
+                    project.service<BoxCatalogService>().boxesForImage(target.file.name).mapNotNull { box ->
+                        val pixel = BoxResource.rectToPixel(box.rect, width, height) ?: return@mapNotNull null
+                        val id = nextId++
+                        sourceRects[id] = box.rect.copyOf()
+                        BoxItem(box.path, Rect(pixel.x, pixel.y, pixel.w, pixel.h), id)
+                    }.toMutableList()
+                } else {
+                    val annotations: List<CocoAnnotation> =
+                        cocoImage?.let { data.getAnnotationsForImage(it.id) } ?: emptyList()
+                    val categories: List<CocoCategory> = data.categories()
+                    annotations.mapNotNull { ann ->
+                        if (ann.bbox.size < 4) return@mapNotNull null
+                        val name = categories.firstOrNull { it.id == ann.categoryId }?.name ?: "#${ann.categoryId}"
+                        BoxItem(name, Rect(ann.bbox[0], ann.bbox[1], ann.bbox[2], ann.bbox[3]), nextId++)
+                    }.toMutableList()
+                }
                 ImageSession(
                     fileName = target.file.name,
                     boxes = boxes,
                     cocoImageId = cocoImageId,
                     // 尚未注册进 COCO 的图（如新截图）也可标注：记住尺寸，保存时自动注册
-                    newSize = buffered?.let { it.width to it.height },
+                    newSize = size,
+                    sourceRects = sourceRects,
                 ) to buffered
             }
             loaded.exceptionOrNull()?.let { LOG.warn("Failed to open annotation editor for ${target.name}", it) }
@@ -375,16 +402,20 @@ class AnnotationDialog(
     override fun doOKAction() {
         val saved = try {
             stashCurrent()
-            val edits = sessionByFile.values.filter { it.dirty }.map { s ->
-                CocoAnnotationEdit(
-                    s.fileName,
-                    s.newSize,
-                    s.boxes.map { box ->
-                        box.categoryName to intArrayOf(box.rect.x, box.rect.y, box.rect.w, box.rect.h)
-                    },
-                )
+            if (editingBoxes) {
+                saveBoxEdits()
+            } else {
+                val edits = sessionByFile.values.filter { it.dirty }.map { s ->
+                    CocoAnnotationEdit(
+                        s.fileName,
+                        s.newSize,
+                        s.boxes.map { box ->
+                            box.categoryName to intArrayOf(box.rect.x, box.rect.y, box.rect.w, box.rect.h)
+                        },
+                    )
+                }
+                data.saveAnnotationEdits(edits)
             }
-            data.saveAnnotationEdits(edits)
         } catch (e: Exception) {
             LOG.error("Failed to save annotations for ${currentImage.name}", e)
             false
@@ -397,8 +428,87 @@ class AnnotationDialog(
         super.doOKAction()
     }
 
+    private fun generateBoxesFromSelection() {
+        val session = session ?: return
+        val size = session.newSize
+        if (size == null || session.boxes.isEmpty()) {
+            Messages.showInfoMessage(project, OkScriptToolkitBundle.message("annotation.generateNeedSelection"),
+                OkScriptToolkitBundle.message("annotation.generateTitle"))
+            return
+        }
+        val checks = session.boxes.map { box ->
+            JCheckBox(box.categoryName, box.id == session.boxes.getOrNull(canvas.selectedIndex())?.id)
+        }
+        val pathField = JBTextField(
+            session.boxes.getOrNull(canvas.selectedIndex())?.categoryName?.let { "screen.$it" } ?: "screen.region",
+        )
+        val form = JPanel(BorderLayout(0, 6))
+        val list = JPanel()
+        list.layout = BoxLayout(list, BoxLayout.Y_AXIS)
+        checks.forEach { list.add(it) }
+        form.add(JScrollPane(list), BorderLayout.CENTER)
+        form.add(pathField, BorderLayout.SOUTH)
+        val choice = Messages.showOkCancelDialog(
+            project,
+            form,
+            OkScriptToolkitBundle.message("annotation.generateTitle"),
+            Messages.getOkButton(),
+            Messages.getCancelButton(),
+            null,
+        )
+        if (choice != Messages.OK) return
+        val chosen = session.boxes.filterIndexed { index, _ -> checks[index].isSelected }
+        if (chosen.isEmpty()) return
+        val rect = if (chosen.size == 1) {
+            BoxResource.pixelToRect(
+                BoxResource.PixelBox(chosen[0].rect.x, chosen[0].rect.y, chosen[0].rect.w, chosen[0].rect.h),
+                size.first,
+                size.second,
+            )
+        } else {
+            BoxResource.unionOnImage(
+                chosen.map { BoxResource.PixelBox(it.rect.x, it.rect.y, it.rect.w, it.rect.h) },
+                size.first,
+                size.second,
+            )
+        } ?: return
+        val error = project.service<BoxCatalogService>().addBox(pathField.text.trim(), session.fileName, rect)
+        if (error != null) {
+            Messages.showErrorDialog(project, OkScriptToolkitBundle.message("annotation.pathInvalid"),
+                OkScriptToolkitBundle.message("annotation.generateTitle"))
+            return
+        }
+        Messages.showInfoMessage(project, OkScriptToolkitBundle.message("annotation.generateSaved", pathField.text.trim()),
+            OkScriptToolkitBundle.message("annotation.generateTitle"))
+    }
+
+    private fun saveBoxEdits(): Boolean {
+        val catalog = project.service<BoxCatalogService>()
+        for (session in sessionByFile.values.filter { it.dirty }) {
+            val size = session.newSize ?: return false
+            val error = catalog.replaceImageBoxes(
+                session.fileName,
+                size.first,
+                size.second,
+                session.boxes.map { box ->
+                    BoxCatalogService.EditedBox(
+                        box.categoryName,
+                        box.rect.x,
+                        box.rect.y,
+                        box.rect.w,
+                        box.rect.h,
+                        session.sourceRects[box.id],
+                    )
+                },
+            )
+            if (error != null) return false
+        }
+        return true
+    }
+
     /** 全项目分类名唯一性索引：分类名 -> 已占用它的文件名（不含当前图，对齐 VSCode 版校验语义） */
     private fun buildTakenCategories(currentFile: String): Map<String, String> {
+        if (editingBoxes) return project.service<BoxCatalogService>().pathOwnersExcept(currentFile)
         val categories = data.categories()
         val taken = mutableMapOf<String, String>()
         for (img in data.listImages()) {
@@ -1184,7 +1294,7 @@ class AnnotationDialog(
         }
 
         private fun showBBoxDialog(initial: String?, rect: Rect, onDone: (String?, Rect) -> Unit) {
-            val dialog = BBoxDialog(project, initial, rect, buildTakenCategories(currentImage.file.name))
+            val dialog = BBoxDialog(project, initial, rect, buildTakenCategories(currentImage.file.name), editingBoxes)
             dialog.show()
             if (dialog.exitCode == OK_EXIT_CODE && dialog.acceptedRect != null) {
                 onDone(dialog.acceptedCategory, dialog.acceptedRect!!)
@@ -1476,6 +1586,7 @@ class AnnotationDialog(
         private val initialCategory: String?,
         initialRect: Rect,
         private val taken: Map<String, String>,
+        private val pathMode: Boolean = false,
     ) : DialogWrapper(project) {
 
         val acceptedCategory: String? get() = if (exitCode == OK_EXIT_CODE) categoryField.text.trim() else null
@@ -1511,6 +1622,9 @@ class AnnotationDialog(
         private fun categoryError(): String? {
             val name = categoryField.text.trim()
             if (name.isEmpty()) return OkScriptToolkitBundle.message("annotation.categoryRequired")
+            if (pathMode && BoxResource.pathError(name) != null) {
+                return OkScriptToolkitBundle.message("annotation.pathInvalid")
+            }
             // 编辑且未改名时不算冲突；其余情况与其他图片的分类比对（排除当前图，对齐 VSCode 版）
             if (name == initialCategory) return null
             val owner = taken[name] ?: return null
@@ -1537,7 +1651,7 @@ class AnnotationDialog(
                 form.add(JLabel(OkScriptToolkitBundle.message(labelKey)))
                 form.add(field)
             }
-            addRow("annotation.category", categoryField)
+            addRow(if (pathMode) "annotation.path" else "annotation.category", categoryField)
             addRow("annotation.x", xField)
             addRow("annotation.y", yField)
             addRow("annotation.w", wField)

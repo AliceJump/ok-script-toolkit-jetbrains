@@ -1,6 +1,8 @@
 package com.alicejump.okscripttoolkit.editor
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
+import com.alicejump.okscripttoolkit.core.BoxCatalogService
+import com.alicejump.okscripttoolkit.core.BoxResource
 import com.alicejump.okscripttoolkit.core.EffectEntry
 import com.alicejump.okscripttoolkit.core.FeatureTemplate
 import com.alicejump.okscripttoolkit.core.LangEntry
@@ -24,11 +26,12 @@ data class EditorReference(
     val module: String? = null,
     val hintOffset: Int = range.endOffset,
 ) {
-    enum class Kind { LANG, FEATURE, EFFECT, OCR }
+    enum class Kind { LANG, FEATURE, EFFECT, OCR, POS }
 }
 
 object OkEditorSupport {
     private val langPattern = Pattern.compile("(?<![\\w.])self\\.lang\\.([\\p{L}\\p{N}_]+)\\.([\\p{L}\\p{N}_]+)")
+    private val posPattern = Pattern.compile("(?<![\\w.])self\\.pos\\.((?:[A-Za-z_][A-Za-z0-9_]*\\.)*[A-Za-z_][A-Za-z0-9_]*)(?:\\.to_box\\(\\))?")
     private val effectTypePattern = Pattern.compile("\\bEffectType\\.([A-Z][A-Z0-9_]*)")
     private val effectStringPattern = Pattern.compile("r?['\"]([A-Z][A-Z0-9_]{2,})['\"]")
     private val ocrCallPattern = Pattern.compile("(?<![\\w.])self\\.(ocr|wait_ocr|wait_click_ocr|find_boxes)\\(")
@@ -69,6 +72,18 @@ object OkEditorSupport {
                     TextRange(baseOffset + start(), baseOffset + end()),
                     group(2),
                     group(1),
+                )
+            }
+        }
+
+        posPattern.matcher(text).run {
+            while (find()) {
+                val path = group(1)
+                if (project.service<BoxCatalogService>().readRuntime().boxes.none { it.path == path }) continue
+                refs += EditorReference(
+                    EditorReference.Kind.POS,
+                    TextRange(baseOffset + start(), baseOffset + end()),
+                    path,
                 )
             }
         }
@@ -121,6 +136,9 @@ object OkEditorSupport {
             val match = Regex("(?<![\\w.])${Regex.escape(alias)}\\.([A-Za-z0-9_]*)$").find(before)
             if (match != null) return CompletionContext(CompletionKind.FEATURE, match.groupValues[1])
         }
+        Regex("(?<![\\w.])self\\.pos\\.((?:[A-Za-z_][A-Za-z0-9_]*\\.)*)([A-Za-z_][A-Za-z0-9_]*)$").find(before)?.let {
+            return CompletionContext(CompletionKind.POS, it.groupValues[2], it.groupValues[1].removeSuffix("."))
+        }
         Regex("(?<![\\w.])self\\.lang\\.([\\p{L}\\p{N}_]+)\\.([\\p{L}\\p{N}_]*)$").find(before)?.let {
             return CompletionContext(CompletionKind.LANG_KEY, it.groupValues[2], it.groupValues[1])
         }
@@ -141,6 +159,7 @@ object OkEditorSupport {
                     "<p><i>${OkScriptToolkitBundle.message("documentation.ocrRuntime")}</i></p>"
             }
             EditorReference.Kind.FEATURE -> data.feature(reference.id)?.let(::formatFeature)
+            EditorReference.Kind.POS -> formatBox(project, reference.id)
             EditorReference.Kind.EFFECT -> data.effect(reference.id)?.let(::formatEffect)
         }
     }
@@ -154,6 +173,10 @@ object OkEditorSupport {
             EditorReference.Kind.OCR -> data.poEntry("ocr", reference.id)?.let(data::pick)?.let { "→ ${it.value}" }
             EditorReference.Kind.EFFECT -> data.effect(reference.id)?.let { "「${it.description}」" }
             EditorReference.Kind.FEATURE -> data.feature(reference.id)?.let { "「${it.width}×${it.height}」" }
+            EditorReference.Kind.POS -> project.service<BoxCatalogService>().readRuntime().boxes
+                .firstOrNull { it.path == reference.id }
+                ?.rect
+                ?.joinToString(", ") { "%.4f".format(it) }
         }
     }
 
@@ -172,6 +195,7 @@ object OkEditorSupport {
                 "<p><b>fL.${html(it.name)}</b></p><p><b>Size:</b> ${it.width} × ${it.height}</p>" +
                     "<p><b>Source:</b> <code>${html(it.imagePath.toString())}</code></p>"
             }
+            EditorReference.Kind.POS -> formatBox(project, reference.id)
         } ?: return null
         return "<html>$body</html>"
     }
@@ -302,8 +326,73 @@ object OkEditorSupport {
             "<div class='content'><p><b>Category:</b> ${html(effect.category)}</p>" +
             "<p><b>Description:</b> ${html(effect.description)}</p></div>"
 
+    fun boxSegments(paths: List<String>, parent: String): List<String> {
+        val prefix = if (parent.isEmpty()) "" else "$parent."
+        return paths.mapNotNull { path ->
+            if (!path.startsWith(prefix)) return@mapNotNull null
+            path.removePrefix(prefix).substringBefore('.').takeIf { it.isNotEmpty() }
+        }.distinct().sorted()
+    }
+
+    private fun formatBox(project: Project, path: String): String? {
+        val catalog = project.service<BoxCatalogService>()
+        val runtime = catalog.readRuntime().boxes.firstOrNull { it.path == path } ?: return null
+        val authoring = catalog.readAuthoring().boxes.firstOrNull { it.path == path }
+        val settings = com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings.getInstance(project)
+        val root = project.service<OkProjectDataService>().rootPath()
+        val imagePath = if (authoring != null && root != null) {
+            root.resolve(settings.okTemplatesDirectory()).resolve(authoring.image)
+        } else {
+            null
+        }
+        val pixel = if (imagePath != null) {
+            val file = imagePath.toFile()
+            val image = if (file.exists()) ImageIO.read(file) else null
+            if (image != null) BoxResource.rectToPixel(runtime.rect, image.width, image.height) else null
+        } else {
+            null
+        }
+        val thumb = if (imagePath != null && pixel != null) {
+            cropBox(imagePath, intArrayOf(pixel.x, pixel.y, pixel.w, pixel.h))
+        } else {
+            null
+        }
+        val rect = runtime.rect.joinToString(", ") { "%.6f".format(it) }
+        return "<div class='definition'><code>self.pos.${html(path)}.to_box()</code></div>" +
+            "<div class='content'>" +
+            (if (thumb != null) "<p><img src='data:image/png;base64,$thumb' width='120'/></p>" else "") +
+            "<p><b>rect:</b> <code>$rect</code></p>" +
+            (if (imagePath != null) "<p><b>Source:</b> <code>${html(imagePath.toString())}</code></p>" else "") +
+            "</div>"
+    }
+
+    private fun cropBox(imagePath: java.nio.file.Path, bbox: IntArray): String? {
+        return try {
+            val file = imagePath.toFile()
+            if (!file.exists() || bbox.size < 4) return null
+            val original = ImageIO.read(file) ?: return null
+            val x = bbox[0].coerceIn(0, original.width - 1)
+            val y = bbox[1].coerceIn(0, original.height - 1)
+            val w = bbox[2].coerceAtMost(original.width - x)
+            val h = bbox[3].coerceAtMost(original.height - y)
+            if (w <= 0 || h <= 0) return null
+            val crop = original.getSubimage(x, y, w, h)
+            val targetH = 96
+            val targetW = (w * targetH.toDouble() / h).toInt().coerceIn(1, 240)
+            val thumb = BufferedImage(targetW, targetH, BufferedImage.TYPE_INT_ARGB)
+            val g = thumb.createGraphics()
+            g.drawImage(crop, 0, 0, targetW, targetH, null)
+            g.dispose()
+            val baos = ByteArrayOutputStream()
+            ImageIO.write(thumb, "png", baos)
+            Base64.getEncoder().encodeToString(baos.toByteArray())
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun html(value: String): String = StringUtil.escapeXmlEntities(value)
 }
 
-enum class CompletionKind { LANG_MODULE, LANG_KEY, FEATURE, EFFECT, OCR }
+enum class CompletionKind { LANG_MODULE, LANG_KEY, FEATURE, EFFECT, OCR, POS }
 data class CompletionContext(val kind: CompletionKind, val prefix: String, val module: String? = null)
