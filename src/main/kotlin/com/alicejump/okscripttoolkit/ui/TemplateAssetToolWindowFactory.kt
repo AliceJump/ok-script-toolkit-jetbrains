@@ -114,6 +114,8 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     private var images = listOf<TemplateImage>()
     private var visibleImages = listOf<TemplateImage>()
     private var currentFilter = ""
+    private val loadSequence = java.util.concurrent.atomic.AtomicLong()
+    private val swapGate = SwapRefreshGate()
     @Volatile private var enumPathFromConfig: Pair<String, String?>? = null
     // loadData 在后台线程失效缓存，EDT 在渲染时读写，需要并发安全
     private val thumbCache = java.util.concurrent.ConcurrentHashMap<String, ImageIcon?>()
@@ -214,7 +216,8 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         mainPanel.add(statusPanel, BorderLayout.SOUTH)
     }
 
-    private fun loadData() {
+    private fun loadData(): Long {
+        val requestId = loadSequence.incrementAndGet()
         statusLabel.text = OkScriptToolkitBundle.message("templateAsset.loading")
         CompletableFuture.supplyAsync {
             val settings = OkScriptToolkitSettings.getInstance(project)
@@ -232,15 +235,24 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             result
         }.thenAccept { result ->
             SwingUtilities.invokeLater {
+                if (requestId != loadSequence.get()) return@invokeLater
                 images = result
                 renderGrid()
+                swapGate.refreshed(requestId, loadSequence.get())
             }
         }.exceptionally { throwable ->
             SwingUtilities.invokeLater {
-                statusLabel.text = "Error: ${throwable.message}"
+                if (requestId != loadSequence.get()) return@invokeLater
+                statusLabel.text = OkScriptToolkitBundle.message(
+                    "templateAsset.loadFailed", throwable.message ?: throwable.javaClass.simpleName,
+                )
+                if (swapGate.awaitingRefresh) {
+                    notify(OkScriptToolkitBundle.message("templateAsset.swapRefreshFailed"), NotificationType.ERROR)
+                }
             }
             null
         }
+        return requestId
     }
 
     private fun renderGrid() {
@@ -262,7 +274,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         }
 
         countLabel.text = OkScriptToolkitBundle.message("templateAsset.count", filtered.size)
-        statusLabel.text = "Loaded ${images.size} images"
+        statusLabel.text = OkScriptToolkitBundle.message("templateAsset.loaded", images.size)
         gridPanel.revalidate()
         gridPanel.repaint()
     }
@@ -366,6 +378,10 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
      * 不会出现只换了一边。**不需要为它新增数据层方法**，也就不会有两套写盘路径。
      */
     private fun swapAnnotationsWith(source: TemplateImage) {
+        if (swapGate.inProgress) {
+            notify(OkScriptToolkitBundle.message("templateAsset.swapBusy"), NotificationType.INFORMATION)
+            return
+        }
         val candidates = images.filter { it.file.name != source.file.name }
         if (candidates.isEmpty()) {
             notify(OkScriptToolkitBundle.message("templateAsset.swapNoTarget"), NotificationType.WARNING)
@@ -427,17 +443,20 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             source.file.name, sourceSize, sourceBoxes,
             target.file.name, targetSize, targetBoxes,
         )
+        if (!swapGate.begin()) return
         CompletableFuture.supplyAsync { data.saveAnnotationEdits(edits) }.whenComplete { saved, error ->
             SwingUtilities.invokeLater {
                 if (error != null || saved != true) {
+                    swapGate.saveFailed()
                     notify(OkScriptToolkitBundle.message("templateAsset.swapFailed"), NotificationType.ERROR)
+                    loadData()
                 } else {
                     notify(
                         OkScriptToolkitBundle.message("templateAsset.swapDone", source.name, target.name),
                         NotificationType.INFORMATION,
                     )
+                    swapGate.waitForRefresh(loadData())
                 }
-                loadData()
             }
         }
     }
@@ -497,6 +516,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         // 与另一张图整套互换标注：修"标错了图 / 图片顺序反了"的入口。
         // 放在「删除」之上、与它同组 —— 两者都会改动已有数据，且都需要确认。
         val swapItem = JMenuItem(OkScriptToolkitBundle.message("templateAsset.swap"))
+        swapItem.isEnabled = !swapGate.inProgress
         swapItem.addActionListener {
             swapAnnotationsWith(img)
         }
