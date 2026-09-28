@@ -20,6 +20,18 @@ package com.alicejump.okscripttoolkit.tasklauncher
  */
 internal object TaskSchemaMerge {
 
+    /** A successful in-memory probe is the freshest preview for the same project and locale. */
+    fun selectPreviewSource(
+        live: TaskLauncherService.SchemaProbeResult?,
+        cached: TaskLauncherService.SchemaProbeResult,
+        projectDir: String,
+        locale: String,
+    ): TaskLauncherService.SchemaProbeResult? = when {
+        live?.ok == true && live.schemas != null && live.projectDir == projectDir && live.locale == locale -> live
+        cached.ok && cached.schemas != null -> cached
+        else -> null
+    }
+
     /** 任务在 schema 里的键，与父仓 `taskLauncher.ts` 的 `taskKey()` 一致。 */
     fun keyOf(task: TaskLauncherService.TaskInfo): String = "${task.module}::${task.className}"
 

@@ -23,6 +23,29 @@ class TaskSchemaMergeTest {
     private fun schema(name: String?) = TaskSchema(displayName = name)
 
     @Test
+    fun `same-project full probe takes precedence over a stale disk cache`() {
+        val key = "src.tasks.test.DailyTask::DailyTask"
+        val live = TaskLauncherService.SchemaProbeResult(
+            ok = true,
+            schemas = mapOf(key to TaskSchema(displayName = "日常任务", fields = listOf(
+                TaskLauncherService.TaskParamField(key = "enabled", value = true),
+            ))),
+            projectDir = "/project",
+            locale = "zh_CN",
+        )
+        val stale = TaskLauncherService.SchemaProbeResult(
+            ok = true,
+            schemas = mapOf(key to schema("DailyTask")),
+        )
+
+        val selected = TaskSchemaMerge.selectPreviewSource(live, stale, "/project", "zh_CN")
+        assertEquals("日常任务", selected?.schemas?.get(key)?.displayName)
+        assertEquals(1, selected?.schemas?.get(key)?.fields?.size)
+        assertEquals(stale, TaskSchemaMerge.selectPreviewSource(live, stale, "/other", "zh_CN"))
+        assertEquals(stale, TaskSchemaMerge.selectPreviewSource(live, stale, "/project", "en"))
+    }
+
+    @Test
     fun `key format matches the parent repo`() {
         assertEquals(
             "src.tasks.test.MinimapNavigateToPoint::MinimapNavigateToPoint",

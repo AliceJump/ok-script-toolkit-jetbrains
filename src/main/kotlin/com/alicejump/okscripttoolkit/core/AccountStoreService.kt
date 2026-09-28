@@ -96,12 +96,13 @@ class AccountStoreService(private val project: Project) {
         val pythonPath = ScreenshotCapture.detectPythonPath(projectDir, project)
         val arguments = listOf(
             pythonPath, script.absolutePath, projectDir,
-        ) + command + listOf("--run-dir", RunDir.forProject(projectDir))
+        ) + command
         val builder = ProcessBuilder(arguments)
             .directory(File(projectDir))
             .redirectErrorStream(true)
         builder.environment()["PYTHONIOENCODING"] = "utf-8"
         builder.environment()["PYTHONUTF8"] = "1"
+        builder.environment()[RunDir.ENV] = RunDir.forProject(projectDir)
 
         // 合并 stdout/stderr 并立即读取，避免 Python 输出填满管道而阻塞退出。
         // 不记录完整命令或输出，二者可能包含账号数据。

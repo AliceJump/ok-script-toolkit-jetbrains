@@ -1,5 +1,6 @@
 package com.alicejump.okscripttoolkit.tasklauncher
 
+import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.PythonScriptLocator
 import com.alicejump.okscripttoolkit.core.PythonScriptRunner
 import com.alicejump.okscripttoolkit.core.RunDir
@@ -13,6 +14,11 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.nio.file.StandardCopyOption
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.attribute.FileTime
+import java.security.MessageDigest
 import com.alicejump.okscripttoolkit.core.forEachField
 
 /**
@@ -79,6 +85,13 @@ class TaskLauncherService(private val project: Project) {
         val description: String? = null,
         val kind: String? = null,
         val showInTaskTab: Boolean = true,
+        /**
+         * 一次性任务的业务分组（BaseTask.group_name 的源文案 key，探针原样给出、未翻译）。
+         * VS Code 侧 webview 用它把任务列表分成若干可折叠小节（缺省归「未分组」）；
+         * 这里同样在任务卡列表里落组 —— 之前 parseSchemas 直接把它丢了，是两边
+         * 任务编排对不齐的根因。探针输出见 probe_task_schemas.py 的 schemas 段。
+         */
+        val groupName: String? = null,
         val configGroups: Map<String, List<String>>? = null,
         val groupLabels: Map<String, String>? = null,
         val groupSelector: String? = null,
@@ -149,6 +162,11 @@ class TaskLauncherService(private val project: Project) {
              * 物化规则见 [GlobalSnapshotRules]（首建继承当前值、重探针新键取默认、孤儿键保留）。
              */
             val globalConfigs: Map<String, Map<String, Any?>> = emptyMap(),
+            /**
+             * UI 折叠状态：{键: 是否折叠}（任务卡列表的分组折叠，对齐 VS Code 侧
+             * uiState 的 taskGroupCollapsed::* 键）。重开工具窗 / 重启 IDE 后复用。
+             */
+            val uiState: Map<String, Boolean> = emptyMap(),
         )
     }
 
@@ -321,6 +339,7 @@ class TaskLauncherService(private val project: Project) {
                 description = schemaNode.get("description")?.asText(null),
                 kind = schemaNode.get("kind")?.asText(null),
                 showInTaskTab = schemaNode.get("showInTaskTab")?.asBoolean() ?: true,
+                groupName = schemaNode.get("groupName")?.asText(null),
                 configGroups = schemaNode.get("configGroups")?.takeIf { !it.isNull }?.let {
                     @Suppress("UNCHECKED_CAST")
                     objectMapper.convertValue(it, Map::class.java) as? Map<String, List<String>>
@@ -342,50 +361,63 @@ class TaskLauncherService(private val project: Project) {
      * 单组 / 单字段解析失败只跳过该部分 —— 异常外抛会让整个探针 ok=false、
      * 缓存读取失败，一处畸形数据不应该把任务列表也带走。
      */
+    /**
+     * 解析探针输出的全局配置组（缺键 / 非数组时静默为空列表，不影响任务 schema）。
+     *
+     * 与 VS Code 侧 consolePanel.ts 的读取保持一致： 与
+     *  **两段都收**。当前探针把项目自建 store 的组并进前者、后者为空，
+     * 但父仓仍读两段 —— 只读一段的话，哪天探针改回分段就会静默漏掉整批组。
+     *
+     * 单组 / 单字段解析失败只跳过该部分 —— 异常外抛会让整个探针 ok=false、
+     * 缓存读取失败，一处畸形数据不应该把任务列表也带走。
+     */
     private fun parseGlobalConfigGroups(parsed: JsonNode): List<GlobalConfigGroup> {
         val groups = mutableListOf<GlobalConfigGroup>()
-        parsed.get("globalConfigGroups")?.takeIf { it.isArray }?.forEach { groupNode ->
-            val name = groupNode.get("name")?.asText(null) ?: return@forEach
-            val fields = mutableListOf<TaskParamField>()
-            groupNode.get("fields")?.takeIf { it.isArray }?.forEach { fieldNode ->
+        for (segment in arrayOf("globalConfigGroups", "projectGlobalGroups")) {
+            parsed.get(segment)?.takeIf { it.isArray }?.forEach { groupNode ->
+                val name = groupNode.get("name")?.asText(null) ?: return@forEach
+                // 两段里同名组只收一次（先到先得）
+                if (groups.any { it.name == name }) return@forEach
+                val fields = mutableListOf<TaskParamField>()
+                groupNode.get("fields")?.takeIf { it.isArray }?.forEach { fieldNode ->
+                    try {
+                        val key = fieldNode.get("key")?.asText(null) ?: return@forEach
+                        fields.add(
+                            TaskParamField(
+                                key = key,
+                                displayKey = fieldNode.get("displayKey")?.asText(null),
+                                default = fieldNode.get("default")?.let { objectMapper.convertValue(it, Any::class.java) },
+                                hasDefault = fieldNode.has("default"),
+                                value = fieldNode.get("value")?.let { objectMapper.convertValue(it, Any::class.java) },
+                                type = fieldNode.get("type")?.takeIf { !it.isNull }?.let {
+                                    @Suppress("UNCHECKED_CAST")
+                                    objectMapper.convertValue(it, Map::class.java) as? Map<String, Any>
+                                },
+                                desc = fieldNode.get("desc")?.asText(null),
+                                displayDesc = fieldNode.get("displayDesc")?.asText(null),
+                            ),
+                        )
+                    } catch (e: Exception) {
+                        LOG.warn("Skipping malformed global config field", e)
+                    }
+                }
                 try {
-                    val key = fieldNode.get("key")?.asText(null) ?: return@forEach
-                    fields.add(
-                        TaskParamField(
-                            key = key,
-                            displayKey = fieldNode.get("displayKey")?.asText(null),
-                            default = fieldNode.get("default")?.let { objectMapper.convertValue(it, Any::class.java) },
-                            hasDefault = fieldNode.has("default"),
-                            value = fieldNode.get("value")?.let { objectMapper.convertValue(it, Any::class.java) },
-                            type = fieldNode.get("type")?.takeIf { !it.isNull }?.let {
-                                @Suppress("UNCHECKED_CAST")
-                                objectMapper.convertValue(it, Map::class.java) as? Map<String, Any>
-                            },
-                            desc = fieldNode.get("desc")?.asText(null),
-                            displayDesc = fieldNode.get("displayDesc")?.asText(null),
+                    groups.add(
+                        GlobalConfigGroup(
+                            name = name,
+                            displayName = groupNode.get("displayName")?.asText(null),
+                            description = groupNode.get("description")?.asText(null),
+                            fields = fields,
+                            source = groupNode.get("source")?.asText(null),
                         ),
                     )
                 } catch (e: Exception) {
-                    LOG.warn("Skipping malformed global config field", e)
+                    LOG.warn("Skipping malformed global config group '$name'", e)
                 }
-            }
-            try {
-                groups.add(
-                    GlobalConfigGroup(
-                        name = name,
-                        displayName = groupNode.get("displayName")?.asText(null),
-                        description = groupNode.get("description")?.asText(null),
-                        fields = fields,
-                        source = groupNode.get("source")?.asText(null),
-                    ),
-                )
-            } catch (e: Exception) {
-                LOG.warn("Skipping malformed global config group '$name'", e)
             }
         }
         return groups
     }
-
     private fun parseMultiAccount(node: JsonNode?): MultiAccountInfo {
         if (node == null || !node.isObject) return MultiAccountInfo()
         val enabled = linkedMapOf<String, MultiAccountEnabledTask>()
@@ -429,10 +461,29 @@ class TaskLauncherService(private val project: Project) {
 
     // ── Task config persistence ───────────────────────────────────────
 
-    // getTaskConfig 在参数面板每次渲染/取值时都会被调用（EDT），
-    // 缓存整份 store，写入时同步更新，避免每次都读盘
-    @Volatile
+    // getTaskConfig 在参数面板每次渲染/取值时都会被调用（EDT），缓存整份 store。
+    // 每次比较文件内容摘要；外部编辑即使保留文件大小和时间戳，也不能被旧缓存覆盖。
     private var configStoreCache: TaskConfigStore? = null
+    private data class ConfigFileStamp(val modified: FileTime, val size: Long, val digest: String)
+    private var configStoreStamp: ConfigFileStamp? = null
+    private var configStoreReadError: Exception? = null
+    private var configStoreInspectionFailed = false
+
+    private fun configFileStamp(path: Path): ConfigFileStamp? {
+        if (!Files.exists(path)) return null
+        val attributes = Files.readAttributes(path, BasicFileAttributes::class.java)
+        val hash = MessageDigest.getInstance("SHA-256")
+        Files.newInputStream(path).use { input ->
+            val bytes = ByteArray(8192)
+            while (true) {
+                val read = input.read(bytes)
+                if (read < 0) break
+                if (read > 0) hash.update(bytes, 0, read)
+            }
+        }
+        val digest = hash.digest().joinToString("") { "%02x".format(it) }
+        return ConfigFileStamp(attributes.lastModifiedTime(), attributes.size(), digest)
+    }
 
     /**
      * 保护 `configStoreCache` 的「读 → 改 → 写 → 回填缓存」整条序列。
@@ -448,9 +499,27 @@ class TaskLauncherService(private val project: Project) {
 
     fun loadTaskConfigs(): TaskConfigStore = synchronized(storeLock) { loadTaskConfigsLocked() }
 
+    fun taskConfigReadError(): String? = synchronized(storeLock) {
+        loadTaskConfigsLocked()
+        configStoreReadError?.message ?: configStoreReadError?.javaClass?.simpleName
+    }
+
     private fun loadTaskConfigsLocked(): TaskConfigStore {
-        configStoreCache?.let { return it }
         val configFile = Paths.get(getWorkspaceRoot(), TASKS_CONFIG_FILE).toFile()
+        val stamp = try {
+            configFileStamp(configFile.toPath())
+        } catch (e: Exception) {
+            LOG.warn("Failed to inspect task configs", e)
+            configStoreReadError = e
+            configStoreInspectionFailed = true
+            return configStoreCache ?: TaskConfigStore().also { configStoreCache = it }
+        }
+        // A transient inspection failure can recover with the same stamp as the last good file.
+        // Re-read once so the old error no longer blocks writes after recovery.
+        if (!configStoreInspectionFailed) {
+            configStoreCache?.takeIf { configStoreStamp == stamp }?.let { return it }
+        }
+        configStoreInspectionFailed = false
         val store = if (!configFile.exists()) {
             TaskConfigStore()
         } else {
@@ -458,18 +527,42 @@ class TaskLauncherService(private val project: Project) {
                 parseTaskConfigStore(objectMapper.readTree(configFile))
             } catch (e: Exception) {
                 LOG.warn("Failed to load task configs", e)
-                TaskConfigStore()
+                // 不能把损坏文件当空配置：物化快照或下一次保存会覆盖用户原文件。
+                // 读路径保留上次有效值供界面显示，写路径在文件修复前明确失败。
+                configStoreReadError = e
+                configStoreStamp = stamp
+                return configStoreCache ?: TaskConfigStore().also { configStoreCache = it }
             }
         }
         configStoreCache = store
+        configStoreStamp = stamp
+        configStoreReadError = null
         return store
     }
 
     private fun parseTaskConfigStore(node: JsonNode): TaskConfigStore {
+        requireConfigShape(node.isObject && node.get("projects")?.isObject == true, "projects")
         val projects = linkedMapOf<String, TaskConfigStore.ProjectConfig>()
         node.get("projects")?.forEachField { projectDir, projectNode ->
+            requireConfigShape(projectNode.isObject, "projects.$projectDir")
+            requireOptionalObject(projectNode, "tasks", "projects.$projectDir")
+            requireOptionalArray(projectNode, "enabledTriggers", "projects.$projectDir")
+            requireOptionalObject(projectNode, "globalConfigs", "projects.$projectDir")
+            requireOptionalObject(projectNode, "uiState", "projects.$projectDir")
+            projectNode.get("enabledTriggers")?.takeIf { it.isArray }?.forEach { trigger ->
+                requireConfigShape(trigger.isTextual, "projects.$projectDir.enabledTriggers[]")
+            }
+            projectNode.get("globalConfigs")?.takeIf { it.isObject }?.forEachField { groupName, groupNode ->
+                requireConfigShape(groupNode.isObject, "projects.$projectDir.globalConfigs.$groupName")
+            }
+            projectNode.get("uiState")?.takeIf { it.isObject }?.forEachField { key, value ->
+                requireConfigShape(value.isBoolean, "projects.$projectDir.uiState.$key")
+            }
             val tasks = linkedMapOf<String, TaskConfig>()
             projectNode.get("tasks")?.forEachField { taskKey, taskNode ->
+                requireConfigShape(taskNode.isObject, "projects.$projectDir.tasks.$taskKey")
+                requireOptionalObject(taskNode, "env", "projects.$projectDir.tasks.$taskKey")
+                requireOptionalObject(taskNode, "params", "projects.$projectDir.tasks.$taskKey")
                 tasks[taskKey] = TaskConfig(
                     extraArgs = taskNode.get("extraArgs")?.asText(null),
                     env = taskNode.get("env")?.takeIf { it.isObject }?.let { envNode ->
@@ -497,19 +590,44 @@ class TaskLauncherService(private val project: Project) {
                     ?.mapNotNull { it.asText(null) }
                     ?: emptyList(),
                 globalConfigs = parseGlobalConfigsNode(projectNode.get("globalConfigs")),
+                uiState = parseUiStateNode(projectNode.get("uiState")),
             )
         }
         return TaskConfigStore(projects = projects)
     }
 
-    fun saveTaskConfigs(store: TaskConfigStore) {
-        val configFile = Paths.get(getWorkspaceRoot(), TASKS_CONFIG_FILE).toFile()
-        configFile.parentFile?.mkdirs()
+    private fun requireConfigShape(valid: Boolean, path: String) {
+        require(valid) { OkScriptToolkitBundle.message("taskLauncher.configShapeError", path) }
+    }
+
+    private fun requireOptionalObject(parent: JsonNode, key: String, path: String) {
+        val value = parent.get(key)
+        requireConfigShape(value == null || value.isNull || value.isObject, "$path.$key")
+    }
+
+    private fun requireOptionalArray(parent: JsonNode, key: String, path: String) {
+        val value = parent.get(key)
+        requireConfigShape(value == null || value.isNull || value.isArray, "$path.$key")
+    }
+
+    private fun saveTaskConfigs(store: TaskConfigStore) {
+        configStoreReadError?.let { throw it }
+        val path = Paths.get(getWorkspaceRoot(), TASKS_CONFIG_FILE)
+        Files.createDirectories(path.parent)
+        val temp = Files.createTempFile(path.parent, "ok-script-toolkit-tasks-", ".tmp")
         try {
-            objectMapper.writerWithDefaultPrettyPrinter().writeValue(configFile, store)
+            objectMapper.writerWithDefaultPrettyPrinter().writeValue(temp.toFile(), store)
+            try {
+                Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(temp, path, StandardCopyOption.REPLACE_EXISTING)
+            }
+            configStoreStamp = configFileStamp(path)
         } catch (e: Exception) {
             LOG.error("Failed to save task configs", e)
             throw e
+        } finally {
+            Files.deleteIfExists(temp)
         }
     }
 
@@ -554,6 +672,25 @@ class TaskLauncherService(private val project: Project) {
     fun saveEnabledTriggers(keys: List<String>, root: String = getTargetRoot()) {
         synchronized(storeLock) {
             val updated = TaskConfigMerge.withEnabledTriggers(loadTaskConfigsLocked(), root, keys)
+            saveTaskConfigs(updated)
+            configStoreCache = updated
+        }
+    }
+
+    // ── UI 折叠状态（任务卡列表分组折叠，对齐 VS Code 侧 uiState） ────
+
+    /** 当前项目的 UI 折叠状态：{taskGroupCollapsed::* 键: 是否折叠} */
+    fun loadUiState(root: String = getTargetRoot()): Map<String, Boolean> =
+        loadTaskConfigs().projects[root]?.uiState ?: emptyMap()
+
+    /**
+     * 写入单个折叠键。折叠切换是低频用户操作，直接在调用线程（EDT）落盘 ——
+     * 与 [saveGlobalConfigGroup] 的同步写先例一致；storeLock 保证与参数/勾选
+     * 写入路径互不交错。
+     */
+    fun saveUiStateValue(key: String, value: Boolean, root: String = getTargetRoot()) {
+        synchronized(storeLock) {
+            val updated = TaskConfigMerge.withUiState(loadTaskConfigsLocked(), root, key, value)
             saveTaskConfigs(updated)
             configStoreCache = updated
         }
@@ -605,6 +742,16 @@ class TaskLauncherService(private val project: Project) {
             if (values != null) groups[groupName] = values
         }
         return groups
+    }
+
+    /** 解析 tasks.json 里的 uiState：{键: 布尔}。非布尔值跳过（旧版本或手改文件容错）。 */
+    private fun parseUiStateNode(node: JsonNode?): Map<String, Boolean> {
+        if (node == null || !node.isObject) return emptyMap()
+        val state = linkedMapOf<String, Boolean>()
+        node.forEachField { key, value ->
+            if (value.isBoolean) state[key] = value.asBoolean()
+        }
+        return state
     }
 
     // ── Schema cache ──────────────────────────────────────────────────

@@ -6,7 +6,10 @@ import com.alicejump.okscripttoolkit.core.AccountStoreService
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.intellij.openapi.project.Project
+import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
+import com.intellij.ui.components.JBTabbedPane
+import com.intellij.ui.components.JBTextArea
 import java.awt.BorderLayout
 import java.awt.Component
 import java.awt.Dimension
@@ -17,11 +20,8 @@ import java.util.concurrent.CompletableFuture
 import javax.swing.JButton
 import javax.swing.JComboBox
 import javax.swing.JDialog
-import javax.swing.JLabel
 import javax.swing.JOptionPane
 import javax.swing.JPanel
-import javax.swing.JTabbedPane
-import javax.swing.JTextArea
 import javax.swing.SwingUtilities
 
 /**
@@ -39,26 +39,29 @@ internal class AccountEditorDialog(
     private val onAccountListSaved: () -> Unit,
 ) {
     private val mapper = ObjectMapper()
+    private val drafts = AccountEditorDrafts()
     private var data: AccountStoreData? = null
     private var busy = false
+    private var refreshingData = false
+    private var renderedMapId: String? = null
     private val dialog = JDialog(
         SwingUtilities.getWindowAncestor(parent),
         msg("taskLauncher.accounts"),
         Dialog.ModalityType.MODELESS,
     )
 
-    private val accountListArea = JTextArea(8, 54)
+    private val accountListArea = JBTextArea(8, 54)
     private val listSave = JButton(msg("annotation.save"))
     private val overrideAccount = JComboBox<String>()
     private val overrideTarget = JComboBox<Target>()
-    private val overrideSummary = JLabel()
+    private val overrideSummary = SchemaFieldUi.WrappingDescription("")
     private val overrideEdit = JButton(msg("taskLauncher.accountEditOverride"))
     private val overrideClear = JButton(msg("taskLauncher.accountClearOverride"))
     private val mapAccount = JComboBox<String>()
-    private val mapArea = JTextArea(9, 54)
+    private val mapArea = JBTextArea(9, 54)
     private val mapSave = JButton(msg("annotation.save"))
     private val reload = JButton(msg("taskLauncher.accountReload"))
-    private val status = JLabel()
+    private val status = SchemaFieldUi.WrappingDescription("")
 
     private data class Target(
         val id: String,
@@ -72,7 +75,7 @@ internal class AccountEditorDialog(
     init {
         accountListArea.lineWrap = false
         mapArea.lineWrap = false
-        val tabs = JTabbedPane().apply {
+        val tabs = JBTabbedPane().apply {
             addTab(msg("taskLauncher.accountList"), buildListTab())
             addTab(msg("taskLauncher.accountOverrides"), buildOverrideTab())
             addTab(msg("taskLauncher.accountMap"), buildMapTab())
@@ -85,15 +88,26 @@ internal class AccountEditorDialog(
                 add(close)
             }, BorderLayout.EAST)
         }
+        val projectRoot = JPanel(BorderLayout(8, 0)).apply {
+            border = javax.swing.BorderFactory.createEmptyBorder(8, 12, 0, 12)
+            add(JBLabel(msg("taskLauncher.envProjectRoot")), BorderLayout.WEST)
+            add(SchemaFieldUi.WrappingDescription(projectDir), BorderLayout.CENTER)
+        }
         dialog.contentPane = JPanel(BorderLayout(8, 8)).apply {
+            add(projectRoot, BorderLayout.NORTH)
             add(tabs, BorderLayout.CENTER)
             add(bottom, BorderLayout.SOUTH)
         }
-        dialog.minimumSize = Dimension(640, 420)
-        dialog.setSize(760, 560)
+        dialog.minimumSize = Dimension(480, 400)
+        val hostWindow = SwingUtilities.getWindowAncestor(parent)
+        dialog.setSize(
+            ((hostWindow?.width ?: 800) - 40).coerceIn(480, 760),
+            ((hostWindow?.height ?: 640) - 80).coerceIn(420, 560),
+        )
         dialog.setLocationRelativeTo(parent)
         listSave.addActionListener {
             perform(service.setListText(projectDir, accountListArea.text), "taskLauncher.accountSaved") {
+                accountListArea.text = data?.accountListText.orEmpty()
                 onAccountListSaved()
             }
         }
@@ -101,10 +115,15 @@ internal class AccountEditorDialog(
         overrideTarget.addActionListener { updateOverrideSummary() }
         overrideEdit.addActionListener { editOverride() }
         overrideClear.addActionListener { clearOverride() }
-        mapAccount.addActionListener { loadMapText() }
+        mapAccount.addActionListener { if (!refreshingData) loadMapText() }
         mapSave.addActionListener {
             val account = mapAccount.selectedItem as? String ?: return@addActionListener
-            perform(service.setMapContent(projectDir, account, mapArea.text), "taskLauncher.accountSaved")
+            val id = data?.let { resolveAccountId(it, account) }
+            perform(service.setMapContent(projectDir, account, mapArea.text), "taskLauncher.accountSaved") {
+                drafts.forgetMap(id)
+                renderedMapId = null
+                loadMapText()
+            }
         }
         reload.addActionListener { load() }
         setBusy(false)
@@ -139,7 +158,7 @@ internal class AccountEditorDialog(
 
     private fun buildListTab(): JPanel = JPanel(BorderLayout(8, 8)).apply {
         border = javax.swing.BorderFactory.createEmptyBorder(12, 12, 12, 12)
-        add(JLabel(msg("taskLauncher.accountListHint")), BorderLayout.NORTH)
+        add(SchemaFieldUi.WrappingDescription(msg("taskLauncher.accountListHint")), BorderLayout.NORTH)
         add(JBScrollPane(accountListArea), BorderLayout.CENTER)
         add(JPanel(FlowLayout(FlowLayout.RIGHT)).apply { add(listSave) }, BorderLayout.SOUTH)
     }
@@ -147,9 +166,9 @@ internal class AccountEditorDialog(
     private fun buildOverrideTab(): JPanel = JPanel(BorderLayout(8, 8)).apply {
         border = javax.swing.BorderFactory.createEmptyBorder(12, 12, 12, 12)
         val selectors = JPanel(GridLayout(2, 2, 8, 8)).apply {
-            add(JLabel(msg("taskLauncher.accountName")))
+            add(JBLabel(msg("taskLauncher.accountName")))
             add(overrideAccount)
-            add(JLabel(msg("taskLauncher.accountTarget")))
+            add(JBLabel(msg("taskLauncher.accountTarget")))
             add(overrideTarget)
         }
         add(selectors, BorderLayout.NORTH)
@@ -163,13 +182,17 @@ internal class AccountEditorDialog(
     private fun buildMapTab(): JPanel = JPanel(BorderLayout(8, 8)).apply {
         border = javax.swing.BorderFactory.createEmptyBorder(12, 12, 12, 12)
         add(JPanel(BorderLayout(8, 0)).apply {
-            add(JLabel(msg("taskLauncher.accountName")), BorderLayout.WEST)
+            add(JBLabel(msg("taskLauncher.accountName")), BorderLayout.WEST)
             add(mapAccount, BorderLayout.CENTER)
         }, BorderLayout.NORTH)
         add(JBScrollPane(mapArea), BorderLayout.CENTER)
-        add(JPanel(BorderLayout()).apply {
-            add(JLabel(msg("taskLauncher.accountMapHint")), BorderLayout.WEST)
-            add(mapSave, BorderLayout.EAST)
+        add(JPanel(BorderLayout(0, 4)).apply {
+            isOpaque = false
+            add(SchemaFieldUi.WrappingDescription(msg("taskLauncher.accountMapHint")), BorderLayout.CENTER)
+            add(JPanel(FlowLayout(FlowLayout.RIGHT, 0, 0)).apply {
+                isOpaque = false
+                add(mapSave)
+            }, BorderLayout.SOUTH)
         }, BorderLayout.SOUTH)
     }
 
@@ -212,17 +235,25 @@ internal class AccountEditorDialog(
     private fun refreshData(fresh: AccountStoreData) {
         val oldOverride = overrideAccount.selectedItem as? String
         val oldMap = mapAccount.selectedItem as? String
-        data = fresh
-        accountListArea.text = fresh.accountListText
-        val names = fresh.accountListText.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.distinct().toList()
-        overrideAccount.removeAllItems()
-        mapAccount.removeAllItems()
-        names.forEach {
-            overrideAccount.addItem(it)
-            mapAccount.addItem(it)
+        val listText = drafts.listText(accountListArea.text, data?.accountListText, fresh.accountListText)
+        captureMapDraft()
+        renderedMapId = null
+        refreshingData = true
+        try {
+            data = fresh
+            accountListArea.text = listText
+            val names = fresh.accountListText.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.distinct().toList()
+            overrideAccount.removeAllItems()
+            mapAccount.removeAllItems()
+            names.forEach {
+                overrideAccount.addItem(it)
+                mapAccount.addItem(it)
+            }
+            if (oldOverride != null && names.contains(oldOverride)) overrideAccount.selectedItem = oldOverride
+            if (oldMap != null && names.contains(oldMap)) mapAccount.selectedItem = oldMap
+        } finally {
+            refreshingData = false
         }
-        if (oldOverride != null && names.contains(oldOverride)) overrideAccount.selectedItem = oldOverride
-        if (oldMap != null && names.contains(oldMap)) mapAccount.selectedItem = oldMap
         refreshTargets()
         loadMapText()
     }
@@ -331,11 +362,20 @@ internal class AccountEditorDialog(
     }
 
     private fun loadMapText() {
+        captureMapDraft()
         val account = mapAccount.selectedItem as? String
         val snapshot = data
         val id = if (account != null && snapshot != null) resolveAccountId(snapshot, account) else ""
-        mapArea.text = if (id.isNotEmpty()) snapshot?.mapContents?.path(id)?.asText("") ?: "" else ""
+        val persisted = if (id.isNotEmpty()) snapshot?.mapContents?.path(id)?.asText("") ?: "" else ""
+        renderedMapId = id.takeIf { it.isNotEmpty() }
+        mapArea.text = drafts.mapText(renderedMapId, persisted)
         mapSave.isEnabled = !busy && account != null
+    }
+
+    private fun captureMapDraft() {
+        val id = renderedMapId ?: return
+        val persisted = data?.mapContents?.path(id)?.asText("") ?: ""
+        drafts.captureMap(id, mapArea.text, persisted)
     }
 
     private fun resolveAccountId(snapshot: AccountStoreData, username: String): String {

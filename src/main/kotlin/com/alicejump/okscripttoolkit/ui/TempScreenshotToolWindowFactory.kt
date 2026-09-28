@@ -927,6 +927,11 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
 }
 
 class ShowTempShotsAction : AnAction() {
+    init {
+        templatePresentation.text = OkScriptToolkitBundle.message("action.showTempShots.text")
+        templatePresentation.description = OkScriptToolkitBundle.message("action.showTempShots.description")
+    }
+
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         ToolWindowManager.getInstance(project)

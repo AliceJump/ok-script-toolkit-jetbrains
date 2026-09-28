@@ -904,6 +904,11 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
 }
 
 class ShowTemplateAssetsAction : AnAction() {
+    init {
+        templatePresentation.text = OkScriptToolkitBundle.message("action.showTemplateAssets.text")
+        templatePresentation.description = OkScriptToolkitBundle.message("action.showTemplateAssets.description")
+    }
+
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         com.intellij.openapi.wm.ToolWindowManager.getInstance(project)

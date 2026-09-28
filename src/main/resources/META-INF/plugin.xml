@@ -35,6 +35,13 @@
             extensions="okcharacters"/>
         <fileEditorProvider implementation="com.alicejump.okscripttoolkit.ui.CharacterManagerEditorProvider"/>
 
+        <fileType
+            name="ok-script Template Gallery"
+            implementationClass="com.alicejump.okscripttoolkit.ui.TemplateGalleryFileType"
+            fieldName="INSTANCE"
+            extensions="oktemplates"/>
+        <fileEditorProvider implementation="com.alicejump.okscripttoolkit.ui.TemplateGalleryEditorProvider"/>
+
         <codeInsight.declarativeInlayProvider
             language="Python"
             providerId="ok.script.toolkit.python"
@@ -91,25 +98,24 @@
     <actions>
         <action
             id="com.alicejump.okscripttoolkit.ShowTemplates"
-            class="com.alicejump.okscripttoolkit.ui.ShowTemplatesAction"
-            text="Show ok-script Templates"
-            description="Open the ok-script template gallery">
+            class="com.alicejump.okscripttoolkit.ui.ShowTemplatesAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
             <keyboard-shortcut keymap="$default" first-keystroke="control alt T"/>
             <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt T"/>
         </action>
         <action
+            id="com.alicejump.okscripttoolkit.OpenTemplateGalleryEditor"
+            class="com.alicejump.okscripttoolkit.ui.OpenTemplateGalleryEditorAction">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+        <action
             id="com.alicejump.okscripttoolkit.ShowTasks"
-            class="com.alicejump.okscripttoolkit.tasklauncher.ShowTasksAction"
-            text="Show ok-script Tasks"
-            description="Open the ok-script task launcher">
+            class="com.alicejump.okscripttoolkit.tasklauncher.ShowTasksAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
         <action
             id="com.alicejump.okscripttoolkit.ShowTemplateAssets"
-            class="com.alicejump.okscripttoolkit.ui.ShowTemplateAssetsAction"
-            text="Show ok-script Template Assets"
-            description="Open the ok-script template asset manager">
+            class="com.alicejump.okscripttoolkit.ui.ShowTemplateAssetsAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
         <!-- 文案在 Action 代码里走 bundle（i18n 铁律），这里只声明 id / class / 默认键位。
@@ -123,16 +129,12 @@
         </action>
         <action
             id="com.alicejump.okscripttoolkit.ShowCharacterManager"
-            class="com.alicejump.okscripttoolkit.ui.ShowCharacterManagerAction"
-            text="Show ok-script Characters"
-            description="Open the ok-script character manager">
+            class="com.alicejump.okscripttoolkit.ui.ShowCharacterManagerAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
         <action
             id="com.alicejump.okscripttoolkit.ShowTempShots"
-            class="com.alicejump.okscripttoolkit.ui.ShowTempShotsAction"
-            text="Show ok-script Temp Shots"
-            description="Open the ok-script temp screenshot viewer">
+            class="com.alicejump.okscripttoolkit.ui.ShowTempShotsAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
         <!-- 文案同样走 Action 代码里的 bundle，这里只声明 id / class -->
