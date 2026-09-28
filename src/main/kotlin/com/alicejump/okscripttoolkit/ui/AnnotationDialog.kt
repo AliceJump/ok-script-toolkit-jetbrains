@@ -521,8 +521,17 @@ class AnnotationDialog(
     private fun buildTakenCategories(currentFile: String): Map<String, String> {
         if (editingBoxes) {
             val taken = project.service<BoxCatalogService>().pathOwnersExcept(currentFile).toMutableMap()
+            for (open in sessionByFile.values) {
+                if (!open.dirty || BoxCatalogService.sameImage(open.fileName, currentFile)) continue
+                taken.keys.filter { key -> BoxCatalogService.sameImage(taken[key].orEmpty(), open.fileName) }
+                    .toList()
+                    .forEach { taken.remove(it) }
+                open.boxes.forEach { taken[it.categoryName] = open.fileName }
+                open.preserved.forEach { taken.putIfAbsent(it.path, open.fileName) }
+            }
             val current = sessionByFile[currentFile] ?: session?.takeIf { it.fileName == currentFile }
             current?.boxes?.forEach { taken.putIfAbsent(it.categoryName, currentFile) }
+            current?.preserved?.forEach { taken.putIfAbsent(it.path, currentFile) }
             return taken
         }
         val categories = data.categories()
