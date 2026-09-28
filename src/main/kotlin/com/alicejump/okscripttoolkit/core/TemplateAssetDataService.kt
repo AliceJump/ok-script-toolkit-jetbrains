@@ -320,29 +320,45 @@ class TemplateAssetDataService(private val project: Project) {
     enum class SwapSaveResult { SAVED, CHANGED, FAILED }
 
     /**
-     * 交换写盘：在同一把锁内先核对两张图的当前标注仍是确认前的快照，再整体提交。
-     * 内存与磁盘都要核对 —— 其他编辑器可能只改了其中一边。
+     * 交换用的真实尺寸：先读图片头，读不到再用 COCO 记录（与 VS Code `resolveImageSize` 同序）。
+     * COCO 里的旧尺寸可能早已不是磁盘上那张图的尺寸。
+     */
+    @Synchronized
+    fun swapImageSize(file: File): Pair<Int, Int>? {
+        readImageHeaderSize(file)?.takeIf { it.first > 0 && it.second > 0 }?.let { return it }
+        val entry = cocoData.findImageByFileName(file.name) ?: return null
+        return if (entry.width > 0 && entry.height > 0) entry.width to entry.height else null
+    }
+
+    /**
+     * 交换写盘：在同一把锁内核对确认前的快照，再整体提交。
+     * - 两张图的尺寸与确认时一致（图片可能被外部替换）；
+     * - 磁盘 COCO 仍存在且与内存完全一致 —— 外部只改第三张图也不能被旧内存整份覆盖；
+     * - 两张图的当前标注仍是确认前的快照（IDE 内其他编辑器经本服务写入的修改）。
      */
     @Synchronized
     fun saveSwapEdits(
         expected: Map<String, List<Pair<String, IntArray>>>,
+        expectedSizes: Map<File, Pair<Int, Int>>,
         edits: List<CocoAnnotationEdit>,
     ): SwapSaveResult {
-        val disk = cocoFile?.toFile()?.takeIf { it.isFile }?.let {
-            try {
-                parseCoco(JSON.readTree(it))
-            } catch (e: Exception) {
-                LOG.warn("Failed to re-read COCO data before swap", e)
-                return SwapSaveResult.FAILED
-            }
+        for ((file, size) in expectedSizes) {
+            if (swapImageSize(file) != size) return SwapSaveResult.CHANGED
         }
-        for (coco in listOfNotNull(cocoData, disk)) {
-            val names = coco.categories.associate { it.id to it.name }
-            for ((fileName, boxes) in expected) {
-                val current = coco.findImageByFileName(fileName)?.let { coco.annotationsForImage(it.id) }.orEmpty()
-                val named = AnnotationSwap.namedBoxes(current, names) ?: return SwapSaveResult.CHANGED
-                if (!AnnotationSwap.sameBoxes(named, boxes)) return SwapSaveResult.CHANGED
-            }
+        val file = cocoFile?.toFile() ?: return SwapSaveResult.FAILED
+        if (!file.isFile) return SwapSaveResult.CHANGED
+        val disk = try {
+            parseCoco(JSON.readTree(file))
+        } catch (e: Exception) {
+            LOG.warn("Failed to re-read COCO data before swap", e)
+            return SwapSaveResult.FAILED
+        }
+        if (serializeCoco(disk) != serializeCoco(cocoData)) return SwapSaveResult.CHANGED
+        val names = cocoData.categories.associate { it.id to it.name }
+        for ((fileName, boxes) in expected) {
+            val current = cocoData.findImageByFileName(fileName)?.let { cocoData.annotationsForImage(it.id) }.orEmpty()
+            val named = AnnotationSwap.namedBoxes(current, names) ?: return SwapSaveResult.CHANGED
+            if (!AnnotationSwap.sameBoxes(named, boxes)) return SwapSaveResult.CHANGED
         }
         return if (saveAnnotationEdits(edits)) SwapSaveResult.SAVED else SwapSaveResult.FAILED
     }

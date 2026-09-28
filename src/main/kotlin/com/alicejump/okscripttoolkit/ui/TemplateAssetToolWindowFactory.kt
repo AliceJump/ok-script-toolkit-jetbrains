@@ -444,8 +444,12 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             target.file.name, targetSize, targetBoxes,
         )
         val expected = mapOf(source.file.name to sourceBoxes, target.file.name to targetBoxes)
+        val expectedSizes = mapOf(
+            source.file to (sourceSize.width to sourceSize.height),
+            target.file to (targetSize.width to targetSize.height),
+        )
         if (!swapGate.begin()) return
-        CompletableFuture.supplyAsync { data.saveSwapEdits(expected, edits) }.whenComplete { result, error ->
+        CompletableFuture.supplyAsync { data.saveSwapEdits(expected, expectedSizes, edits) }.whenComplete { result, error ->
             SwingUtilities.invokeLater {
                 if (error == null && result == TemplateAssetDataService.SwapSaveResult.CHANGED) {
                     notify(OkScriptToolkitBundle.message("templateAsset.swapChanged"), NotificationType.WARNING)
@@ -466,15 +470,12 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     }
 
     /**
-     * 图片的真实尺寸，供比例映射用。
-     *
-     * `TemplateImage` 的宽高在 COCO 里可能是 0（老数据），那时只读图片头。
+     * 图片的真实尺寸，供比例映射用：先读图片头，读不到再用 COCO 记录。
      * 两者都拿不到就返回 null，让调用方拒绝交换。
      */
     private fun resolveSize(img: TemplateImage): AnnotationSwap.Size? {
-        if (img.width > 0 && img.height > 0) return AnnotationSwap.Size(img.width, img.height)
-        val (width, height) = data.readImageHeaderSize(img.file) ?: return null
-        return if (width > 0 && height > 0) AnnotationSwap.Size(width, height) else null
+        val (width, height) = data.swapImageSize(img.file) ?: return null
+        return AnnotationSwap.Size(width, height)
     }
 
     /** 缩略图解码只在后台线程做，完成后回填到仍显示中的卡片（网格重渲染会换新 label）；
