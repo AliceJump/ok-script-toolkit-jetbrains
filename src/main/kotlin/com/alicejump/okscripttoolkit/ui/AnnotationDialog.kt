@@ -41,10 +41,14 @@ import java.awt.image.BufferedImage
 import javax.imageio.ImageIO
 import javax.swing.AbstractAction
 import javax.swing.BorderFactory
+import javax.swing.BoxLayout
 import javax.swing.JButton
+import javax.swing.JCheckBox
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JPanel
+import javax.swing.JScrollPane
+import javax.swing.JSplitPane
 import javax.swing.JTextArea
 import javax.swing.JToggleButton
 import javax.swing.KeyStroke
@@ -61,6 +65,7 @@ import javax.swing.SwingUtilities
  * - 双击编辑框（分类 + x/y/w/h 数值微调），分类名全项目唯一性校验
  * - ←/→ 跨图导航（imageList）：每张图的编辑保留在会话内，
  *   OK 一次性把全部改动图写回 coco_annotations.json，Cancel 全部放弃。
+ * - 右侧标注列表控制显隐。隐藏只影响本次编辑的画布，不写回 COCO，也不进撤销栈。
  * 与 VSCode 版（逐操作自动落盘的常驻面板）不同，这里遵循 IDE 模态对话框的
  * OK/Cancel 语义，落盘时机收敛到 OK。
  */
@@ -125,10 +130,16 @@ class AnnotationDialog(
         val undo: ArrayDeque<List<BoxItem>> = ArrayDeque(),
         val redo: ArrayDeque<List<BoxItem>> = ArrayDeque(),
         var dirty: Boolean = false,
+        /** 本次对话框内隐藏的条目标记。不落盘，撤销几何时也不恢复它。 */
+        val hiddenIds: MutableSet<Int> = mutableSetOf(),
     )
 
     private var session: ImageSession? = null
     private val sessionByFile = mutableMapOf<String, ImageSession>()
+    private val annotationRows = JPanel()
+    private val onlyCurrentButton = JButton(OkScriptToolkitBundle.message("annotation.visibility.onlyCurrent"))
+    private var annotationListSignature = ""
+    private var annotationListRefreshPosted = false
     private var currentIndex = startIndex.coerceIn(0, (imageList.size - 1).coerceAtLeast(0))
     private var loading = false
 
@@ -181,7 +192,10 @@ class AnnotationDialog(
 
         val root = JPanel(BorderLayout(0, 4))
         root.add(toolbar, BorderLayout.NORTH)
-        root.add(canvasWrap, BorderLayout.CENTER)
+        root.add(JSplitPane(JSplitPane.HORIZONTAL_SPLIT, canvasWrap, buildAnnotationList()).apply {
+            resizeWeight = 1.0
+            dividerLocation = 680
+        }, BorderLayout.CENTER)
 
         colorLabel.font = colorLabel.font.deriveFont(Font.PLAIN, 11f)
         hintLabel.font = hintLabel.font.deriveFont(Font.PLAIN, 10f)
@@ -192,6 +206,75 @@ class AnnotationDialog(
         footer.add(hintLabel, BorderLayout.CENTER)
         root.add(footer, BorderLayout.SOUTH)
         return root
+    }
+
+    private fun buildAnnotationList(): JComponent {
+        val showAll = JButton(OkScriptToolkitBundle.message("annotation.visibility.showAll"))
+        val hideAll = JButton(OkScriptToolkitBundle.message("annotation.visibility.hideAll"))
+        showAll.isFocusable = false
+        hideAll.isFocusable = false
+        onlyCurrentButton.isFocusable = false
+        showAll.addActionListener { canvas.showAllAnnotations() }
+        hideAll.addActionListener { canvas.hideAllAnnotations() }
+        onlyCurrentButton.addActionListener { canvas.showOnlyCurrentAnnotation() }
+        val actions = JPanel()
+        actions.layout = BoxLayout(actions, BoxLayout.Y_AXIS)
+        listOf(showAll, hideAll, onlyCurrentButton).forEach { button ->
+            button.alignmentX = 0f
+            button.maximumSize = Dimension(Int.MAX_VALUE, button.preferredSize.height)
+            actions.add(button)
+        }
+        annotationRows.layout = BoxLayout(annotationRows, BoxLayout.Y_AXIS)
+        val scroll = JScrollPane(annotationRows)
+        scroll.border = BorderFactory.createEmptyBorder()
+        val panel = JPanel(BorderLayout(0, 4))
+        panel.preferredSize = Dimension(220, 560)
+        panel.border = BorderFactory.createEmptyBorder(0, 8, 0, 0)
+        panel.add(JBLabel(OkScriptToolkitBundle.message("annotation.list.title")), BorderLayout.NORTH)
+        val body = JPanel(BorderLayout(0, 4))
+        body.add(actions, BorderLayout.NORTH)
+        body.add(scroll, BorderLayout.CENTER)
+        panel.add(body, BorderLayout.CENTER)
+        return panel
+    }
+
+    private fun requestAnnotationListSync() {
+        if (annotationListRefreshPosted) return
+        annotationListRefreshPosted = true
+        SwingUtilities.invokeLater {
+            annotationListRefreshPosted = false
+            syncAnnotationList()
+        }
+    }
+
+    private fun syncAnnotationList() {
+        val snapshot = canvas.boxSnapshot()
+        val hidden = canvas.hiddenIdSnapshot()
+        val selected = canvas.selectedIndex()
+        val signature = snapshot.joinToString("|") { "${it.id}:${it.categoryName}:${it.id in hidden}" } + "#$selected"
+        if (signature == annotationListSignature) return
+        annotationListSignature = signature
+        annotationRows.removeAll()
+        if (snapshot.isEmpty()) {
+            annotationRows.add(JBLabel(OkScriptToolkitBundle.message("annotation.list.empty")))
+        } else {
+            snapshot.forEach { box ->
+                val checkbox = JCheckBox(box.categoryName, box.id !in hidden)
+                checkbox.isFocusable = false
+                checkbox.alignmentX = 0f
+                if (snapshot.getOrNull(selected)?.id == box.id) {
+                    checkbox.font = checkbox.font.deriveFont(Font.BOLD)
+                }
+                checkbox.addActionListener {
+                    canvas.selectById(box.id)
+                    canvas.setBoxVisible(box.id, checkbox.isSelected)
+                }
+                annotationRows.add(checkbox)
+            }
+        }
+        onlyCurrentButton.isEnabled = selected >= 0
+        annotationRows.revalidate()
+        annotationRows.repaint()
     }
 
     private fun loadImage(index: Int) {
@@ -212,10 +295,11 @@ class AnnotationDialog(
                 val annotations: List<CocoAnnotation> =
                     cocoImage?.let { data.getAnnotationsForImage(it.id) } ?: emptyList()
                 val categories: List<CocoCategory> = data.categories()
+                var nextId = 1
                 val boxes = annotations.mapNotNull { ann ->
                     if (ann.bbox.size < 4) return@mapNotNull null
                     val name = categories.firstOrNull { it.id == ann.categoryId }?.name ?: "#${ann.categoryId}"
-                    BoxItem(name, Rect(ann.bbox[0], ann.bbox[1], ann.bbox[2], ann.bbox[3]))
+                    BoxItem(name, Rect(ann.bbox[0], ann.bbox[1], ann.bbox[2], ann.bbox[3]), nextId++)
                 }.toMutableList()
                 ImageSession(
                     fileName = target.file.name,
@@ -309,7 +393,7 @@ class AnnotationDialog(
         fun contains(px: Int, py: Int) = px >= x && px <= x + w && py >= y && py <= y + h
     }
 
-    private data class BoxItem(val categoryName: String, val rect: Rect)
+    private data class BoxItem(val categoryName: String, val rect: Rect, val id: Int)
 
     /** 坐标框的调整拖拽：handle 为空表示整体移动 */
     private data class CoordDrag(val handle: String?, val start: Point, val orig: Rect)
@@ -383,6 +467,50 @@ class AnnotationDialog(
             syncButtons()
             cursor = Cursor.getDefaultCursor()
             repaint()
+        }
+
+        fun boxSnapshot(): List<BoxItem> = boxes.toList()
+
+        fun hiddenIdSnapshot(): Set<Int> = sessionRef?.hiddenIds?.toSet() ?: emptySet()
+
+        fun selectedIndex(): Int = selected
+
+        fun selectById(id: Int) {
+            val index = boxes.indexOfFirst { it.id == id }
+            if (index >= 0) selected = index
+        }
+
+        fun setBoxVisible(id: Int, visible: Boolean) {
+            val hidden = sessionRef?.hiddenIds ?: return
+            if (visible) hidden.remove(id) else hidden.add(id)
+            repaint()
+        }
+
+        fun showAllAnnotations() {
+            sessionRef?.hiddenIds?.clear()
+            repaint()
+        }
+
+        fun hideAllAnnotations() {
+            val hidden = sessionRef?.hiddenIds ?: return
+            hidden.clear()
+            hidden.addAll(boxes.map { it.id })
+            repaint()
+        }
+
+        fun showOnlyCurrentAnnotation() {
+            val hidden = sessionRef?.hiddenIds ?: return
+            val keep = boxes.getOrNull(selected)?.id
+            hidden.clear()
+            hidden.addAll(boxes.map { it.id }.filter { it != keep })
+            repaint()
+        }
+
+        private fun allocateId(): Int = (boxes.maxOfOrNull { it.id } ?: 0) + 1
+
+        private fun isShown(index: Int): Boolean {
+            val hidden = sessionRef?.hiddenIds ?: return true
+            return boxes[index].id !in hidden
         }
 
         fun showLoadFailed() {
@@ -775,7 +903,7 @@ class AnnotationDialog(
                 x = x.coerceIn(0, (img.width - box.rect.w).coerceAtLeast(0))
                 y = y.coerceIn(0, (img.height - box.rect.h).coerceAtLeast(0))
             }
-            boxes.add(BoxItem(box.categoryName, Rect(x, y, box.rect.w, box.rect.h)))
+            boxes.add(BoxItem(box.categoryName, Rect(x, y, box.rect.w, box.rect.h), allocateId()))
             selected = boxes.size - 1
             syncButtons()
             repaint()
@@ -820,7 +948,7 @@ class AnnotationDialog(
                 showBBoxDialog(null, clamped) { category, finalRect ->
                     if (category != null) {
                         pushUndo()
-                        boxes.add(BoxItem(category, finalRect))
+                        boxes.add(BoxItem(category, finalRect, allocateId()))
                         selected = boxes.size - 1
                         syncButtons()
                     }
@@ -1005,7 +1133,7 @@ class AnnotationDialog(
             showBBoxDialog(box.categoryName, box.rect) { category, rect ->
                 if (category != null) {
                     pushUndo()
-                    boxes[idx] = BoxItem(category, rect)
+                    boxes[idx] = boxes[idx].copy(categoryName = category, rect = rect)
                     syncButtons()
                     repaint()
                 }
@@ -1086,6 +1214,7 @@ class AnnotationDialog(
 
         private fun findHandleAt(p: Point): Pair<Int, String?> {
             for (i in boxes.indices.reversed()) {
+                if (!isShown(i)) continue
                 val handle = detectHandle(p.x.toDouble(), p.y.toDouble(), toScreenRect(boxes[i].rect))
                 if (handle != null) return i to handle
             }
@@ -1094,6 +1223,7 @@ class AnnotationDialog(
 
         private fun hitBox(p: Point): Int {
             for (i in boxes.indices.reversed()) {
+                if (!isShown(i)) continue
                 val screen = toScreenRect(boxes[i].rect)
                 if (screen.contains(p)) return i
             }
@@ -1140,7 +1270,7 @@ class AnnotationDialog(
                 if (nx + nw > img.width) nw = img.width - nx
                 if (ny + nh > img.height) nh = img.height - ny
             }
-            boxes[selected] = BoxItem(boxes[selected].categoryName, Rect(nx.toInt(), ny.toInt(), nw.toInt(), nh.toInt()))
+            boxes[selected] = boxes[selected].copy(rect = Rect(nx.toInt(), ny.toInt(), nw.toInt(), nh.toInt()))
         }
 
         // ── 坐标转换 ──
@@ -1185,6 +1315,7 @@ class AnnotationDialog(
         // ── 绘制 ──
 
         override fun paintComponent(g: Graphics) {
+            requestAnnotationListSync()
             super.paintComponent(g)
             val img = source
             val g2 = g as Graphics2D
@@ -1203,6 +1334,7 @@ class AnnotationDialog(
             g2.drawImage(img, offsetX.toInt(), offsetY.toInt(), drawW, drawH, null)
 
             boxes.forEachIndexed { i, box ->
+                if (!isShown(i)) return@forEachIndexed
                 val r = toScreenRect(box.rect)
                 val isSel = i == selected
                 val isHov = i == hovered
