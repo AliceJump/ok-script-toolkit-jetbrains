@@ -25,6 +25,9 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v4
+        with:
+          # 配置缓存里可能含凭据，Action 只有拿到这把密钥才会保存和恢复它。
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
       # ⚠️ 这里**没有也不该有** `verifyPlugin`（Plugin Verifier：真的下载 IDE 去查
       # 废弃 / 实验性 / internal API）：
       #   1. 它慢且要联网，真正的校验放在父仓 `release.yml`；
