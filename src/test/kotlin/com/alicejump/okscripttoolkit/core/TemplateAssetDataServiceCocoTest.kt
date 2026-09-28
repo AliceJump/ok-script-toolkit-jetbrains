@@ -277,10 +277,13 @@ class TemplateAssetDataServiceCocoTest {
         assertEquals(listOf(9, 9, 1, 1), restored.getAnnotationsForImage(target.id).single().bbox.toList())
     }
 
-    private fun swapSizes(root: java.io.File) = mapOf(
-        root.resolve("ok_templates/source.png") to (10 to 10),
-        root.resolve("ok_templates/target.png") to (10 to 10),
-    )
+    /** Placeholder images without a readable header, so the size comes from COCO. */
+    private fun swapSizes(root: java.io.File): Map<java.io.File, Pair<Int, Int>> {
+        val dir = root.resolve("ok_templates").apply { mkdirs() }
+        return listOf("source.png", "target.png").associate { name ->
+            dir.resolve(name).apply { if (!exists()) writeBytes(byteArrayOf(1)) } to (10 to 10)
+        }
+    }
 
     @Test
     fun `swap save rejects other COCO changes, a deleted COCO file and replaced images`() {
@@ -320,6 +323,12 @@ class TemplateAssetDataServiceCocoTest {
         javax.imageio.ImageIO.write(java.awt.image.BufferedImage(4, 3, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", target)
         assertEquals(4 to 3, replaced.swapImageSize(target), "the image header wins over stale COCO dimensions")
         val beforeReplace = cocoFile.readText()
+        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, replaced.saveSwapEdits(expected, sizes, edits))
+        assertEquals(beforeReplace, cocoFile.readText())
+
+        // A deleted image must not pass by falling back to its COCO size.
+        assertTrue(target.delete())
+        assertEquals(10 to 10, replaced.swapImageSize(target))
         assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, replaced.saveSwapEdits(expected, sizes, edits))
         assertEquals(beforeReplace, cocoFile.readText())
     }

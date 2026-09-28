@@ -332,7 +332,7 @@ class TemplateAssetDataService(private val project: Project) {
 
     /**
      * 交换写盘：在同一把锁内核对确认前的快照，再整体提交。
-     * - 两张图的尺寸与确认时一致（图片可能被外部替换）；
+     * - 两张图仍在磁盘上，且尺寸与确认时一致（图片可能被外部删除或替换）；
      * - 磁盘 COCO 仍存在且与内存完全一致 —— 外部只改第三张图也不能被旧内存整份覆盖；
      * - 两张图的当前标注仍是确认前的快照（IDE 内其他编辑器经本服务写入的修改）。
      */
@@ -342,8 +342,9 @@ class TemplateAssetDataService(private val project: Project) {
         expectedSizes: Map<File, Pair<Int, Int>>,
         edits: List<CocoAnnotationEdit>,
     ): SwapSaveResult {
+        // A deleted image would otherwise fall back to its COCO size and still pass.
         for ((file, size) in expectedSizes) {
-            if (swapImageSize(file) != size) return SwapSaveResult.CHANGED
+            if (!file.isFile || swapImageSize(file) != size) return SwapSaveResult.CHANGED
         }
         val file = cocoFile?.toFile() ?: return SwapSaveResult.FAILED
         if (!file.isFile) return SwapSaveResult.CHANGED
