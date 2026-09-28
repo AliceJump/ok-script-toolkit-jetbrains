@@ -116,7 +116,7 @@ object BoxResource {
         for (box in authoring.boxes) {
             seen += box.path
             val published = runtimeByPath[box.path]
-            val same = published != null && published.rect.contentEquals(box.rect)
+            val same = published != null && sameQuantized(published.rect, box.rect)
             result += PathStatus(box.path, if (same) PublishStatus.SAME else PublishStatus.UNPUBLISHED)
         }
         for (box in runtime.boxes) {
@@ -225,17 +225,37 @@ object BoxResource {
         val body = unique.joinToString(",\n") { box ->
             val fields = mutableListOf(""""path": ${jsonString(box.path)}""")
             if (includeImage) fields += """"image": ${jsonString(box.image)}"""
-            fields += """"rect": [${box.rect.joinToString(", ") { formatNumber(it) }}]"""
+            val rect = stableRect(box.rect)
+        fields += """"rect": [${rect.joinToString(", ") { formatNumber(it) }}]"""
             fields.joinToString(",\n      ", prefix = "    {\n      ", postfix = "\n    }")
         }
         val array = if (body.isEmpty()) "[]" else "[\n$body\n  ]"
         return "{\n  \"version\": $VERSION,\n  \"boxes\": $array\n}\n"
     }
 
+    private fun sameQuantized(a: DoubleArray, b: DoubleArray): Boolean {
+        if (a.size != b.size) return false
+        return a.indices.all { formatNumber(a[it]) == formatNumber(b[it]) }
+    }
+
     private fun formatNumber(value: Double): String {
         val rounded = Math.round(value * 1_000_000.0) / 1_000_000.0
         val normalized = if (rounded == 0.0) 0.0 else rounded
         return "%.${RECT_DECIMALS}f".format(java.util.Locale.US, normalized)
+    }
+
+    private fun stableRect(rect: DoubleArray): DoubleArray {
+        if (rect.size != 4) return rect
+        val out = DoubleArray(4) { formatNumber(rect[it]).toDouble() }
+        if (out[0] >= out[2]) {
+            if (out[2] < 1.0) out[2] = (out[0] + 0.000001).coerceAtMost(1.0)
+            if (out[0] >= out[2]) out[0] = (out[2] - 0.000001).coerceAtLeast(0.0)
+        }
+        if (out[1] >= out[3]) {
+            if (out[3] < 1.0) out[3] = (out[1] + 0.000001).coerceAtMost(1.0)
+            if (out[1] >= out[3]) out[1] = (out[3] - 0.000001).coerceAtLeast(0.0)
+        }
+        return out
     }
 
     private fun jsonString(value: String): String = buildString {
@@ -247,7 +267,7 @@ object BoxResource {
                 '\n' -> append("\\n")
                 '\r' -> append("\\r")
                 '\t' -> append("\\t")
-                else -> append(char)
+                else -> if (char.code < 0x20) append("\\u%04x".format(char.code)) else append(char)
             }
         }
         append('"')

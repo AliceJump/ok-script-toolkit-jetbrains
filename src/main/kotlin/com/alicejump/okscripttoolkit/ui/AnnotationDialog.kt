@@ -142,6 +142,9 @@ class AnnotationDialog(
         val hiddenIds: MutableSet<Int> = mutableSetOf(),
         /** 打开时的归一化矩形，按条目标记。像素没变时写回原值。 */
         val sourceRects: MutableMap<Int, DoubleArray> = mutableMapOf(),
+        /** 这次打不开、但保存时必须原样留在文件里的框。 */
+        val preserved: MutableList<BoxResource.AuthoringBox> = mutableListOf(),
+        var nextBoxId: Int = 1,
     )
 
     private var session: ImageSession? = null
@@ -240,9 +243,9 @@ class AnnotationDialog(
     private fun buildAnnotationList(): JComponent {
         val showAll = JButton(OkScriptToolkitBundle.message("annotation.visibility.showAll"))
         val hideAll = JButton(OkScriptToolkitBundle.message("annotation.visibility.hideAll"))
-        showAll.isFocusable = false
-        hideAll.isFocusable = false
-        onlyCurrentButton.isFocusable = false
+        showAll.isFocusable = true
+        hideAll.isFocusable = true
+        onlyCurrentButton.isFocusable = true
         showAll.addActionListener { canvas.showAllAnnotations() }
         hideAll.addActionListener { canvas.hideAllAnnotations() }
         onlyCurrentButton.addActionListener { canvas.showOnlyCurrentAnnotation() }
@@ -295,17 +298,19 @@ class AnnotationDialog(
                 row.alignmentX = 0f
                 val checkbox = JCheckBox()
                 checkbox.isSelected = box.id !in hidden
-                checkbox.isFocusable = false
+                checkbox.isFocusable = true
                 checkbox.addActionListener { canvas.setBoxVisible(box.id, checkbox.isSelected) }
-                val name = JLabel(box.categoryName)
+                val name = JButton(box.categoryName)
+                name.isFocusable = true
+                name.isBorderPainted = false
+                name.isContentAreaFilled = false
+                name.horizontalAlignment = javax.swing.SwingConstants.LEFT
                 name.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
                 if (selectedRow) name.font = name.font.deriveFont(Font.BOLD)
-                name.addMouseListener(object : MouseAdapter() {
-                    override fun mousePressed(e: MouseEvent) {
-                        canvas.selectById(box.id)
-                        canvas.requestFocusInWindow()
-                    }
-                })
+                name.addActionListener {
+                    canvas.selectById(box.id)
+                    canvas.requestFocusInWindow()
+                }
                 row.add(checkbox, BorderLayout.WEST)
                 row.add(name, BorderLayout.CENTER)
                 row.maximumSize = Dimension(Int.MAX_VALUE, row.preferredSize.height)
@@ -335,11 +340,16 @@ class AnnotationDialog(
                 val size = buffered?.let { it.width to it.height }
                 var nextId = 1
                 val sourceRects = mutableMapOf<Int, DoubleArray>()
+                val preserved = mutableListOf<BoxResource.AuthoringBox>()
                 val boxes = if (editingBoxes) {
                     val width = size?.first ?: 0
                     val height = size?.second ?: 0
                     project.service<BoxCatalogService>().boxesForImage(target.file.name).mapNotNull { box ->
-                        val pixel = BoxResource.rectToPixel(box.rect, width, height) ?: return@mapNotNull null
+                        val pixel = BoxResource.rectToPixel(box.rect, width, height)
+                        if (pixel == null) {
+                            preserved += box
+                            return@mapNotNull null
+                        }
                         val id = nextId++
                         sourceRects[id] = box.rect.copyOf()
                         BoxItem(box.path, Rect(pixel.x, pixel.y, pixel.w, pixel.h), id)
@@ -361,6 +371,8 @@ class AnnotationDialog(
                     // 尚未注册进 COCO 的图（如新截图）也可标注：记住尺寸，保存时自动注册
                     newSize = size,
                     sourceRects = sourceRects,
+                    preserved = preserved,
+                    nextBoxId = nextId,
                 ) to buffered
             }
             loaded.exceptionOrNull()?.let { LOG.warn("Failed to open annotation editor for ${target.name}", it) }
@@ -448,15 +460,15 @@ class AnnotationDialog(
         checks.forEach { list.add(it) }
         form.add(JScrollPane(list), BorderLayout.CENTER)
         form.add(pathField, BorderLayout.SOUTH)
-        val choice = Messages.showOkCancelDialog(
-            project,
-            form,
-            OkScriptToolkitBundle.message("annotation.generateTitle"),
-            Messages.getOkButton(),
-            Messages.getCancelButton(),
-            null,
-        )
-        if (choice != Messages.OK) return
+        val dialog = object : DialogWrapper(project, true) {
+            init {
+                title = OkScriptToolkitBundle.message("annotation.generateTitle")
+                init()
+            }
+
+            override fun createCenterPanel(): JComponent = form
+        }
+        if (!dialog.showAndGet()) return
         val chosen = session.boxes.filterIndexed { index, _ -> checks[index].isSelected }
         if (chosen.isEmpty()) return
         val rect = if (chosen.size == 1) {
@@ -474,7 +486,12 @@ class AnnotationDialog(
         } ?: return
         val error = project.service<BoxCatalogService>().addBox(pathField.text.trim(), session.fileName, rect)
         if (error != null) {
-            Messages.showErrorDialog(project, OkScriptToolkitBundle.message("annotation.pathInvalid"),
+            val key = when (error) {
+                "duplicate" -> "annotation.generateDuplicate"
+                "write", "parse" -> "annotation.saveFailed"
+                else -> "annotation.pathInvalid"
+            }
+            Messages.showErrorDialog(project, OkScriptToolkitBundle.message(key),
                 OkScriptToolkitBundle.message("annotation.generateTitle"))
             return
         }
@@ -499,6 +516,8 @@ class AnnotationDialog(
                         box.rect.h,
                         session.sourceRects[box.id],
                     )
+                } + session.preserved.map { box ->
+                    BoxCatalogService.EditedBox(box.path, 0, 0, 1, 1, box.rect, unchanged = true)
                 },
             )
             if (error != null) return false
@@ -633,6 +652,7 @@ class AnnotationDialog(
             if (nx == box.rect.x && ny == box.rect.y) return true
             pushUndo()
             boxes[selected] = box.copy(rect = box.rect.copy(x = nx, y = ny))
+            syncButtons()
             repaint()
             return true
         }
@@ -663,7 +683,12 @@ class AnnotationDialog(
             repaint()
         }
 
-        private fun allocateId(): Int = (boxes.maxOfOrNull { it.id } ?: 0) + 1
+        private fun allocateId(): Int {
+            val session = sessionRef ?: return (boxes.maxOfOrNull { it.id } ?: 0) + 1
+            val id = session.nextBoxId
+            session.nextBoxId = id + 1
+            return id
+        }
 
         private fun isShown(index: Int): Boolean {
             val hidden = sessionRef?.hiddenIds ?: return true

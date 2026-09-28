@@ -2,8 +2,11 @@ package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.BoxCatalogService
+import com.alicejump.okscripttoolkit.core.OkDataChangeListener
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
+import com.alicejump.okscripttoolkit.core.ScreenshotCapture
 import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
+import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -66,13 +69,14 @@ private class BoxAssetPanel(private val project: Project) : JPanel(BorderLayout(
             }
         })
         add(JBScrollPane(list), BorderLayout.CENTER)
-        project.messageBus.connect(this).subscribe(OkDataChangeService.TOPIC) { reload() }
+        project.messageBus.connect(this).subscribe(OkDataChangeService.TOPIC, OkDataChangeListener { reload() })
         reload()
     }
 
     private fun reload() {
         val data = project.service<TemplateAssetDataService>()
-        data.load()
+        val projectDir = ScreenshotCapture.detectProjectDir(project)
+        data.load(projectDir, OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory())
         val catalog = project.service<BoxCatalogService>()
         images.clear()
         images.addAll(data.listImages())
@@ -140,7 +144,7 @@ private class BoxGalleryPanel(private val project: Project) : JPanel(BorderLayou
         })
         add(JBScrollPane(list), BorderLayout.CENTER)
         add(JBLabel(OkScriptToolkitBundle.message("boxGallery.hint")), BorderLayout.SOUTH)
-        project.messageBus.connect(this).subscribe(OkDataChangeService.TOPIC) { reload() }
+        project.messageBus.connect(this).subscribe(OkDataChangeService.TOPIC, OkDataChangeListener { reload() })
         reload()
     }
 

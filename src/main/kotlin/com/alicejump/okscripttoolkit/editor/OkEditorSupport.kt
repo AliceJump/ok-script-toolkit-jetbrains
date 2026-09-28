@@ -31,7 +31,8 @@ data class EditorReference(
 
 object OkEditorSupport {
     private val langPattern = Pattern.compile("(?<![\\w.])self\\.lang\\.([\\p{L}\\p{N}_]+)\\.([\\p{L}\\p{N}_]+)")
-    private val posPattern = Pattern.compile("(?<![\\w.])self\\.pos\\.((?:[A-Za-z_][A-Za-z0-9_]*\\.)*[A-Za-z_][A-Za-z0-9_]*)(?:\\.to_box\\(\\))?")
+    private val posCallPattern = Pattern.compile("(?<![\\w.])self\\.pos\\.((?:[A-Za-z_][A-Za-z0-9_]*\\.)*[A-Za-z_][A-Za-z0-9_]*)\\.to_box\\(\\)")
+    private val posPathPattern = Pattern.compile("(?<![\\w.])self\\.pos\\.((?:[A-Za-z_][A-Za-z0-9_]*\\.)*[A-Za-z_][A-Za-z0-9_]*)(?![\\w.(])")
     private val effectTypePattern = Pattern.compile("\\bEffectType\\.([A-Z][A-Z0-9_]*)")
     private val effectStringPattern = Pattern.compile("r?['\"]([A-Z][A-Z0-9_]{2,})['\"]")
     private val ocrCallPattern = Pattern.compile("(?<![\\w.])self\\.(ocr|wait_ocr|wait_click_ocr|find_boxes)\\(")
@@ -76,17 +77,20 @@ object OkEditorSupport {
             }
         }
 
-        posPattern.matcher(text).run {
-            while (find()) {
-                val path = group(1)
-                if (project.service<BoxCatalogService>().readRuntime().boxes.none { it.path == path }) continue
+        val runtimePaths = project.service<BoxCatalogService>().readRuntime().boxes.map { it.path }.toSet()
+        fun addPos(matcher: java.util.regex.Matcher) {
+            while (matcher.find()) {
+                val path = matcher.group(1)
+                if (path !in runtimePaths) continue
                 refs += EditorReference(
                     EditorReference.Kind.POS,
-                    TextRange(baseOffset + start(), baseOffset + end()),
+                    TextRange(baseOffset + matcher.start(), baseOffset + matcher.end()),
                     path,
                 )
             }
         }
+        addPos(posCallPattern.matcher(text))
+        addPos(posPathPattern.matcher(text))
 
         val aliases = OkScriptToolkitSettings.getInstance(project).featureAliases()
         if (aliases.isNotEmpty()) {
@@ -136,7 +140,7 @@ object OkEditorSupport {
             val match = Regex("(?<![\\w.])${Regex.escape(alias)}\\.([A-Za-z0-9_]*)$").find(before)
             if (match != null) return CompletionContext(CompletionKind.FEATURE, match.groupValues[1])
         }
-        Regex("(?<![\\w.])self\\.pos\\.((?:[A-Za-z_][A-Za-z0-9_]*\\.)*)([A-Za-z_][A-Za-z0-9_]*)$").find(before)?.let {
+        Regex("(?<![\\w.])self\\.pos\\.((?:[A-Za-z_][A-Za-z0-9_]*\\.)*)([A-Za-z_][A-Za-z0-9_]*)?$").find(before)?.let {
             return CompletionContext(CompletionKind.POS, it.groupValues[2], it.groupValues[1].removeSuffix("."))
         }
         Regex("(?<![\\w.])self\\.lang\\.([\\p{L}\\p{N}_]+)\\.([\\p{L}\\p{N}_]*)$").find(before)?.let {
@@ -347,7 +351,7 @@ object OkEditorSupport {
         }
         val pixel = if (imagePath != null) {
             val file = imagePath.toFile()
-            val image = if (file.exists()) ImageIO.read(file) else null
+            val image = if (file.exists()) runCatching { ImageIO.read(file) }.getOrNull() else null
             if (image != null) BoxResource.rectToPixel(runtime.rect, image.width, image.height) else null
         } else {
             null
