@@ -86,6 +86,9 @@ class AnnotationDialog(
         private const val EDGE_MARGIN = 8.0
         private const val MIN_RESIZE = 5
         private const val MIN_DRAW = 3
+        private const val NUDGE_STEP = 1
+        private const val NUDGE_STEP_LARGE = 10
+        private const val ANNOTATION_LIST_WIDTH = 156
 
         // 语义色：红=普通框、蓝=选中、橙=悬停、绿=手柄/预览；深浅主题分别取对比度合适的值
         private val BOX_COLOR = JBColor(0xE53935, 0xFF5252)
@@ -192,10 +195,7 @@ class AnnotationDialog(
 
         val root = JPanel(BorderLayout(0, 4))
         root.add(toolbar, BorderLayout.NORTH)
-        root.add(JSplitPane(JSplitPane.HORIZONTAL_SPLIT, canvasWrap, buildAnnotationList()).apply {
-            resizeWeight = 1.0
-            dividerLocation = 680
-        }, BorderLayout.CENTER)
+        root.add(buildEditorSplit(canvasWrap), BorderLayout.CENTER)
 
         colorLabel.font = colorLabel.font.deriveFont(Font.PLAIN, 11f)
         hintLabel.font = hintLabel.font.deriveFont(Font.PLAIN, 10f)
@@ -206,6 +206,22 @@ class AnnotationDialog(
         footer.add(hintLabel, BorderLayout.CENTER)
         root.add(footer, BorderLayout.SOUTH)
         return root
+    }
+
+    private fun buildEditorSplit(canvasWrap: JComponent): JComponent {
+        val split = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, canvasWrap, buildAnnotationList())
+        split.resizeWeight = 1.0
+        split.dividerSize = 6
+        var placed = false
+        split.addComponentListener(object : ComponentAdapter() {
+            override fun componentResized(e: ComponentEvent?) {
+                if (placed || split.width < 240) return
+                placed = true
+                val right = ANNOTATION_LIST_WIDTH + split.dividerSize
+                split.dividerLocation = (split.width - right).coerceAtLeast(0)
+            }
+        })
+        return split
     }
 
     private fun buildAnnotationList(): JComponent {
@@ -228,7 +244,8 @@ class AnnotationDialog(
         val scroll = JScrollPane(annotationRows)
         scroll.border = BorderFactory.createEmptyBorder()
         val panel = JPanel(BorderLayout(0, 4))
-        panel.preferredSize = Dimension(220, 560)
+        panel.preferredSize = Dimension(ANNOTATION_LIST_WIDTH, 560)
+        panel.minimumSize = Dimension(ANNOTATION_LIST_WIDTH, 0)
         panel.border = BorderFactory.createEmptyBorder(0, 8, 0, 0)
         panel.add(JBLabel(OkScriptToolkitBundle.message("annotation.list.title")), BorderLayout.NORTH)
         val body = JPanel(BorderLayout(0, 4))
@@ -259,17 +276,27 @@ class AnnotationDialog(
             annotationRows.add(JBLabel(OkScriptToolkitBundle.message("annotation.list.empty")))
         } else {
             snapshot.forEach { box ->
-                val checkbox = JCheckBox(box.categoryName, box.id !in hidden)
+                val selectedRow = snapshot.getOrNull(selected)?.id == box.id
+                val row = JPanel(BorderLayout(4, 0))
+                row.isOpaque = false
+                row.alignmentX = 0f
+                val checkbox = JCheckBox()
+                checkbox.isSelected = box.id !in hidden
                 checkbox.isFocusable = false
-                checkbox.alignmentX = 0f
-                if (snapshot.getOrNull(selected)?.id == box.id) {
-                    checkbox.font = checkbox.font.deriveFont(Font.BOLD)
-                }
-                checkbox.addActionListener {
-                    canvas.selectById(box.id)
-                    canvas.setBoxVisible(box.id, checkbox.isSelected)
-                }
-                annotationRows.add(checkbox)
+                checkbox.addActionListener { canvas.setBoxVisible(box.id, checkbox.isSelected) }
+                val name = JLabel(box.categoryName)
+                name.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                if (selectedRow) name.font = name.font.deriveFont(Font.BOLD)
+                name.addMouseListener(object : MouseAdapter() {
+                    override fun mousePressed(e: MouseEvent) {
+                        canvas.selectById(box.id)
+                        canvas.requestFocusInWindow()
+                    }
+                })
+                row.add(checkbox, BorderLayout.WEST)
+                row.add(name, BorderLayout.CENTER)
+                row.maximumSize = Dimension(Int.MAX_VALUE, row.preferredSize.height)
+                annotationRows.add(row)
             }
         }
         onlyCurrentButton.isEnabled = selected >= 0
@@ -477,7 +504,27 @@ class AnnotationDialog(
 
         fun selectById(id: Int) {
             val index = boxes.indexOfFirst { it.id == id }
-            if (index >= 0) selected = index
+            if (index < 0) return
+            selected = index
+            repaint()
+        }
+
+        /** 选中且可见时挪动框。返回 true 表示按键已被选中框吃掉，不再翻页。 */
+        fun nudgeSelected(dx: Int, dy: Int): Boolean {
+            if (selected < 0 || selected >= boxes.size || !isShown(selected)) return false
+            val box = boxes[selected]
+            val img = source
+            var nx = box.rect.x + dx
+            var ny = box.rect.y + dy
+            if (img != null) {
+                nx = nx.coerceIn(0, (img.width - box.rect.w).coerceAtLeast(0))
+                ny = ny.coerceIn(0, (img.height - box.rect.h).coerceAtLeast(0))
+            }
+            if (nx == box.rect.x && ny == box.rect.y) return true
+            pushUndo()
+            boxes[selected] = box.copy(rect = box.rect.copy(x = nx, y = ny))
+            repaint()
+            return true
         }
 
         fun setBoxVisible(id: Int, visible: Boolean) {
@@ -625,8 +672,26 @@ class AnnotationDialog(
             bind(KeyStroke.getKeyStroke(KeyEvent.VK_V, InputEvent.CTRL_DOWN_MASK), "paste-box") { pasteClipboard() }
             bind(KeyStroke.getKeyStroke(KeyEvent.VK_DELETE, 0), "delete-selected") { deleteSelected() }
             bind(KeyStroke.getKeyStroke(KeyEvent.VK_BACK_SPACE, 0), "delete-selected2") { deleteSelected() }
-            bind(KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, 0), "prev-image") { navigate(-1) }
-            bind(KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0), "next-image") { navigate(1) }
+            bind(KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, 0), "nudge-left") {
+                if (!nudgeSelected(-NUDGE_STEP, 0)) navigate(-1)
+            }
+            bind(KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, 0), "nudge-right") {
+                if (!nudgeSelected(NUDGE_STEP, 0)) navigate(1)
+            }
+            bind(KeyStroke.getKeyStroke(KeyEvent.VK_UP, 0), "nudge-up") { nudgeSelected(0, -NUDGE_STEP) }
+            bind(KeyStroke.getKeyStroke(KeyEvent.VK_DOWN, 0), "nudge-down") { nudgeSelected(0, NUDGE_STEP) }
+            bind(KeyStroke.getKeyStroke(KeyEvent.VK_LEFT, InputEvent.SHIFT_DOWN_MASK), "nudge-left-large") {
+                nudgeSelected(-NUDGE_STEP_LARGE, 0)
+            }
+            bind(KeyStroke.getKeyStroke(KeyEvent.VK_RIGHT, InputEvent.SHIFT_DOWN_MASK), "nudge-right-large") {
+                nudgeSelected(NUDGE_STEP_LARGE, 0)
+            }
+            bind(KeyStroke.getKeyStroke(KeyEvent.VK_UP, InputEvent.SHIFT_DOWN_MASK), "nudge-up-large") {
+                nudgeSelected(0, -NUDGE_STEP_LARGE)
+            }
+            bind(KeyStroke.getKeyStroke(KeyEvent.VK_DOWN, InputEvent.SHIFT_DOWN_MASK), "nudge-down-large") {
+                nudgeSelected(0, NUDGE_STEP_LARGE)
+            }
         }
 
         // ── 鼠标 ──
@@ -1242,26 +1307,30 @@ class AnnotationDialog(
             var ny = orig.y.toDouble()
             var nw = orig.w.toDouble()
             var nh = orig.h.toDouble()
-            if (handle.contains("left")) {
+            val moveLeft = handle == "left" || handle == "tl" || handle == "bl"
+            val moveRight = handle == "right" || handle == "tr" || handle == "br"
+            val moveTop = handle == "top" || handle == "tl" || handle == "tr"
+            val moveBottom = handle == "bottom" || handle == "bl" || handle == "br"
+            if (moveLeft) {
                 nx = orig.x + dx
                 nw = orig.w - dx
             }
-            if (handle.contains("right")) {
+            if (moveRight) {
                 nw = orig.w + dx
             }
-            if (handle.contains("top")) {
+            if (moveTop) {
                 ny = orig.y + dy
                 nh = orig.h - dy
             }
-            if (handle.contains("bottom")) {
+            if (moveBottom) {
                 nh = orig.h + dy
             }
             if (nw < MIN_RESIZE) {
-                if (handle.contains("left")) nx = (orig.x + orig.w - MIN_RESIZE).toDouble()
+                if (moveLeft) nx = (orig.x + orig.w - MIN_RESIZE).toDouble()
                 nw = MIN_RESIZE.toDouble()
             }
             if (nh < MIN_RESIZE) {
-                if (handle.contains("top")) ny = (orig.y + orig.h - MIN_RESIZE).toDouble()
+                if (moveTop) ny = (orig.y + orig.h - MIN_RESIZE).toDouble()
                 nh = MIN_RESIZE.toDouble()
             }
             if (img != null) {
@@ -1300,7 +1369,7 @@ class AnnotationDialog(
             val px = ix.toInt()
             val py = iy.toInt()
             if (px < 0 || py < 0 || px >= img.width || py >= img.height) {
-                colorLabel.text = "Abs: ($px, $py)"
+                colorLabel.text = " "
                 return
             }
             val rgb = img.getRGB(px.coerceIn(0, img.width - 1), py.coerceIn(0, img.height - 1))
@@ -1346,12 +1415,18 @@ class AnnotationDialog(
                 }
                 g2.drawRect(r.x, r.y, r.width, r.height)
 
-                if (isHov) {
+                if (isSel || isHov) {
                     g2.color = HANDLE_COLOR
+                    val midX = r.x + r.width / 2
+                    val midY = r.y + r.height / 2
                     for (corner in listOf(
                         r.x to r.y,
+                        midX to r.y,
                         r.x + r.width to r.y,
+                        r.x to midY,
+                        r.x + r.width to midY,
                         r.x to r.y + r.height,
+                        midX to r.y + r.height,
                         r.x + r.width to r.y + r.height,
                     )) {
                         g2.fillOval(corner.first - 4, corner.second - 4, 8, 8)
