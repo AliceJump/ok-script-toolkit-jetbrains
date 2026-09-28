@@ -97,6 +97,56 @@ object BoxResource {
         return pixelToRect(pixel, width, height)
     }
 
+    data class ReplacementBox(
+        val path: String,
+        val x: Int,
+        val y: Int,
+        val w: Int,
+        val h: Int,
+        val original: DoubleArray? = null,
+        val unchanged: Boolean = false,
+    )
+
+    data class ImageReplacement(
+        val fileName: String,
+        val width: Int,
+        val height: Int,
+        val boxes: List<ReplacementBox>,
+    )
+
+    data class ReplaceResult(val boxes: List<AuthoringBox>, val error: String?)
+
+    /**
+     * 在内存里依次替换多张图的框。任一图不合法就整批失败，调用方此时还不能写盘。
+     */
+    fun replaceAuthoringImages(existing: List<AuthoringBox>, edits: List<ImageReplacement>): ReplaceResult {
+        var current = existing
+        for (edit in edits) {
+            val image = imageFileName(edit.fileName)
+            if (image.isEmpty() || edit.width <= 0 || edit.height <= 0) return ReplaceResult(existing, "image")
+            val kept = current.filter { !sameImageName(it.image, image) }
+            val taken = kept.map { it.path }.toMutableSet()
+            val next = ArrayList<AuthoringBox>(edit.boxes.size)
+            for (box in edit.boxes) {
+                val error = pathError(box.path)
+                if (error != null) return ReplaceResult(existing, error)
+                if (!taken.add(box.path)) return ReplaceResult(existing, "duplicate")
+                val rect = if (box.unchanged && box.original != null) {
+                    box.original
+                } else {
+                    rectForSave(box.original, PixelBox(box.x, box.y, box.w, box.h), edit.width, edit.height)
+                        ?: return ReplaceResult(existing, "rect")
+                }
+                next += AuthoringBox(box.path, image, rect)
+            }
+            current = kept + next
+        }
+        return ReplaceResult(current, null)
+    }
+
+    private fun sameImageName(a: String, b: String): Boolean =
+        imageFileName(a).equals(imageFileName(b), ignoreCase = true)
+
     fun unionOnImage(boxes: List<PixelBox>, width: Int, height: Int): DoubleArray? {
         if (boxes.isEmpty()) return null
         val left = boxes.minOf { it.x }

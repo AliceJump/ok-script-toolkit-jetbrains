@@ -42,13 +42,25 @@ class BoxCatalogService(private val project: Project) {
     private fun readAuthoringResult(): BoxResource.ParseResult<BoxResource.AuthoringFile> {
         val path = authoringPath() ?: return BoxResource.ParseResult(BoxResource.AuthoringFile(), emptyList())
         if (!Files.isRegularFile(path)) return BoxResource.ParseResult(BoxResource.AuthoringFile(), emptyList())
-        return BoxResource.parseAuthoring(Files.readString(path, StandardCharsets.UTF_8))
+        val text = readFile(path) ?: return BoxResource.ParseResult(BoxResource.AuthoringFile(), listOf("read"))
+        return BoxResource.parseAuthoring(text)
     }
 
-    fun readRuntime(): BoxResource.RuntimeFile {
+    fun readRuntime(): BoxResource.RuntimeFile = readRuntimeResult().file
+
+    private fun readRuntimeResult(): BoxResource.ParseResult<BoxResource.RuntimeFile> {
         val plan = project.service<OkProjectDataService>().boxRuntimePlan()
-        val path = BoxRuntimePath.effectiveFile(plan) { Files.isRegularFile(it) } ?: return BoxResource.RuntimeFile()
-        return BoxResource.parseRuntime(Files.readString(path, StandardCharsets.UTF_8)).file
+        val path = BoxRuntimePath.effectiveFile(plan) { Files.isRegularFile(it) }
+            ?: return BoxResource.ParseResult(BoxResource.RuntimeFile(), emptyList())
+        val text = readFile(path) ?: return BoxResource.ParseResult(BoxResource.RuntimeFile(), listOf("read"))
+        return BoxResource.parseRuntime(text)
+    }
+
+    private fun readFile(path: Path): String? = try {
+        Files.readString(path, StandardCharsets.UTF_8)
+    } catch (e: Exception) {
+        LOG.warn("Failed to read $path", e)
+        null
     }
 
     fun boxesForImage(fileName: String): List<BoxResource.AuthoringBox> =
@@ -60,35 +72,20 @@ class BoxCatalogService(private val project: Project) {
             .associate { it.path to it.image }
 
     /** 用这张图上的像素框替换标注资源里引用它的条目。成功返回 null。 */
-    fun replaceImageBoxes(fileName: String, width: Int, height: Int, boxes: List<EditedBox>): String? {
-        val image = BoxResource.imageFileName(fileName)
-        if (image.isEmpty() || width <= 0 || height <= 0) return "image"
+    fun replaceImageBoxes(fileName: String, width: Int, height: Int, boxes: List<EditedBox>): String? =
+        commitImageEdits(listOf(BoxResource.ImageReplacement(fileName, width, height, boxes.map { it.toReplacement() })))
+
+    /**
+     * 校验全部图片后再写一次标注文件。中途失败时磁盘上的 boxes.json 保持原样。
+     */
+    fun commitImageEdits(edits: List<BoxResource.ImageReplacement>): String? {
+        if (edits.isEmpty()) return null
         val parsed = readAuthoringResult()
         if (parsed.errors.isNotEmpty()) return "parse"
-        val kept = parsed.file.boxes.filter { !sameImage(it.image, image) }
-        val taken = kept.map { it.path }.toMutableSet()
-        val next = mutableListOf<BoxResource.AuthoringBox>()
-        for (box in boxes) {
-            val pathError = BoxResource.pathError(box.path)
-            if (pathError != null) return pathError
-            if (!taken.add(box.path)) return "duplicate"
-            val rect = if (box.unchanged && box.original != null) {
-                box.original
-            } else {
-                BoxResource.rectForSave(
-                    box.original,
-                    BoxResource.PixelBox(box.x, box.y, box.w, box.h),
-                    width,
-                    height,
-                ) ?: return "rect"
-            }
-            next += BoxResource.AuthoringBox(box.path, image, rect)
-        }
-        return if (write(authoringPath(), BoxResource.serializeAuthoring(BoxResource.AuthoringFile(boxes = kept + next)))) {
-            null
-        } else {
-            "write"
-        }
+        val merged = BoxResource.replaceAuthoringImages(parsed.file.boxes, edits)
+        if (merged.error != null) return merged.error
+        val text = BoxResource.serializeAuthoring(BoxResource.AuthoringFile(boxes = merged.boxes))
+        return if (write(authoringPath(), text)) null else "write"
     }
 
     fun addBox(path: String, image: String, rect: DoubleArray): String? {
@@ -115,8 +112,12 @@ class BoxCatalogService(private val project: Project) {
     fun publish(): Boolean {
         val parsed = readAuthoringResult()
         if (parsed.errors.isNotEmpty()) return false
+        if (readRuntimeResult().errors.isNotEmpty()) return false
+        val target = runtimeWritePath() ?: return false
+        val authoring = authoringPath()
+        if (authoring != null && BoxRuntimePath.sameLocation(authoring, target)) return false
         val text = BoxResource.serializeRuntime(BoxResource.publish(parsed.file))
-        return write(runtimeWritePath(), text)
+        return write(target, text)
     }
 
     private fun write(target: Path?, text: String): Boolean {
@@ -152,3 +153,6 @@ class BoxCatalogService(private val project: Project) {
             BoxResource.imageFileName(a).equals(BoxResource.imageFileName(b), ignoreCase = true)
     }
 }
+
+private fun BoxCatalogService.EditedBox.toReplacement(): BoxResource.ReplacementBox =
+    BoxResource.ReplacementBox(path, x, y, w, h, original, unchanged)

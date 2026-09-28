@@ -1,5 +1,6 @@
 package com.alicejump.okscripttoolkit.core
 
+import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 
@@ -45,6 +46,24 @@ object BoxRuntimePath {
 
     /** 发布写入点。文件可以尚不存在。 */
     fun writeTarget(plan: Plan): Path = plan.preferred ?: plan.probeCandidates.first()
+
+    /**
+     * 两个路径是不是同一个文件。两边都存在时先看文件系统身份（含符号链接），
+     * 否则比较规范化后的路径。Windows 上大小写不计。
+     */
+    fun sameLocation(a: Path, b: Path): Boolean {
+        val left = a.toAbsolutePath().normalize()
+        val right = b.toAbsolutePath().normalize()
+        if (Files.exists(left) && Files.exists(right)) {
+            try {
+                if (Files.isSameFile(left, right)) return true
+            } catch (_: Exception) {
+                // 身份比较失败时退回路径字符串。
+            }
+        }
+        val windows = System.getProperty("os.name", "").contains("win", ignoreCase = true)
+        return if (windows) left.toString().equals(right.toString(), ignoreCase = true) else left.toString() == right.toString()
+    }
 
     fun relPaths(plan: Plan, rootDir: String): List<String> {
         val all = (if (plan.preferred != null) listOf(plan.preferred) else emptyList()) + plan.probeCandidates

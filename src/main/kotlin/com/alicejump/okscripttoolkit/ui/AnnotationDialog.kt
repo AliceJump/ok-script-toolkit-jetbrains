@@ -67,8 +67,9 @@ import javax.swing.SwingUtilities
  * - 像素信息条：RGB + 绝对坐标 + 相对比例坐标（ok-script 框选取需要的 Rel 坐标）
  * - 双击编辑框（分类 + x/y/w/h 数值微调），分类名全项目唯一性校验
  * - ←/→ 跨图导航（imageList）：每张图的编辑保留在会话内，
- *   OK 一次性把全部改动图写回 coco_annotations.json，Cancel 全部放弃。
- * - 右侧标注列表控制显隐。隐藏只影响本次编辑的画布，不写回 COCO，也不进撤销栈。
+ *   OK 一次性把全部改动图写回对应资源，Cancel 全部放弃。
+ *   模板标注写 coco_annotations.json；框资源写 boxes.json，多张图校验通过后一次写入。
+ * - 右侧标注列表控制显隐。隐藏只影响本次编辑的画布，不写回文件，也不进撤销栈。
  * 与 VSCode 版（逐操作自动落盘的常驻面板）不同，这里遵循 IDE 模态对话框的
  * OK/Cancel 语义，落盘时机收敛到 OK。
  */
@@ -114,7 +115,9 @@ class AnnotationDialog(
     private val nextButton = JButton(OkScriptToolkitBundle.message("annotation.next"))
     private val navLabel = JBLabel()
     private val colorLabel = JBLabel(" ")
-    private val hintLabel = object : JTextArea(OkScriptToolkitBundle.message("annotation.hint")) {
+    private val hintLabel = object : JTextArea(
+        OkScriptToolkitBundle.message(if (editingBoxes) "annotation.boxHint" else "annotation.hint"),
+    ) {
         override fun getPreferredSize(): Dimension {
             val available = (parent?.width ?: 0).takeIf { it > 0 } ?: 660
             super.setSize(available, Int.MAX_VALUE)
@@ -501,28 +504,24 @@ class AnnotationDialog(
 
     private fun saveBoxEdits(): Boolean {
         val catalog = project.service<BoxCatalogService>()
+        val edits = mutableListOf<BoxResource.ImageReplacement>()
         for (session in sessionByFile.values.filter { it.dirty }) {
             val size = session.newSize ?: return false
-            val error = catalog.replaceImageBoxes(
-                session.fileName,
-                size.first,
-                size.second,
-                session.boxes.map { box ->
-                    BoxCatalogService.EditedBox(
-                        box.categoryName,
-                        box.rect.x,
-                        box.rect.y,
-                        box.rect.w,
-                        box.rect.h,
-                        session.sourceRects[box.id],
-                    )
-                } + session.preserved.map { box ->
-                    BoxCatalogService.EditedBox(box.path, 0, 0, 1, 1, box.rect, unchanged = true)
-                },
-            )
-            if (error != null) return false
+            val boxes = session.boxes.map { box ->
+                BoxResource.ReplacementBox(
+                    box.categoryName,
+                    box.rect.x,
+                    box.rect.y,
+                    box.rect.w,
+                    box.rect.h,
+                    session.sourceRects[box.id],
+                )
+            } + session.preserved.map { box ->
+                BoxResource.ReplacementBox(box.path, 0, 0, 1, 1, box.rect, unchanged = true)
+            }
+            edits += BoxResource.ImageReplacement(session.fileName, size.first, size.second, boxes)
         }
-        return true
+        return catalog.commitImageEdits(edits) == null
     }
 
     /** 全项目分类名唯一性索引：分类名 -> 已占用它的文件名（不含当前图，对齐 VSCode 版校验语义） */
@@ -1110,7 +1109,7 @@ class AnnotationDialog(
         }
 
         private fun deleteSelected() {
-            if (selected < 0) return
+            if (selected < 0 || selected >= boxes.size || !isShown(selected)) return
             pushUndo()
             boxes.removeAt(selected)
             selected = -1

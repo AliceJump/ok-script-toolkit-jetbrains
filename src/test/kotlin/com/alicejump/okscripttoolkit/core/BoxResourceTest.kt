@@ -3,6 +3,7 @@ package com.alicejump.okscripttoolkit.core
 import java.nio.file.Paths
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -28,6 +29,17 @@ class BoxResourceTest {
         assertEquals(BoxRuntimePath.writeTarget(declared), declared.preferred)
         assertNull(BoxRuntimePath.effectiveFile(bare) { false })
         assertEquals(declared.preferred, BoxRuntimePath.effectiveFile(declared) { true })
+
+        val authoring = Paths.get(root, "ok_templates", "boxes.json")
+        val aliased = Paths.get(root, "ok_templates", ".", "boxes.json")
+        assertTrue(BoxRuntimePath.sameLocation(authoring, aliased))
+        assertFalse(BoxRuntimePath.sameLocation(authoring, probe))
+        val upper = Paths.get(root, "ok_templates", "Boxes.json")
+        if (System.getProperty("os.name", "").contains("win", ignoreCase = true)) {
+            assertTrue(BoxRuntimePath.sameLocation(authoring, upper))
+        } else {
+            assertFalse(BoxRuntimePath.sameLocation(authoring, upper))
+        }
     }
 
     @Test
@@ -116,6 +128,33 @@ class BoxResourceTest {
         val bad = BoxResource.parseRuntime("{")
         assertEquals(listOf("json"), bad.errors)
         assertEquals(0, bad.file.boxes.size)
+    }
+
+    @Test
+    fun `a later duplicate path rejects the whole image replacement`() {
+        val rect = doubleArrayOf(0.0, 0.0, 0.5, 0.5)
+        val existing = listOf(
+            BoxResource.AuthoringBox("screen.a", "1.png", rect),
+            BoxResource.AuthoringBox("screen.b", "2.png", rect.copyOf()),
+        )
+        val pixel = BoxResource.rectToPixel(rect, 100, 100)!!
+        fun edit(file: String, path: String) = BoxResource.ImageReplacement(
+            file,
+            100,
+            100,
+            listOf(BoxResource.ReplacementBox(path, pixel.x, pixel.y, pixel.w, pixel.h, rect)),
+        )
+        val conflict = BoxResource.replaceAuthoringImages(
+            existing,
+            listOf(edit("1.png", "screen.a"), edit("2.png", "screen.a")),
+        )
+        assertEquals("duplicate", conflict.error)
+        val applied = BoxResource.replaceAuthoringImages(
+            existing,
+            listOf(edit("1.png", "screen.a"), edit("2.png", "screen.b")),
+        )
+        assertNull(applied.error)
+        assertEquals(setOf("screen.a", "screen.b"), applied.boxes.map { it.path }.toSet())
     }
 
     @Test
