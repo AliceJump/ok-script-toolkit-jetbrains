@@ -221,6 +221,62 @@ class TemplateAssetDataServiceCocoTest {
     }
 
     @Test
+    fun `swap save rejects snapshots changed in memory or on disk`() {
+        val root = TestTmp.create("ok-coco-annotation-swap-snapshot")
+        val service = serviceAt(root)
+        val source = service.addImageEntry("source.png", 10, 10)
+        val target = service.addImageEntry("target.png", 10, 10)
+        val category = service.getOrCreateCategory("mark")
+        service.replaceAnnotationsForImage(source.id, listOf(category.id to intArrayOf(1, 1, 2, 2)))
+        assertTrue(service.save())
+        val expected = mapOf(
+            "source.png" to listOf("mark" to intArrayOf(1, 1, 2, 2)),
+            "target.png" to emptyList<Pair<String, IntArray>>(),
+        )
+        val edits = AnnotationSwap.editsForSwap(
+            "source.png", AnnotationSwap.Size(10, 10), expected.getValue("source.png"),
+            "target.png", AnnotationSwap.Size(10, 10), emptyList(),
+        )
+        val cocoFile = root.resolve("ok_templates/coco_annotations.json")
+
+        // Another in-IDE editor saved new boxes for the target through the shared service.
+        assertTrue(service.saveAnnotationEdits(listOf(
+            CocoAnnotationEdit("target.png", null, listOf("mark" to intArrayOf(3, 3, 1, 1))),
+        )))
+        val afterInIdeEdit = cocoFile.readText()
+        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, service.saveSwapEdits(expected, edits))
+        assertEquals(afterInIdeEdit, cocoFile.readText())
+
+        // The stale service still matches its own memory; only the external write on disk differs.
+        val stale = serviceAt(root)
+        val staleExpected = mapOf(
+            "source.png" to listOf("mark" to intArrayOf(1, 1, 2, 2)),
+            "target.png" to listOf("mark" to intArrayOf(3, 3, 1, 1)),
+        )
+        assertTrue(serviceAt(root).saveAnnotationEdits(listOf(
+            CocoAnnotationEdit("source.png", null, listOf("mark" to intArrayOf(9, 9, 1, 1))),
+            CocoAnnotationEdit("target.png", null, emptyList()),
+        )))
+        val afterExternalEdit = cocoFile.readText()
+        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, stale.saveSwapEdits(staleExpected, edits))
+        assertEquals(afterExternalEdit, cocoFile.readText())
+
+        val fresh = serviceAt(root)
+        val current = mapOf(
+            "source.png" to listOf("mark" to intArrayOf(9, 9, 1, 1)),
+            "target.png" to emptyList<Pair<String, IntArray>>(),
+        )
+        val freshEdits = AnnotationSwap.editsForSwap(
+            "source.png", AnnotationSwap.Size(10, 10), current.getValue("source.png"),
+            "target.png", AnnotationSwap.Size(10, 10), emptyList(),
+        )
+        assertEquals(TemplateAssetDataService.SwapSaveResult.SAVED, fresh.saveSwapEdits(current, freshEdits))
+        val restored = serviceAt(root)
+        assertTrue(restored.getAnnotationsForImage(source.id).isEmpty())
+        assertEquals(listOf(9, 9, 1, 1), restored.getAnnotationsForImage(target.id).single().bbox.toList())
+    }
+
+    @Test
     fun `failed annotation write leaves in-memory COCO unchanged`() {
         val root = TestTmp.create("ok-coco-annotation-failure")
         val service = serviceAt(root)

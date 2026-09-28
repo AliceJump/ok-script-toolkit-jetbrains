@@ -382,7 +382,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             notify(OkScriptToolkitBundle.message("templateAsset.swapBusy"), NotificationType.INFORMATION)
             return
         }
-        val candidates = images.filter { it.file.name != source.file.name }
+        val candidates = AnnotationSwap.swapCandidates(source, images)
         if (candidates.isEmpty()) {
             notify(OkScriptToolkitBundle.message("templateAsset.swapNoTarget"), NotificationType.WARNING)
             return
@@ -443,10 +443,14 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             source.file.name, sourceSize, sourceBoxes,
             target.file.name, targetSize, targetBoxes,
         )
+        val expected = mapOf(source.file.name to sourceBoxes, target.file.name to targetBoxes)
         if (!swapGate.begin()) return
-        CompletableFuture.supplyAsync { data.saveAnnotationEdits(edits) }.whenComplete { saved, error ->
+        CompletableFuture.supplyAsync { data.saveSwapEdits(expected, edits) }.whenComplete { result, error ->
             SwingUtilities.invokeLater {
-                if (error != null || saved != true) {
+                if (error == null && result == TemplateAssetDataService.SwapSaveResult.CHANGED) {
+                    notify(OkScriptToolkitBundle.message("templateAsset.swapChanged"), NotificationType.WARNING)
+                    swapGate.waitForRefresh(loadData())
+                } else if (error != null || result != TemplateAssetDataService.SwapSaveResult.SAVED) {
                     swapGate.saveFailed()
                     notify(OkScriptToolkitBundle.message("templateAsset.swapFailed"), NotificationType.ERROR)
                     loadData()

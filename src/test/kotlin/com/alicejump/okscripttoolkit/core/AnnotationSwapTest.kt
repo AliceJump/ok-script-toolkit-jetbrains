@@ -37,6 +37,24 @@ class AnnotationSwapTest {
         assertContentEquals(annotation.bbox, named.single().second)
     }
 
+    @Test
+    fun `swap targets exclude images sharing the source COCO identity`() {
+        fun image(name: String) = TemplateImage(name.substringBeforeLast('.'), java.io.File(name), 1, 1, emptyList())
+        val source = image("sample.png")
+        val images = listOf(source, image("sample.jpg"), image("SAMPLE.bmp"), image("other.png"))
+        assertEquals(listOf("other.png"), AnnotationSwap.swapCandidates(source, images).map { it.file.name })
+    }
+
+    @Test
+    fun `snapshot comparison checks category names and box contents in order`() {
+        val boxes = listOf("a" to box(1, 2, 3, 4), "b" to box(5, 6, 7, 8))
+        assertTrue(AnnotationSwap.sameBoxes(boxes, boxes.map { it.first to it.second.copyOf() }))
+        assertFalse(AnnotationSwap.sameBoxes(boxes, boxes.reversed()))
+        assertFalse(AnnotationSwap.sameBoxes(boxes, listOf("a" to box(1, 2, 3, 4), "c" to box(5, 6, 7, 8))))
+        assertFalse(AnnotationSwap.sameBoxes(boxes, listOf("a" to box(1, 2, 3, 4), "b" to box(5, 6, 7, 9))))
+        assertFalse(AnnotationSwap.sameBoxes(boxes, boxes.take(1)))
+    }
+
     // ── 1. 同尺寸恒等 ───────────────────────────────────────────────
 
     @Test

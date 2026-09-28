@@ -81,6 +81,16 @@ object AnnotationSwap {
         return annotations.map { categoryNames.getValue(it.categoryId) to it.bbox }
     }
 
+    /** 同名不同扩展名的图片在 COCO 里指向同一条记录，与它交换会让两条编辑互相覆盖。 */
+    fun swapCandidates(source: TemplateImage, images: List<TemplateImage>): List<TemplateImage> {
+        val sourceKey = cocoFilenameKey(source.file.name)
+        return images.filter { cocoFilenameKey(it.file.name) != sourceKey }
+    }
+
+    /** 按顺序逐框比较分类名与坐标；`CocoAnnotation.equals` 只比 ID，不能用来判断快照是否变化。 */
+    fun sameBoxes(a: List<Pair<String, IntArray>>, b: List<Pair<String, IntArray>>): Boolean =
+        a.size == b.size && a.indices.all { a[it].first == b[it].first && a[it].second.contentEquals(b[it].second) }
+
     /** Build both complete edits by destination image, so neither side can keep its own boxes. */
     fun editsForSwap(
         sourceFileName: String,

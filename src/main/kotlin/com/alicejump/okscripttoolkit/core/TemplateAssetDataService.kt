@@ -52,6 +52,11 @@ data class CocoCategory(
     val supercategory: String = "",
 )
 
+/** 归一化文件名 key：basename → 小写 → 去扩展名（对齐 VS Code filenameKey）。 */
+fun cocoFilenameKey(name: String): String =
+    name.substringAfterLast('/').substringAfterLast('\\')
+        .lowercase(Locale.ROOT).replace(Regex("\\.[^.]+$"), "")
+
 data class CocoData(
     val images: MutableList<CocoImage> = mutableListOf(),
     val annotations: MutableList<CocoAnnotation> = mutableListOf(),
@@ -61,9 +66,7 @@ data class CocoData(
      * 归一化文件名 key：basename → 小写 → 去扩展名（对齐 VS Code filenameKey）。
      * COCO 的 file_name 与磁盘实际大小写不一致（Windows 上很常见）时也要能对上。
      */
-    fun filenameKey(name: String): String =
-        name.substringAfterLast('/').substringAfterLast('\\')
-            .lowercase(Locale.ROOT).replace(Regex("\\.[^.]+$"), "")
+    fun filenameKey(name: String): String = cocoFilenameKey(name)
 
     fun findImageByFileName(fileName: String): CocoImage? {
         val key = filenameKey(fileName)
@@ -312,6 +315,36 @@ class TemplateAssetDataService(private val project: Project) {
         if (!writeCoco(updated)) return false
         cocoData = updated
         return true
+    }
+
+    enum class SwapSaveResult { SAVED, CHANGED, FAILED }
+
+    /**
+     * 交换写盘：在同一把锁内先核对两张图的当前标注仍是确认前的快照，再整体提交。
+     * 内存与磁盘都要核对 —— 其他编辑器可能只改了其中一边。
+     */
+    @Synchronized
+    fun saveSwapEdits(
+        expected: Map<String, List<Pair<String, IntArray>>>,
+        edits: List<CocoAnnotationEdit>,
+    ): SwapSaveResult {
+        val disk = cocoFile?.toFile()?.takeIf { it.isFile }?.let {
+            try {
+                parseCoco(JSON.readTree(it))
+            } catch (e: Exception) {
+                LOG.warn("Failed to re-read COCO data before swap", e)
+                return SwapSaveResult.FAILED
+            }
+        }
+        for (coco in listOfNotNull(cocoData, disk)) {
+            val names = coco.categories.associate { it.id to it.name }
+            for ((fileName, boxes) in expected) {
+                val current = coco.findImageByFileName(fileName)?.let { coco.annotationsForImage(it.id) }.orEmpty()
+                val named = AnnotationSwap.namedBoxes(current, names) ?: return SwapSaveResult.CHANGED
+                if (!AnnotationSwap.sameBoxes(named, boxes)) return SwapSaveResult.CHANGED
+            }
+        }
+        return if (saveAnnotationEdits(edits)) SwapSaveResult.SAVED else SwapSaveResult.FAILED
     }
 
     /** 截图登记一次性提交；补旧图片尺寸时保留原有 ID、分类和标注。 */
