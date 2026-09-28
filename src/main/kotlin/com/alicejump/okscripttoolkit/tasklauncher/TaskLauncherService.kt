@@ -18,6 +18,7 @@ import java.nio.file.StandardCopyOption
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.FileTime
+import java.security.MessageDigest
 import com.alicejump.okscripttoolkit.core.forEachField
 
 /**
@@ -461,16 +462,27 @@ class TaskLauncherService(private val project: Project) {
     // ── Task config persistence ───────────────────────────────────────
 
     // getTaskConfig 在参数面板每次渲染/取值时都会被调用（EDT），缓存整份 store。
-    // 每次只读取文件属性；外部编辑或 Git 切换文件后重新加载，避免下次保存覆盖新内容。
+    // 每次比较文件内容摘要；外部编辑即使保留文件大小和时间戳，也不能被旧缓存覆盖。
     private var configStoreCache: TaskConfigStore? = null
-    private data class ConfigFileStamp(val modified: FileTime, val size: Long)
+    private data class ConfigFileStamp(val modified: FileTime, val size: Long, val digest: String)
     private var configStoreStamp: ConfigFileStamp? = null
     private var configStoreReadError: Exception? = null
+    private var configStoreInspectionFailed = false
 
     private fun configFileStamp(path: Path): ConfigFileStamp? {
         if (!Files.exists(path)) return null
         val attributes = Files.readAttributes(path, BasicFileAttributes::class.java)
-        return ConfigFileStamp(attributes.lastModifiedTime(), attributes.size())
+        val hash = MessageDigest.getInstance("SHA-256")
+        Files.newInputStream(path).use { input ->
+            val bytes = ByteArray(8192)
+            while (true) {
+                val read = input.read(bytes)
+                if (read < 0) break
+                if (read > 0) hash.update(bytes, 0, read)
+            }
+        }
+        val digest = hash.digest().joinToString("") { "%02x".format(it) }
+        return ConfigFileStamp(attributes.lastModifiedTime(), attributes.size(), digest)
     }
 
     /**
@@ -494,8 +506,20 @@ class TaskLauncherService(private val project: Project) {
 
     private fun loadTaskConfigsLocked(): TaskConfigStore {
         val configFile = Paths.get(getWorkspaceRoot(), TASKS_CONFIG_FILE).toFile()
-        val stamp = configFileStamp(configFile.toPath())
-        configStoreCache?.takeIf { configStoreStamp == stamp }?.let { return it }
+        val stamp = try {
+            configFileStamp(configFile.toPath())
+        } catch (e: Exception) {
+            LOG.warn("Failed to inspect task configs", e)
+            configStoreReadError = e
+            configStoreInspectionFailed = true
+            return configStoreCache ?: TaskConfigStore().also { configStoreCache = it }
+        }
+        // A transient inspection failure can recover with the same stamp as the last good file.
+        // Re-read once so the old error no longer blocks writes after recovery.
+        if (!configStoreInspectionFailed) {
+            configStoreCache?.takeIf { configStoreStamp == stamp }?.let { return it }
+        }
+        configStoreInspectionFailed = false
         val store = if (!configFile.exists()) {
             TaskConfigStore()
         } else {

@@ -5,15 +5,69 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.intellij.openapi.project.Project
 import java.lang.reflect.Proxy
 import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.nio.file.attribute.FileTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class TaskConfigPersistenceTest {
+    @Test
+    fun `task config recovers after a temporary read failure`() {
+        val workspace = TestTmp.create("recover-task-config")
+        val project = Proxy.newProxyInstance(
+            Project::class.java.classLoader,
+            arrayOf(Project::class.java),
+        ) { _, method, _ -> if (method.name == "getBasePath") workspace.absolutePath else null } as Project
+        val service = TaskLauncherService(project)
+        val file = workspace.toPath().resolve(".idea/ok-script-toolkit-tasks.json")
+        service.saveTaskConfig("m::A", TaskLauncherService.TaskConfig(params = mapOf("count" to 3)), workspace.absolutePath)
+
+        val backup = file.resolveSibling("tasks-backup.json")
+        Files.move(file, backup)
+        Files.createDirectory(file)
+        assertEquals(3, service.getTaskConfig("m::A", workspace.absolutePath).params?.get("count"))
+        assertNotNull(service.taskConfigReadError())
+        Files.delete(file)
+        Files.move(backup, file)
+
+        assertNull(service.taskConfigReadError())
+        service.saveUiStateValue("taskGroupCollapsed::trigger", true, workspace.absolutePath)
+        assertTrue(Files.readString(file).contains("taskGroupCollapsed::trigger"))
+    }
+
+    @Test
+    fun `atomic replacement is reloaded even with unchanged size and modified time`() {
+        val workspace = TestTmp.create("replaced-task-config")
+        val project = Proxy.newProxyInstance(
+            Project::class.java.classLoader,
+            arrayOf(Project::class.java),
+        ) { _, method, _ -> if (method.name == "getBasePath") workspace.absolutePath else null } as Project
+        val service = TaskLauncherService(project)
+        val file = workspace.toPath().resolve(".idea/ok-script-toolkit-tasks.json")
+        service.saveTaskConfig("m::A", TaskLauncherService.TaskConfig(params = mapOf("count" to 1)), workspace.absolutePath)
+
+        val original = Files.readString(file)
+        val replacement = original.replace(Regex("""("count"\s*:\s*)1""")) { it.groupValues[1] + "2" }
+        assertNotEquals(original, replacement)
+        assertEquals(original.length, replacement.length)
+        val modified = Files.getLastModifiedTime(file)
+        val staged = Files.createTempFile(file.parent, "replacement-", ".tmp")
+        Files.writeString(staged, replacement)
+        Files.setLastModifiedTime(staged, modified)
+        Files.move(staged, file, StandardCopyOption.REPLACE_EXISTING)
+        assertEquals(modified, Files.getLastModifiedTime(file))
+
+        assertEquals(2, service.getTaskConfig("m::A", workspace.absolutePath).params?.get("count"))
+        service.saveUiStateValue("taskGroupCollapsed::trigger", true, workspace.absolutePath)
+        assertEquals(2, ObjectMapper().readTree(file.toFile()).path("projects")
+            .path(workspace.absolutePath).path("tasks").path("m::A").path("params").path("count").asInt())
+    }
+
     @Test
     fun `external task config changes are reloaded and preserved by the next save`() {
         val workspace = TestTmp.create("task-config")
