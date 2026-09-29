@@ -12,7 +12,8 @@ import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 
 /**
- * 框的两份文件：`<模板目录>/boxes.json` 给编辑，运行时文件给补全和发布。
+ * 框的两份文件：`<模板目录>/boxes.json` 给编辑（Pixel bbox + 图片尺寸，version 2），
+ * 运行时文件给补全和发布（normalized，由 [BoxResource.publish] 从 Pixel 投影）。
  * 坐标换算与序列化在 [BoxResource]。
  */
 @Service(Service.Level.PROJECT)
@@ -23,8 +24,6 @@ class BoxCatalogService(private val project: Project) {
         val y: Int,
         val w: Int,
         val h: Int,
-        val original: DoubleArray?,
-        val unchanged: Boolean = false,
     )
 
     fun authoringPath(): Path? {
@@ -39,11 +38,36 @@ class BoxCatalogService(private val project: Project) {
 
     fun readAuthoring(): BoxResource.AuthoringFile = readAuthoringResult().file
 
+    /** 读盘失败 / 解析失败时的错误码；界面必须报告而不是当成空目录。version 1 不受支持也不迁移。 */
+    fun authoringErrors(): List<String> = readAuthoringResult().errors
+
     private fun readAuthoringResult(): BoxResource.ParseResult<BoxResource.AuthoringFile> {
         val path = authoringPath() ?: return BoxResource.ParseResult(BoxResource.AuthoringFile(), emptyList())
         if (!Files.isRegularFile(path)) return BoxResource.ParseResult(BoxResource.AuthoringFile(), emptyList())
         val text = readFile(path) ?: return BoxResource.ParseResult(BoxResource.AuthoringFile(), listOf("read"))
         return BoxResource.parseAuthoring(text)
+    }
+
+    private fun headerSize(file: Path): AnnotationSwap.Size? {
+        val image = project.service<TemplateAssetDataService>().readImageHeaderSize(file.toFile())
+            ?: return null
+        return AnnotationSwap.Size(image.first, image.second)
+    }
+
+    /**
+     * 图片尺寸：authoring 里登记的**可用**条目优先，缺失或 0 尺寸占位（从未标过框、
+     * 或 `removeImageBoxes` 删掉了登记）时回退到图片头 —— 与 [swapImages] 的补登记
+     * 同一条规则。两边都读不出来才返回 null。
+     *
+     * 界面（`swapBoxesWith`）用这个函数做交换前的预检查，所以回退必须在这里：
+     * 只在 [swapImages] 里补登记的话，新截图仍然会在弹确认框之前就被拦下。
+     */
+    fun imageSize(fileName: String): AnnotationSwap.Size? {
+        val name = BoxResource.imageFileName(fileName)
+        if (name.isEmpty()) return null
+        val entry = readAuthoring().images.firstOrNull { BoxResource.sameImageName(it.file, name) }
+        BoxResource.usableImageSize(entry)?.let { return it }
+        return templatesDirPath()?.resolve(name)?.let { headerSize(it) }
     }
 
     fun readRuntime(): BoxResource.RuntimeFile = readRuntimeResult().file
@@ -130,43 +154,64 @@ class BoxCatalogService(private val project: Project) {
         return "image"
     }
 
-    /** 删图时去掉它的框。标注文件还不存在就什么都不写。 */
+    /** 删图时去掉它的框和尺寸登记。标注文件还不存在就什么都不写。 */
     @Synchronized
     fun removeImage(fileName: String): Boolean {
         val target = authoringPath() ?: return false
         val parsed = readAuthoringResult()
         if (parsed.errors.isNotEmpty()) return false
         if (!Files.isRegularFile(target)) return true
-        val next = parsed.file.boxes.filter { !sameImage(it.image, fileName) }
-        if (next.size == parsed.file.boxes.size) return true
-        return write(target, BoxResource.serializeAuthoring(BoxResource.AuthoringFile(boxes = next)))
+        val nextBoxes = parsed.file.boxes.filter { !sameImage(it.image, fileName) }
+        val nextImages = parsed.file.images.filter { !BoxResource.sameImageName(it.file, fileName) }
+        if (nextBoxes.size == parsed.file.boxes.size && nextImages.size == parsed.file.images.size) return true
+        return write(
+            target,
+            BoxResource.serializeAuthoring(BoxResource.AuthoringFile(images = nextImages, boxes = nextBoxes)),
+        )
     }
 
-    /** 两张图的框整套对调。缺文件且没有框要搬走时不创建文件。 */
+    /**
+     * 两张图的框整套对调。Pixel authoring 下坐标语义依赖图片尺寸：
+     * 同尺寸直接换 `image`；不同尺寸按比例映射（复用模板交换的 `AnnotationSwap.scaleBox`），
+     * 映射与钳制在纯层完成。缺文件或两边都没有框时不创建文件。
+     *
+     * 目标图片没有尺寸登记时（常见：把框换到一张从未标过框的新截图上），
+     * 先从图片头补登记再交换 —— 补不出来才拒绝。
+     */
     @Synchronized
     fun swapImages(fileA: String, fileB: String): Boolean {
         val target = authoringPath() ?: return false
         val parsed = readAuthoringResult()
         if (parsed.errors.isNotEmpty()) return false
-        val nameA = BoxResource.imageFileName(fileA)
-        val nameB = BoxResource.imageFileName(fileB)
-        var changed = false
-        val next = parsed.file.boxes.map { box ->
-            when {
-                sameImage(box.image, nameA) -> {
-                    changed = true
-                    box.copy(image = nameB)
-                }
-                sameImage(box.image, nameB) -> {
-                    changed = true
-                    box.copy(image = nameA)
-                }
-                else -> box
+        if (parsed.file.boxes.isEmpty()) return true
+        var images = parsed.file.images
+        val ensureEntry = fun(fileName: String): Boolean {
+            val name = BoxResource.imageFileName(fileName)
+            val existing = images.firstOrNull { BoxResource.sameImageName(it.file, name) }
+            // 已登记且尺寸有效才放行；缺失或 0 尺寸占位的条目从图片头补齐/覆盖
+            if (BoxResource.usableImageSize(existing) != null) return true
+            val size = templatesDirPath()
+                ?.let { headerSize(it.resolve(name)) }
+                ?: return false
+            val fresh = BoxResource.AuthoringImage(name, size.width, size.height)
+            images = if (existing != null) {
+                images.map { if (BoxResource.sameImageName(it.file, name)) fresh else it }
+            } else {
+                images + fresh
             }
+            return true
         }
-        if (!changed) return true
-        return write(target, BoxResource.serializeAuthoring(BoxResource.AuthoringFile(boxes = next)))
+        if (!ensureEntry(fileA) || !ensureEntry(fileB)) return false
+        val prepared = parsed.file.copy(images = images)
+        val swapped = BoxResource.swapImageBoxes(prepared, fileA, fileB)
+        if (swapped.error != null) return false
+        if (BoxResource.serializeAuthoring(swapped.file) == BoxResource.serializeAuthoring(prepared)) return true
+        return write(target, BoxResource.serializeAuthoring(swapped.file))
     }
+
+    /** 全项目框 path 占用表：path → 所属图片。含当前图 —— 「生成框」要拦住和已有框重名。 */
+    fun pathOwners(): Map<String, String> =
+        readAuthoring().boxes.associate { it.path to it.image }
 
     @Synchronized
     fun pathOwnersExcept(fileName: String): Map<String, String> =
@@ -181,31 +226,51 @@ class BoxCatalogService(private val project: Project) {
 
     /**
      * 校验全部图片后再写一次标注文件。中途失败时磁盘上的 boxes.json 保持原样。
+     * 图片尺寸随编辑登记 / 刷新（authoring 自己就是尺寸的事实来源）。
      */
     @Synchronized
     fun commitImageEdits(edits: List<BoxResource.ImageReplacement>): String? {
         if (edits.isEmpty()) return null
         val parsed = readAuthoringResult()
         if (parsed.errors.isNotEmpty()) return "parse"
-        val merged = BoxResource.replaceAuthoringImages(parsed.file.boxes, edits)
+        val merged = BoxResource.replaceAuthoringImages(parsed.file, edits)
         if (merged.error != null) return merged.error
-        val text = BoxResource.serializeAuthoring(BoxResource.AuthoringFile(boxes = merged.boxes))
-        return if (write(authoringPath(), text)) null else "write"
+        return if (write(authoringPath(), BoxResource.serializeAuthoring(merged.file))) null else "write"
     }
 
+    /**
+     * 新增一个框：接收 Pixel bbox，图片头读尺寸并登记进 authoring 的 images，
+     * bbox 落在图内才接受；全局查重。文件不存在时，这次合法保存就是它的创建时刻。
+     */
     @Synchronized
-    fun addBox(path: String, image: String, rect: DoubleArray): String? {
-        if (!BoxResource.isStorableRect(rect)) return "rect"
+    fun addBox(path: String, image: String, bbox: IntArray): String? {
         val pathError = BoxResource.pathError(path)
         if (pathError != null) return pathError
         val file = BoxResource.imageFileName(image)
         if (file.isEmpty()) return "image"
+        val size = templatesDirPath()
+            ?.let { headerSize(it.resolve(file)) }
+            ?: return "image"
+        if (BoxResource.bboxError(bbox, size) != null) return "rect"
         val parsed = readAuthoringResult()
         if (parsed.errors.isNotEmpty()) return "parse"
-        val current = parsed.file
-        if (current.boxes.any { it.path == path }) return "duplicate"
-        val next = current.copy(boxes = current.boxes + BoxResource.AuthoringBox(path, file, rect))
-        return if (write(authoringPath(), BoxResource.serializeAuthoring(next))) null else "write"
+        if (parsed.file.boxes.any { it.path == path.trim() }) return "duplicate"
+        val current = parsed.file.boxes
+            .filter { BoxResource.sameImageName(it.image, file) }
+            .map { BoxResource.ReplacementBox(it.path, it.bbox[0], it.bbox[1], it.bbox[2], it.bbox[3]) }
+        val merged = BoxResource.replaceAuthoringImages(
+            parsed.file,
+            listOf(
+                BoxResource.ImageReplacement(
+                    file,
+                    size.width,
+                    size.height,
+                    current + BoxResource.ReplacementBox(path.trim(), bbox[0], bbox[1], bbox[2], bbox[3]),
+                ),
+            ),
+        )
+        if (merged.error != null) return merged.error
+        return if (write(authoringPath(), BoxResource.serializeAuthoring(merged.file))) null else "write"
     }
 
     fun runtimeOnlyPaths(): List<String> {
@@ -216,16 +281,21 @@ class BoxCatalogService(private val project: Project) {
             .map { it.path }
     }
 
+    /**
+     * 发布：Pixel → normalized 的转换在 [BoxResource.publish]。
+     * 返回错误列表（`size:<path>` / `parse` / `runtimeRead` / `same` / `write`），空列表即成功。
+     */
     @Synchronized
-    fun publish(): Boolean {
+    fun publish(): List<String> {
         val parsed = readAuthoringResult()
-        if (parsed.errors.isNotEmpty()) return false
-        if (readRuntimeResult().errors.isNotEmpty()) return false
-        val target = runtimeWritePath() ?: return false
+        if (parsed.errors.isNotEmpty()) return listOf("parse")
+        if (readRuntimeResult().errors.isNotEmpty()) return listOf("runtimeRead")
+        val target = runtimeWritePath() ?: return listOf("write")
         val authoring = authoringPath()
-        if (authoring != null && BoxRuntimePath.sameLocation(authoring, target)) return false
-        val text = BoxResource.serializeRuntime(BoxResource.publish(parsed.file))
-        return write(target, text)
+        if (authoring != null && BoxRuntimePath.sameLocation(authoring, target)) return listOf("same")
+        val published = BoxResource.publish(parsed.file)
+        if (published.errors.isNotEmpty()) return published.errors
+        return if (write(target, BoxResource.serializeRuntime(published.file))) emptyList() else listOf("write")
     }
 
     private fun write(target: Path?, text: String): Boolean {
@@ -254,6 +324,8 @@ class BoxCatalogService(private val project: Project) {
 
     private fun templatesDirectory(): String = OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory()
 
+    private fun templatesDirPath(): Path? = root()?.let { it.resolve(templatesDirectory()) }
+
     companion object {
         private val LOG = Logger.getInstance(BoxCatalogService::class.java)
 
@@ -263,4 +335,4 @@ class BoxCatalogService(private val project: Project) {
 }
 
 private fun BoxCatalogService.EditedBox.toReplacement(): BoxResource.ReplacementBox =
-    BoxResource.ReplacementBox(path, x, y, w, h, original, unchanged)
+    BoxResource.ReplacementBox(path, x, y, w, h)

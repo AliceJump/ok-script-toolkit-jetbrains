@@ -542,15 +542,31 @@ class TemplateAssetPanel(
             )
             if (answer != Messages.YES) return
         }
-        if (catalog.publish()) {
+        val errors = catalog.publish()
+        if (errors.isEmpty()) {
             notify(OkScriptToolkitBundle.message("boxGallery.published", catalog.readRuntime().boxes.size), NotificationType.INFORMATION)
             loadData()
+            return
+        }
+        // 发布失败要说清原因：最多见的是"框的原图读不出尺寸，Pixel 转 normalized 无从做起"。
+        val sizeMissing = errors
+            .filter { it.startsWith("size:") }
+            .map { it.removePrefix("size:") }
+        if (sizeMissing.isNotEmpty()) {
+            notify(
+                OkScriptToolkitBundle.message("box.publishMissingSize", sizeMissing.joinToString(", ")),
+                NotificationType.ERROR,
+            )
         } else {
             notify(OkScriptToolkitBundle.message("annotation.saveFailed"), NotificationType.ERROR)
         }
     }
 
-    /** 框坐标相对整张原图。缺 boxes.json 且两边都没有框时不创建文件。 */
+    /**
+     * 框的图片交换。Pixel authoring 下坐标语义依赖图片尺寸：同尺寸只换所属图片，
+     * 尺寸不同按比例映射（复用模板交换的 AnnotationSwap.scaleBox，纯层完成），
+     * 所以确认框要像模板交换一样把"会缩放"说清楚；读不出尺寸直接拒绝。
+     */
     private fun swapBoxesWith(source: TemplateImage, target: TemplateImage) {
         val catalog = project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>()
         val sourceBoxes = catalog.boxesForImage(source.file.name)
@@ -559,10 +575,30 @@ class TemplateAssetPanel(
             notify(OkScriptToolkitBundle.message("templateAsset.swapNothing"), NotificationType.INFORMATION)
             return
         }
-        val detail = OkScriptToolkitBundle.message(
-            "templateAsset.swapCounts",
-            source.name, sourceBoxes.size, target.name, targetBoxes.size,
-        )
+        val sourceSize = catalog.imageSize(source.file.name)
+        val targetSize = catalog.imageSize(target.file.name)
+        if (sourceSize == null || targetSize == null) {
+            notify(OkScriptToolkitBundle.message("templateAsset.swapSizeUnknown"), NotificationType.ERROR)
+            return
+        }
+        val detail = buildString {
+            append(
+                OkScriptToolkitBundle.message(
+                    "templateAsset.swapCounts",
+                    source.name, sourceBoxes.size, target.name, targetBoxes.size,
+                ),
+            )
+            if (!AnnotationSwap.isSameSize(sourceSize, targetSize)) {
+                append('\n')
+                append(
+                    OkScriptToolkitBundle.message(
+                        "templateAsset.swapScaled",
+                        "${sourceSize.width}×${sourceSize.height}",
+                        "${targetSize.width}×${targetSize.height}",
+                    ),
+                )
+            }
+        }
         val confirmed = Messages.showYesNoDialog(
             project,
             OkScriptToolkitBundle.message("templateAsset.swapQuestion", source.name, target.name) + "\n\n" + detail,

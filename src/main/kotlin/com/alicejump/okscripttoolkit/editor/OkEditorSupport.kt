@@ -349,12 +349,16 @@ object OkEditorSupport {
         } else {
             null
         }
-        val pixel = if (imagePath != null) {
-            val file = imagePath.toFile()
-            val image = if (file.exists()) runCatching { ImageIO.read(file) }.getOrNull() else null
-            if (image != null) BoxResource.rectToPixel(runtime.rect, image.width, image.height) else null
-        } else {
-            null
+        // authoring 里已是 Pixel bbox，直接用；运行时独有的 path 才退回 normalized → Pixel
+        // （Runtime Preview 转换层的合法用途）。
+        val pixel = when {
+            authoring != null -> BoxResource.PixelBox(authoring.bbox[0], authoring.bbox[1], authoring.bbox[2], authoring.bbox[3])
+            imagePath != null -> {
+                val file = imagePath.toFile()
+                val image = if (file.exists()) runCatching { ImageIO.read(file) }.getOrNull() else null
+                if (image != null) BoxResource.rectToPixel(runtime.rect, image.width, image.height) else null
+            }
+            else -> null
         }
         val thumb = if (imagePath != null && pixel != null) {
             cropBox(imagePath, intArrayOf(pixel.x, pixel.y, pixel.w, pixel.h))

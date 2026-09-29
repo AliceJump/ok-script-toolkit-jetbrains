@@ -7,7 +7,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** 与 `scripts/test_box_resource.js` 钉同一组不变量。 */
+/** 与 `scripts/test_box_resource.js` 钉同一组不变量（Pixel authoring + normalized runtime）。 */
 class BoxResourceTest {
     private val root = "X:/proj"
     private val probe = Paths.get(root, "src", "scene", "boxes.json")
@@ -49,57 +49,57 @@ class BoxResourceTest {
         assertEquals("reserved", BoxResource.pathError("panels.esc.mail"))
         assertEquals("segment", BoxResource.pathError("screen.bad-name"))
         assertEquals("12.png", BoxResource.imageFileName("ok_templates/12.png"))
+        assertEquals(BoxResource.SEGMENT_SOURCE, "^[A-Za-z_][A-Za-z0-9_]*$")
     }
 
     @Test
-    fun `an unchanged pixel box keeps the original normalized rect`() {
-        val original = doubleArrayOf(0.0984, 0.1042, 0.8961, 0.8944)
-        val pixel = BoxResource.rectToPixel(original, 2560, 1440)!!
-        assertTrue(BoxResource.rectForSave(original, pixel, 2560, 1440).contentEquals(original))
-        val moved = pixel.copy(x = pixel.x + 4)
-        val rewritten = BoxResource.rectForSave(original, moved, 2560, 1440)!!
-        assertTrue(rewritten[0] != original[0])
+    fun `pixel bbox validation matches the template annotation rules`() {
+        val size = AnnotationSwap.Size(1920, 1080)
+        assertNull(BoxResource.bboxError(intArrayOf(184, 112, 1544, 853), size))
+        assertEquals("rect", BoxResource.bboxError(intArrayOf(-1, 0, 100, 100), size))
+        assertEquals("rect", BoxResource.bboxError(intArrayOf(0, 0, 0, 100), size))
+        assertEquals("rect", BoxResource.bboxError(intArrayOf(1900, 0, 100, 100), size))
+        assertNull(BoxResource.bboxError(intArrayOf(0, 0, 1920, 100), size), "贴边矩形可以保存")
+        assertNull(BoxResource.bboxError(intArrayOf(0, 0, 30, 20), null), "尺寸未知时只查正性")
+        assertTrue(BoxResource.isStorableRuntimeRect(doubleArrayOf(0.0, 0.0, 1.0, 1.0)))
+        assertFalse(BoxResource.isStorableRuntimeRect(doubleArrayOf(-0.1, 0.0, 0.5, 0.5)))
     }
 
     @Test
-    fun `union uses the min and max edges of one image`() {
-        val union = BoxResource.unionOnImage(
+    fun `pixel union stays in pixels`() {
+        val union = BoxResource.unionPixelBoxes(
             listOf(
-                BoxResource.PixelBox(10, 20, 30, 40),
-                BoxResource.PixelBox(50, 10, 20, 15),
+                BoxResource.PixelBox(100, 50, 40, 30),
+                BoxResource.PixelBox(120, 60, 60, 20),
             ),
-            100,
-            100,
         )!!
-        assertEquals(0.1, union[0])
-        assertEquals(0.1, union[1])
-        assertEquals(0.7, union[2])
-        assertEquals(0.6, union[3])
-        assertNull(BoxResource.unionOnImage(emptyList(), 100, 100))
+        assertEquals(100, union.x)
+        assertEquals(50, union.y)
+        assertEquals(80, union.w)
+        assertEquals(30, union.h)
+        assertNull(BoxResource.unionPixelBoxes(emptyList()))
     }
 
     @Test
-    fun `authoring json is sorted and publish drops the image`() {
+    fun `authoring json is version two and publish converts pixel to normalized`() {
         val file = BoxResource.AuthoringFile(
+            images = listOf(BoxResource.AuthoringImage("12.png", 1920, 1080)),
             boxes = listOf(
-                BoxResource.AuthoringBox("screen.main_viewport", "12.png", doubleArrayOf(0.0984, 0.1042, 0.8961, 0.8944)),
-                BoxResource.AuthoringBox("screen.dialog_icon", "3.png", doubleArrayOf(0.845, 0.047, 0.975, 0.074)),
+                BoxResource.AuthoringBox("screen.main_viewport", "12.png", intArrayOf(184, 112, 1544, 853)),
             ),
         )
         val text = BoxResource.serializeAuthoring(file)
         val expected = """
             {
-              "version": 1,
+              "version": 2,
+              "images": [
+                { "file": "12.png", "width": 1920, "height": 1080 }
+              ],
               "boxes": [
-                {
-                  "path": "screen.dialog_icon",
-                  "image": "3.png",
-                  "rect": [0.845000, 0.047000, 0.975000, 0.074000]
-                },
                 {
                   "path": "screen.main_viewport",
                   "image": "12.png",
-                  "rect": [0.098400, 0.104200, 0.896100, 0.894400]
+                  "bbox": [184, 112, 1544, 853]
                 }
               ]
             }
@@ -107,23 +107,62 @@ class BoxResourceTest {
         assertEquals(expected, text)
         val parsed = BoxResource.parseAuthoring(text)
         assertEquals(emptyList(), parsed.errors)
-        assertEquals("screen.dialog_icon", parsed.file.boxes[0].path)
-        val runtime = BoxResource.serializeRuntime(BoxResource.publish(parsed.file))
-        assertTrue(!runtime.contains("\"image\""))
-        val statuses = BoxResource.publishStatus(parsed.file, BoxResource.parseRuntime(runtime).file)
+        assertEquals("screen.main_viewport", parsed.file.boxes[0].path)
+        assertEquals("184,112,1544,853", parsed.file.boxes[0].bbox.joinToString(","))
+
+        val published = BoxResource.publish(parsed.file)
+        assertTrue(published.errors.isEmpty())
+        assertEquals(BoxResource.RUNTIME_VERSION, published.file.version)
+        val runtimeText = BoxResource.serializeRuntime(published.file)
+        assertTrue(!runtimeText.contains("\"image\""))
+        assertTrue(runtimeText.contains("0.095833"), "Pixel → normalized 固定 6 位小数")
+        val statuses = BoxResource.publishStatus(parsed.file, BoxResource.parseRuntime(runtimeText).file)
         assertTrue(statuses.all { it.status == BoxResource.PublishStatus.SAME })
+        val orphan = BoxResource.publish(BoxResource.AuthoringFile(boxes = parsed.file.boxes))
+        assertTrue(orphan.errors.any { it.startsWith("size:") }, "尺寸缺失的框不发布并记错")
+    }
+
+    @Test
+    fun `version 1 authoring is unsupported and never migrated`() {
+        val legacyText = """{"version":1,"boxes":[
+              {"path":"screen.main_viewport","image":"12.png","rect":[0.1,0.2,0.9,0.8]}
+            ]}"""
+        val parsed = BoxResource.parseAuthoring(legacyText)
+        assertTrue(parsed.errors.contains("version"), "v1 直接报 version 错误")
+        assertTrue(!parsed.errors.contains("legacy"), "不存在 legacy 迁移入口")
+        assertEquals(0, parsed.file.boxes.size)
+    }
+
+    @Test
+    fun `generate box validation treats every occupied path as a duplicate`() {
+        val occupied = mapOf("screen.foo" to "12.png", "combat.hp" to "3.png")
+        assertNull(BoxResource.generateBoxPathProblem("screen.bar", occupied), "没人占用的 path 放行")
+        assertEquals("duplicate", BoxResource.generateBoxPathProblem("screen.foo", occupied), "当前图片已有的 path 也算占用")
+        assertEquals("duplicate", BoxResource.generateBoxPathProblem("combat.hp", occupied))
+        assertEquals("empty", BoxResource.generateBoxPathProblem("  ", occupied))
+        assertEquals("shallow", BoxResource.generateBoxPathProblem("mainonly", occupied))
+        assertEquals("segment", BoxResource.generateBoxPathProblem("screen.2bad", occupied))
+        assertEquals("reserved", BoxResource.generateBoxPathProblem("panels.esc", occupied))
+    }
+
+    @Test
+    fun `bbox bounds use long math so int overflow cannot pass the check`() {
+        val size = AnnotationSwap.Size(1920, 1080)
+        // x + w 用 Int 加会回绕成负数骗过边界检查；必须按 Long 算
+        assertEquals("rect", BoxResource.bboxError(intArrayOf(2147483647, 0, 1, 1), size))
+        assertNull(BoxResource.bboxError(intArrayOf(1919, 0, 1, 1), size))
     }
 
     @Test
     fun `duplicate paths keep the first box and bad json does not throw`() {
         val duplicate = BoxResource.parseAuthoring(
-            """{"version":1,"boxes":[
-              {"path":"screen.a","image":"1.png","rect":[0,0,0.5,0.5]},
-              {"path":"screen.a","image":"2.png","rect":[0,0,0.2,0.2]}
+            """{"version":2,"images":[{"file":"12.png","width":100,"height":100}],"boxes":[
+              {"path":"screen.a","image":"12.png","bbox":[0,0,10,10]},
+              {"path":"screen.a","image":"12.png","bbox":[20,20,10,10]}
             ]}""",
         )
         assertEquals(1, duplicate.file.boxes.size)
-        assertEquals("1.png", duplicate.file.boxes[0].image)
+        assertEquals("0,0,10,10", duplicate.file.boxes[0].bbox.joinToString(","))
         assertTrue(duplicate.errors.any { it.endsWith(":duplicate") })
         val bad = BoxResource.parseRuntime("{")
         assertEquals(listOf("json"), bad.errors)
@@ -132,25 +171,24 @@ class BoxResourceTest {
 
     @Test
     fun `a later duplicate path rejects the whole image replacement`() {
-        val rect = doubleArrayOf(0.0, 0.0, 0.5, 0.5)
-        val existing = listOf(
-            BoxResource.AuthoringBox("screen.a", "1.png", rect),
-            BoxResource.AuthoringBox("screen.b", "2.png", rect.copyOf()),
+        val existing = BoxResource.AuthoringFile(
+            images = listOf(BoxResource.AuthoringImage("1.png", 100, 100)),
+            boxes = listOf(
+                BoxResource.AuthoringBox("screen.a", "1.png", intArrayOf(0, 0, 50, 50)),
+                BoxResource.AuthoringBox("screen.b", "1.png", intArrayOf(50, 50, 50, 50)),
+            ),
         )
-        val pixel = BoxResource.rectToPixel(rect, 100, 100)!!
         fun edit(file: String, path: String) = BoxResource.ImageReplacement(
             file,
             100,
             100,
-            listOf(BoxResource.ReplacementBox(path, pixel.x, pixel.y, pixel.w, pixel.h, rect)),
+            listOf(BoxResource.ReplacementBox(path, 10, 10, 20, 20)),
         )
         val conflict = BoxResource.replaceAuthoringImages(
             existing,
-            listOf(edit("1.png", "screen.a"), edit("2.png", "screen.a")),
+            listOf(edit("1.png", "screen.c"), edit("2.png", "screen.c")),
         )
         assertEquals("duplicate", conflict.error)
-        assertTrue(BoxResource.isStorableRect(doubleArrayOf(0.0, 0.0, 1.0, 1.0)))
-        assertFalse(BoxResource.isStorableRect(doubleArrayOf(-0.1, 0.0, 0.5, 0.5)))
         val outside = BoxResource.replaceAuthoringImages(
             existing,
             listOf(
@@ -165,10 +203,75 @@ class BoxResourceTest {
         assertEquals("rect", outside.error)
         val applied = BoxResource.replaceAuthoringImages(
             existing,
-            listOf(edit("1.png", "screen.a"), edit("2.png", "screen.b")),
+            listOf(edit("1.png", "screen.a"), BoxResource.ImageReplacement("2.png", 200, 100, listOf(BoxResource.ReplacementBox("screen.d", 0, 0, 30, 30)))),
         )
         assertNull(applied.error)
-        assertEquals(setOf("screen.a", "screen.b"), applied.boxes.map { it.path }.toSet())
+        assertEquals(setOf("screen.a", "screen.d"), applied.file.boxes.map { it.path }.toSet())
+        assertTrue(applied.file.images.any { it.file == "2.png" && it.width == 200 }, "首次编辑登记新图片尺寸")
+    }
+
+    @Test
+    fun `swapping boxes maps proportionally when sizes differ`() {
+        val file = BoxResource.AuthoringFile(
+            images = listOf(
+                BoxResource.AuthoringImage("big.png", 1920, 1080),
+                BoxResource.AuthoringImage("small.png", 960, 540),
+            ),
+            boxes = listOf(
+                BoxResource.AuthoringBox("screen.a", "big.png", intArrayOf(960, 540, 960, 540)),
+                BoxResource.AuthoringBox("screen.b", "small.png", intArrayOf(480, 270, 480, 270)),
+            ),
+        )
+        val sameSize = BoxResource.swapImageBoxes(
+            file.copy(
+                images = listOf(
+                    BoxResource.AuthoringImage("big.png", 100, 100),
+                    BoxResource.AuthoringImage("small.png", 100, 100),
+                ),
+            ),
+            "big.png",
+            "small.png",
+        )
+        assertNull(sameSize.error)
+        assertEquals("small.png", sameSize.file.boxes.first { it.path == "screen.a" }.image)
+        assertEquals("960,540,960,540", sameSize.file.boxes.first { it.path == "screen.a" }.bbox.joinToString(","), "同尺寸交换坐标逐字段不变")
+        val mapped = BoxResource.swapImageBoxes(file, "big.png", "small.png")
+        assertNull(mapped.error)
+        val movedA = mapped.file.boxes.first { it.path == "screen.a" }
+        assertEquals("small.png", movedA.image)
+        assertEquals("480,270,480,270", movedA.bbox.joinToString(","))
+        val movedB = mapped.file.boxes.first { it.path == "screen.b" }
+        assertEquals("big.png", movedB.image)
+        assertEquals("960,540,960,540", movedB.bbox.joinToString(","))
+        val missing = BoxResource.swapImageBoxes(file.copy(images = emptyList()), "big.png", "small.png")
+        assertEquals("size", missing.error)
+    }
+
+    @Test
+    fun `only a registered non-zero image size counts as usable`() {
+        assertNull(BoxResource.usableImageSize(null), "没登记 = 不可用")
+        assertNull(BoxResource.usableImageSize(BoxResource.AuthoringImage("a.png", 0, 0)), "0 尺寸占位 = 不可用")
+        assertNull(BoxResource.usableImageSize(BoxResource.AuthoringImage("a.png", 0, 540)), "只有一边有效 = 不可用")
+        assertEquals(
+            AnnotationSwap.Size(960, 540),
+            BoxResource.usableImageSize(BoxResource.AuthoringImage("a.png", 960, 540)),
+        )
+    }
+
+    @Test
+    fun `a zero-size placeholder entry still blocks the swap`() {
+        val file = BoxResource.AuthoringFile(
+            images = listOf(
+                BoxResource.AuthoringImage("big.png", 1920, 1080),
+                BoxResource.AuthoringImage("small.png", 0, 0),
+            ),
+            boxes = listOf(BoxResource.AuthoringBox("screen.a", "big.png", intArrayOf(0, 0, 10, 10))),
+        )
+        assertEquals(
+            "size",
+            BoxResource.swapImageBoxes(file, "big.png", "small.png").error,
+            "0 尺寸占位条目不能被当成可用尺寸（补登记是调用方的事）",
+        )
     }
 
     @Test

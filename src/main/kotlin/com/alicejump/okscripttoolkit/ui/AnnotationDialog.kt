@@ -130,10 +130,6 @@ class AnnotationDialog(
         var dirty: Boolean = false,
         /** 本次对话框内隐藏的条目标记。不落盘，撤销几何时也不恢复它。 */
         val hiddenIds: MutableSet<Int> = mutableSetOf(),
-        /** 打开时的归一化矩形，按条目标记。像素没变时写回原值。 */
-        val sourceRects: MutableMap<Int, DoubleArray> = mutableMapOf(),
-        /** 这次打不开、但保存时必须原样留在文件里的框。 */
-        val preserved: MutableList<BoxResource.AuthoringBox> = mutableListOf(),
         var nextBoxId: Int = 1,
     )
 
@@ -329,20 +325,11 @@ class AnnotationDialog(
                 val buffered = ImageIO.read(target.file)
                 val size = buffered?.let { it.width to it.height }
                 var nextId = 1
-                val sourceRects = mutableMapOf<Int, DoubleArray>()
-                val preserved = mutableListOf<BoxResource.AuthoringBox>()
                 val boxes = if (editingBoxes) {
-                    val width = size?.first ?: 0
-                    val height = size?.second ?: 0
-                    project.service<BoxCatalogService>().boxesForImage(target.file.name).mapNotNull { box ->
-                        val pixel = BoxResource.rectToPixel(box.rect, width, height)
-                        if (pixel == null) {
-                            preserved += box
-                            return@mapNotNull null
-                        }
-                        val id = nextId++
-                        sourceRects[id] = box.rect.copyOf()
-                        BoxItem(box.path, Rect(pixel.x, pixel.y, pixel.w, pixel.h), id)
+                    // Pixel authoring：框就是画布坐标本身，不再经过 normalized 换算，
+                    // 也不存在"打不开要原样保留"的条目（解析阶段已保证 bbox 落在图内）。
+                    project.service<BoxCatalogService>().boxesForImage(target.file.name).map { box ->
+                        BoxItem(box.path, Rect(box.bbox[0], box.bbox[1], box.bbox[2], box.bbox[3]), nextId++)
                     }.toMutableList()
                 } else {
                     val annotations: List<CocoAnnotation> =
@@ -360,8 +347,6 @@ class AnnotationDialog(
                     cocoImageId = cocoImageId,
                     // 尚未注册进 COCO 的图（如新截图）也可标注：记住尺寸，保存时自动注册
                     newSize = size,
-                    sourceRects = sourceRects,
-                    preserved = preserved,
                     nextBoxId = nextId,
                 ) to buffered
             }
@@ -449,6 +434,10 @@ class AnnotationDialog(
         val pathField = JBTextField(
             session.boxes.getOrNull(canvas.selectedIndex())?.categoryName?.let { "screen.$it" } ?: "screen.region",
         )
+        // 「生成框」创建的是一条新框：重复校验吃 boxes.json 的**框 path** 占用表
+        // （pathOwners，含当前图片自己的框），而不是 COCO 的分类名 ——
+        // buildTakenCategories 在非框模式下拿到的是分类名，拦不住和已有框重名。
+        val taken = project.service<BoxCatalogService>().pathOwners()
         val form = JPanel(BorderLayout(0, 6))
         val list = JPanel()
         list.layout = BoxLayout(list, BoxLayout.Y_AXIS)
@@ -462,24 +451,27 @@ class AnnotationDialog(
             }
 
             override fun createCenterPanel(): JComponent = form
+
+            // 实时校验：规则来自 BoxResource 的同一条文法，非法时给出具体原因并禁用 OK。
+            override fun doValidate(): ValidationInfo? {
+                val problem = pathProblemMessage(pathField.text, taken)
+                    ?: return null
+                return ValidationInfo(problem, pathField)
+            }
         }
         if (!dialog.showAndGet()) return
         val chosen = session.boxes.filterIndexed { index, _ -> checks[index].isSelected }
         if (chosen.isEmpty()) return
-        val rect = if (chosen.size == 1) {
-            BoxResource.pixelToRect(
-                BoxResource.PixelBox(chosen[0].rect.x, chosen[0].rect.y, chosen[0].rect.w, chosen[0].rect.h),
-                size.first,
-                size.second,
-            )
-        } else {
-            BoxResource.unionOnImage(
-                chosen.map { BoxResource.PixelBox(it.rect.x, it.rect.y, it.rect.w, it.rect.h) },
-                size.first,
-                size.second,
-            )
-        } ?: return
-        val error = project.service<BoxCatalogService>().addBox(pathField.text.trim(), session.fileName, rect)
+        // Pixel annotations → Pixel union → Pixel authoring。中途不做归一化；
+        // 越界与否由 addBox 按图片头尺寸校验（与保存链同一道闸）。
+        val union = BoxResource.unionPixelBoxes(
+            chosen.map { BoxResource.PixelBox(it.rect.x, it.rect.y, it.rect.w, it.rect.h) },
+        ) ?: return
+        val error = project.service<BoxCatalogService>().addBox(
+            pathField.text.trim(),
+            session.fileName,
+            intArrayOf(union.x, union.y, union.w, union.h),
+        )
         if (error != null) {
             val key = when (error) {
                 "duplicate" -> "annotation.generateDuplicate"
@@ -495,6 +487,22 @@ class AnnotationDialog(
             OkScriptToolkitBundle.message("annotation.generateTitle"))
     }
 
+    /** 「生成框」路径的即时校验文案：规则在 [BoxResource.generateBoxPathProblem]，这里只把错误码翻成人话。 */
+    private fun pathProblemMessage(value: String, taken: Map<String, String>): String? {
+        val code = BoxResource.generateBoxPathProblem(value, taken) ?: return null
+        val segments = value.trim().split('.')
+        return when (code) {
+            "empty" -> OkScriptToolkitBundle.message("box.pathRequired")
+            "shallow" -> OkScriptToolkitBundle.message("box.pathTwoSegments")
+            "segment" -> OkScriptToolkitBundle.message(
+                "box.pathBadSegment",
+                segments.firstOrNull { !Regex(BoxResource.SEGMENT_SOURCE).matches(it) }.orEmpty(),
+            )
+            "reserved" -> OkScriptToolkitBundle.message("box.pathReserved", segments.first())
+            else -> OkScriptToolkitBundle.message("annotation.generateDuplicate")
+        }
+    }
+
     private fun saveBoxEdits(): String? {
         val catalog = project.service<BoxCatalogService>()
         val edits = mutableListOf<BoxResource.ImageReplacement>()
@@ -507,10 +515,7 @@ class AnnotationDialog(
                     box.rect.y,
                     box.rect.w,
                     box.rect.h,
-                    session.sourceRects[box.id],
                 )
-            } + session.preserved.map { box ->
-                BoxResource.ReplacementBox(box.path, 0, 0, 1, 1, box.rect, unchanged = true)
             }
             edits += BoxResource.ImageReplacement(session.fileName, size.first, size.second, boxes)
         }
@@ -527,11 +532,9 @@ class AnnotationDialog(
                     .toList()
                     .forEach { taken.remove(it) }
                 open.boxes.forEach { taken[it.categoryName] = open.fileName }
-                open.preserved.forEach { taken.putIfAbsent(it.path, open.fileName) }
             }
             val current = sessionByFile[currentFile] ?: session?.takeIf { it.fileName == currentFile }
             current?.boxes?.forEach { taken.putIfAbsent(it.categoryName, currentFile) }
-            current?.preserved?.forEach { taken.putIfAbsent(it.path, currentFile) }
             return taken
         }
         val categories = data.categories()

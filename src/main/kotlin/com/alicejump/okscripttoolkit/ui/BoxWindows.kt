@@ -2,8 +2,11 @@ package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.BoxCatalogService
-import com.alicejump.okscripttoolkit.core.OkDataChangeListener
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
+import com.alicejump.okscripttoolkit.core.OkDataChangeListener
+import com.alicejump.okscripttoolkit.core.OkProjectDataService
+import com.alicejump.okscripttoolkit.core.TemplateThumbPipeline
+import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -19,12 +22,17 @@ import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
-import com.intellij.ui.content.ContentFactory
+import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
+import java.awt.Component
 import java.awt.datatransfer.StringSelection
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.util.concurrent.ConcurrentHashMap
+import javax.swing.DefaultListCellRenderer
 import javax.swing.DefaultListModel
+import javax.swing.Icon
+import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.ListSelectionModel
 
@@ -32,7 +40,7 @@ import javax.swing.ListSelectionModel
 class BoxAssetToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val panel = TemplateAssetPanel(project, editingBoxes = true)
-        val content = ContentFactory.getInstance().createContent(panel.mainPanel, "", false)
+        val content = com.intellij.ui.content.ContentFactory.getInstance().createContent(panel.mainPanel, "", false)
         content.setDisposer(panel)
         toolWindow.contentManager.addContent(content)
     }
@@ -42,24 +50,69 @@ class BoxAssetToolWindowFactory : ToolWindowFactory, DumbAware {
 class BoxGalleryToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val panel = BoxGalleryPanel(project)
-        toolWindow.contentManager.addContent(ContentFactory.getInstance().createContent(panel, "", false))
+        toolWindow.contentManager.addContent(com.intellij.ui.content.ContentFactory.getInstance().createContent(panel, "", false))
     }
 }
 
+/**
+ * 框管理对标模板管理：每个 box path 一张 **bbox 裁剪后的资源缩略图**
+ * （标注管理 ↔ 框资源管理是原图缩略图；模板管理 ↔ 框管理是裁剪缩略图）。
+ *
+ * 裁剪、磁盘缓存（内容哈希 + bbox + 高度）、按源图分组懒解码全部走
+ * [TemplateThumbPipeline] —— 与模板管理同一条管线，这里不自己造缓存。
+ */
 private class BoxGalleryPanel(private val project: Project) : JPanel(BorderLayout()), com.intellij.openapi.Disposable {
-    private val model = DefaultListModel<String>()
+    private data class Item(val path: String, val imagePath: java.nio.file.Path?, val bbox: IntArray?)
+
+    /** 缩略图目标高度。列表行比卡片矮，48px 足够辨认裁剪区域。 */
+    private val thumbHeight = 48
+
+    private val model = DefaultListModel<Item>()
+    private var items: List<Item> = emptyList()
     private val list = JBList(model)
-    private var paths = emptyList<String>()
+
+    /** UI 侧的"当前图标"表（按 path 索引），真正的缓存/解码在 [TemplateThumbPipeline]。 */
+    private val icons = ConcurrentHashMap<String, Icon>()
 
     init {
         list.selectionMode = ListSelectionModel.SINGLE_SELECTION
+        list.cellRenderer = object : DefaultListCellRenderer() {
+            override fun getListCellRendererComponent(
+                list: JList<*>,
+                value: Any?,
+                index: Int,
+                selected: Boolean,
+                focused: Boolean,
+            ): Component {
+                val item = value as? Item
+                val label = JBLabel()
+                label.text = if (item == null || item.path.isEmpty()) {
+                    OkScriptToolkitBundle.message("boxGallery.empty")
+                } else {
+                    "self.pos.${item.path}.to_box()"
+                }
+                label.iconTextGap = 8
+                label.border = JBUI.Borders.empty(4, 8)
+                label.isOpaque = true
+                if (selected) {
+                    label.background = list.selectionBackground
+                    label.foreground = list.selectionForeground
+                } else {
+                    label.background = list.background
+                    label.foreground = list.foreground
+                }
+                if (item != null) label.icon = icons[item.path]
+                return label
+            }
+        }
         list.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
-                val path = paths.getOrNull(list.selectedIndex) ?: return
+                val item = items.getOrNull(list.selectedIndex) ?: return
+                if (item.path.isEmpty()) return
                 if (e.clickCount >= 2) {
-                    CopyPasteManager.getInstance().setContents(StringSelection("self.pos.$path"))
+                    CopyPasteManager.getInstance().setContents(StringSelection("self.pos.${item.path}"))
                 } else {
-                    insert("self.pos.$path.to_box()")
+                    insert("self.pos.${item.path}.to_box()")
                 }
             }
         })
@@ -70,13 +123,25 @@ private class BoxGalleryPanel(private val project: Project) : JPanel(BorderLayou
     }
 
     private fun reload() {
-        paths = project.service<BoxCatalogService>().readRuntime().boxes.map { it.path }
-        model.clear()
-        if (paths.isEmpty()) {
-            model.addElement(OkScriptToolkitBundle.message("boxGallery.empty"))
-            return
+        val catalog = project.service<BoxCatalogService>()
+        val runtime = catalog.readRuntime().boxes
+        val authoring = catalog.readAuthoring().boxes.associateBy { it.path }
+        val settings = OkScriptToolkitSettings.getInstance(project)
+        val templates = project.service<OkProjectDataService>().rootPath()
+            ?.resolve(settings.okTemplatesDirectory())
+        items = runtime.map { box ->
+            val source = authoring[box.path]
+            Item(box.path, source?.let { templates?.resolve(it.image) }, source?.bbox)
         }
-        paths.forEach { model.addElement("self.pos.$it.to_box()") }
+        model.clear()
+        if (items.isEmpty()) model.addElement(Item("", null, null)) else items.forEach { model.addElement(it) }
+        // 缺 authoring 来源的 path（运行时独有）拿不到 bbox，保持无图占位 —— 与 VS Code 画廊一致
+        val requests = items.filter { it.imagePath != null && it.bbox != null }
+            .map { TemplateThumbPipeline.Request(it.path, it.imagePath!!, it.bbox!!) }
+        TemplateThumbPipeline.loadThumbs(project, requests, thumbHeight) { path, icon ->
+            if (icon != null) icons[path] = icon else icons.remove(path)
+            list.repaint()
+        }
     }
 
     private fun insert(text: String) {
