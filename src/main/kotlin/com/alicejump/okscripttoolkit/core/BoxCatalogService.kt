@@ -162,18 +162,48 @@ class BoxCatalogService(private val project: Project) {
         )
     }
 
-    /** 两张图的框整套对调。Pixel authoring 下尺寸不同要按比例映射，纯层完成。 */
+    /**
+     * 两张图的框整套对调。Pixel authoring 下坐标语义依赖图片尺寸：
+     * 同尺寸直接换 `image`；不同尺寸按比例映射（复用模板交换的 `AnnotationSwap.scaleBox`），
+     * 映射与钳制在纯层完成。缺文件或两边都没有框时不创建文件。
+     *
+     * 目标图片没有尺寸登记时（常见：把框换到一张从未标过框的新截图上），
+     * 先从图片头补登记再交换 —— 补不出来才拒绝。
+     */
     @Synchronized
     fun swapImages(fileA: String, fileB: String): Boolean {
         val target = authoringPath() ?: return false
         val parsed = readAuthoringResult()
         if (parsed.errors.isNotEmpty()) return false
         if (parsed.file.boxes.isEmpty()) return true
-        val swapped = BoxResource.swapImageBoxes(parsed.file, fileA, fileB)
+        var images = parsed.file.images
+        val ensureEntry = fun(fileName: String): Boolean {
+            val name = BoxResource.imageFileName(fileName)
+            val existing = images.firstOrNull { BoxResource.sameImageName(it.file, name) }
+            // 已登记且尺寸有效才放行；缺失或 0 尺寸占位的条目从图片头补齐/覆盖
+            if (existing != null && existing.width > 0 && existing.height > 0) return true
+            val size = templatesDirPath()
+                ?.let { headerSize(it.resolve(name)) }
+                ?: return false
+            val fresh = BoxResource.AuthoringImage(name, size.width, size.height)
+            images = if (existing != null) {
+                images.map { if (BoxResource.sameImageName(it.file, name)) fresh else it }
+            } else {
+                images + fresh
+            }
+            return true
+        }
+        if (!ensureEntry(fileA) || !ensureEntry(fileB)) return false
+        val prepared = parsed.file.copy(images = images)
+        val swapped = BoxResource.swapImageBoxes(prepared, fileA, fileB)
         if (swapped.error != null) return false
-        if (BoxResource.serializeAuthoring(swapped.file) == BoxResource.serializeAuthoring(parsed.file)) return true
+        if (BoxResource.serializeAuthoring(swapped.file) == BoxResource.serializeAuthoring(prepared)) return true
         return write(target, BoxResource.serializeAuthoring(swapped.file))
     }
+
+    /** 全项目框 path 占用表：path → 所属图片。含当前图 —— 「生成框」要拦住和已有框重名。 */
+    fun pathOwners(): Map<String, String> =
+        readAuthoring().boxes.associate { it.path to it.image }
 
     @Synchronized
     fun pathOwnersExcept(fileName: String): Map<String, String> =

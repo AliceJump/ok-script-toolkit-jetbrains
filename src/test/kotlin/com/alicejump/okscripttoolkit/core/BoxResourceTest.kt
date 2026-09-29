@@ -146,6 +146,14 @@ class BoxResourceTest {
     }
 
     @Test
+    fun `bbox bounds use long math so int overflow cannot pass the check`() {
+        val size = AnnotationSwap.Size(1920, 1080)
+        // x + w 用 Int 加会回绕成负数骗过边界检查；必须按 Long 算
+        assertEquals("rect", BoxResource.bboxError(intArrayOf(2147483647, 0, 1, 1), size))
+        assertNull(BoxResource.bboxError(intArrayOf(1919, 0, 1, 1), size))
+    }
+
+    @Test
     fun `duplicate paths keep the first box and bad json does not throw`() {
         val duplicate = BoxResource.parseAuthoring(
             """{"version":2,"images":[{"file":"12.png","width":100,"height":100}],"boxes":[

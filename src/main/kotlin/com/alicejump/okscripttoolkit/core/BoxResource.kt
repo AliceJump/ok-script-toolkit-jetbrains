@@ -116,7 +116,11 @@ object BoxResource {
         if (bbox.size != 4 || bbox.any { !it.toFloat().isFinite() }) return "rect"
         if (bbox[0] < 0 || bbox[1] < 0 || bbox[2] < 1 || bbox[3] < 1) return "rect"
         if (size != null && AnnotationSwap.isUsable(size)) {
-            if (bbox[0] + bbox[2] > size.width || bbox[1] + bbox[3] > size.height) return "rect"
+            // 手改的 boxes.json 可能塞进 Int.MAX_VALUE：加法必须走 Long，否则回绕成
+            // 负数反而骗过边界检查
+            val right = bbox[0].toLong() + bbox[2].toLong()
+            val bottom = bbox[1].toLong() + bbox[3].toLong()
+            if (right > size.width || bottom > size.height) return "rect"
         }
         return null
     }

@@ -434,9 +434,10 @@ class AnnotationDialog(
         val pathField = JBTextField(
             session.boxes.getOrNull(canvas.selectedIndex())?.categoryName?.let { "screen.$it" } ?: "screen.region",
         )
-        // 生成框的重复校验吃**全项目**占用表（含当前图片自己的框 —— 新建框不允许和
-        // 任何已有框重名），并叠加本次对话框里未保存的会话编辑。
-        val taken = buildTakenCategories(session.fileName)
+        // 「生成框」创建的是一条新框：重复校验吃 boxes.json 的**框 path** 占用表
+        // （pathOwners，含当前图片自己的框），而不是 COCO 的分类名 ——
+        // buildTakenCategories 在非框模式下拿到的是分类名，拦不住和已有框重名。
+        val taken = project.service<BoxCatalogService>().pathOwners()
         val form = JPanel(BorderLayout(0, 6))
         val list = JPanel()
         list.layout = BoxLayout(list, BoxLayout.Y_AXIS)

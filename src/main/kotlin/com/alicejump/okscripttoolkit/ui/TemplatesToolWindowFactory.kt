@@ -299,6 +299,15 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
             if (disposed) return@loadThumbs
             // 清除请求标记，允许后续渲染重新请求
             requestedThumbs.remove(name)
+            // 过期请求（reload 已 thumbs.clear()）：不能把旧缩略图写回新网格；
+            // 卡片还在的话按当前 generation 重排一次
+            if (generation != renderGeneration.get()) {
+                if (pendingThumbLabels.containsKey(name)) {
+                    templates.firstOrNull { current -> current.name == name }
+                        ?.let { retry -> requestThumbs(listOf(retry), renderGeneration.get()) }
+                }
+                return@loadThumbs
+            }
             if (icon != null) thumbs[name] = icon
             pendingThumbLabels.remove(name)?.forEach { label ->
                 label.icon = icon
