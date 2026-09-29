@@ -63,10 +63,23 @@ class BoxCatalogService(private val project: Project) {
         null
     }
 
+    @Synchronized
     fun boxesForImage(fileName: String): List<BoxResource.AuthoringBox> =
         readAuthoring().boxes.filter { sameImage(it.image, fileName) }
 
+    /** 一次读盘，按图片文件名汇总框数量。网格渲染不要对每张图各读一遍。 */
+    @Synchronized
+    fun boxCounts(): Map<String, Int> {
+        val counts = mutableMapOf<String, Int>()
+        for (box in readAuthoring().boxes) {
+            val key = BoxResource.imageFileName(box.image).lowercase()
+            counts[key] = (counts[key] ?: 0) + 1
+        }
+        return counts
+    }
+
     /** 删图时去掉它的框。标注文件还不存在就什么都不写。 */
+    @Synchronized
     fun removeImage(fileName: String): Boolean {
         val target = authoringPath() ?: return false
         val parsed = readAuthoringResult()
@@ -78,6 +91,7 @@ class BoxCatalogService(private val project: Project) {
     }
 
     /** 两张图的框整套对调。缺文件且没有框要搬走时不创建文件。 */
+    @Synchronized
     fun swapImages(fileA: String, fileB: String): Boolean {
         val target = authoringPath() ?: return false
         val parsed = readAuthoringResult()
@@ -102,18 +116,21 @@ class BoxCatalogService(private val project: Project) {
         return write(target, BoxResource.serializeAuthoring(BoxResource.AuthoringFile(boxes = next)))
     }
 
+    @Synchronized
     fun pathOwnersExcept(fileName: String): Map<String, String> =
         readAuthoring().boxes
             .filter { !sameImage(it.image, fileName) }
             .associate { it.path to it.image }
 
     /** 用这张图上的像素框替换标注资源里引用它的条目。成功返回 null。 */
+    @Synchronized
     fun replaceImageBoxes(fileName: String, width: Int, height: Int, boxes: List<EditedBox>): String? =
         commitImageEdits(listOf(BoxResource.ImageReplacement(fileName, width, height, boxes.map { it.toReplacement() })))
 
     /**
      * 校验全部图片后再写一次标注文件。中途失败时磁盘上的 boxes.json 保持原样。
      */
+    @Synchronized
     fun commitImageEdits(edits: List<BoxResource.ImageReplacement>): String? {
         if (edits.isEmpty()) return null
         val parsed = readAuthoringResult()
@@ -124,6 +141,7 @@ class BoxCatalogService(private val project: Project) {
         return if (write(authoringPath(), text)) null else "write"
     }
 
+    @Synchronized
     fun addBox(path: String, image: String, rect: DoubleArray): String? {
         if (!BoxResource.isStorableRect(rect)) return "rect"
         val pathError = BoxResource.pathError(path)
@@ -146,6 +164,7 @@ class BoxCatalogService(private val project: Project) {
             .map { it.path }
     }
 
+    @Synchronized
     fun publish(): Boolean {
         val parsed = readAuthoringResult()
         if (parsed.errors.isNotEmpty()) return false

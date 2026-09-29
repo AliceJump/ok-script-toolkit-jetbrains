@@ -63,17 +63,32 @@ private const val LABEL_ENUM_REFERENCE_SCAN_LIMIT = 2000
 private val sharedTemplateThumbs = java.util.concurrent.ConcurrentHashMap<String, ImageIcon>()
 private val sharedTemplateThumbInflight = java.util.concurrent.ConcurrentHashMap<String, CompletableFuture<ImageIcon?>>()
 
-internal fun cachedTemplateThumb(file: File): ImageIcon? = sharedTemplateThumbs[file.absolutePath]
+/** 路径加上修改时间和长度。同一路径换了文件内容就会另算一张缩略图。 */
+private fun thumbCacheKey(file: File): String? {
+    if (!file.isFile) return null
+    return file.absolutePath + "|" + file.lastModified() + "|" + file.length()
+}
+
+internal fun cachedTemplateThumb(file: File): ImageIcon? {
+    val key = thumbCacheKey(file) ?: return null
+    return sharedTemplateThumbs[key]
+}
 
 /** 标注管理和框资源管理共用同一张原图的缩略图。按绝对路径去重，两边打开都不再各解一次。 */
 internal fun requestSharedTemplateThumb(file: File): CompletableFuture<ImageIcon?> {
+    val key = thumbCacheKey(file) ?: return CompletableFuture.completedFuture(null)
     cachedTemplateThumb(file)?.let { return CompletableFuture.completedFuture(it) }
-    return sharedTemplateThumbInflight.computeIfAbsent(file.absolutePath) {
+    return sharedTemplateThumbInflight.computeIfAbsent(key) {
         CompletableFuture.supplyAsync {
             val icon = decodeTemplateThumb(file)
-            if (icon != null) sharedTemplateThumbs[file.absolutePath] = icon
+            if (icon != null) {
+                val prefix = file.absolutePath + "|"
+                sharedTemplateThumbs.keys.filter { it.startsWith(prefix) && it != key }
+                    .forEach { sharedTemplateThumbs.remove(it) }
+                sharedTemplateThumbs[key] = icon
+            }
             icon
-        }.whenComplete { _, _ -> sharedTemplateThumbInflight.remove(file.absolutePath) }
+        }.whenComplete { _, _ -> sharedTemplateThumbInflight.remove(key) }
     }
 }
 
@@ -287,8 +302,13 @@ class TemplateAssetPanel(
         // 标注编辑器的 ←/→ 导航跟随当前过滤结果
         visibleImages = filtered
 
+        val boxCounts = if (editingBoxes) {
+            project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>().boxCounts()
+        } else {
+            emptyMap()
+        }
         for (img in filtered) {
-            gridPanel.add(createImageCard(img))
+            gridPanel.add(createImageCard(img, boxCounts))
         }
 
         if (filtered.isEmpty()) {
@@ -313,7 +333,7 @@ class TemplateAssetPanel(
         }
     }
 
-    private fun createImageCard(img: TemplateImage): JPanel {
+    private fun createImageCard(img: TemplateImage, boxCounts: Map<String, Int> = emptyMap()): JPanel {
         val card = JPanel(BorderLayout())
         card.border = BorderFactory.createCompoundBorder(
             BorderFactory.createLineBorder(JBColor.border()),
@@ -333,7 +353,7 @@ class TemplateAssetPanel(
         } ?: requestThumb(img.file, thumbLabel)
 
         val markCount = if (editingBoxes) {
-            project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>().boxesForImage(img.file.name).size
+            boxCounts[img.file.name.lowercase()] ?: 0
         } else {
             img.annotations.size
         }
@@ -617,16 +637,20 @@ class TemplateAssetPanel(
             if (confirm == JOptionPane.YES_OPTION) {
                 // 文件删除 + COCO 写盘移出 EDT
                 CompletableFuture.supplyAsync {
-                    val deleted = data.deleteImage(img.file)
-                    if (deleted) {
-                        project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>().removeImage(img.file.name)
-                    }
-                    deleted
-                }.whenComplete { deleted, error ->
+                    val removed = project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>()
+                        .removeImage(img.file.name)
+                    if (!removed) return@supplyAsync "boxes"
+                    if (!data.deleteImage(img.file)) return@supplyAsync "image"
+                    "ok"
+                }.whenComplete { result, error ->
                     SwingUtilities.invokeLater {
-                        if (error != null || deleted != true) {
-                            notify(OkScriptToolkitBundle.message("templateAsset.deleteFailed", img.name),
-                                NotificationType.ERROR)
+                        when {
+                            error != null || result == "boxes" ->
+                                notify(OkScriptToolkitBundle.message("templateAsset.deleteFailed", img.name),
+                                    NotificationType.ERROR)
+                            result == "image" ->
+                                notify(OkScriptToolkitBundle.message("templateAsset.deleteFileLeft", img.name),
+                                    NotificationType.ERROR)
                         }
                         loadData()
                     }
