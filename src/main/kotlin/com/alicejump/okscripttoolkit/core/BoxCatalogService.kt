@@ -54,12 +54,20 @@ class BoxCatalogService(private val project: Project) {
         return AnnotationSwap.Size(image.first, image.second)
     }
 
-    /** authoring 里登记的图片尺寸；读不到返回 null，交换与发布据此拒绝而不是瞎算。 */
+    /**
+     * 图片尺寸：authoring 里登记的**可用**条目优先，缺失或 0 尺寸占位（从未标过框、
+     * 或 `removeImageBoxes` 删掉了登记）时回退到图片头 —— 与 [swapImages] 的补登记
+     * 同一条规则。两边都读不出来才返回 null。
+     *
+     * 界面（`swapBoxesWith`）用这个函数做交换前的预检查，所以回退必须在这里：
+     * 只在 [swapImages] 里补登记的话，新截图仍然会在弹确认框之前就被拦下。
+     */
     fun imageSize(fileName: String): AnnotationSwap.Size? {
-        val entry = readAuthoring().images.firstOrNull { BoxResource.sameImageName(it.file, fileName) }
-            ?: return null
-        if (entry.width <= 0 || entry.height <= 0) return null
-        return AnnotationSwap.Size(entry.width, entry.height)
+        val name = BoxResource.imageFileName(fileName)
+        if (name.isEmpty()) return null
+        val entry = readAuthoring().images.firstOrNull { BoxResource.sameImageName(it.file, name) }
+        BoxResource.usableImageSize(entry)?.let { return it }
+        return templatesDirPath()?.resolve(name)?.let { headerSize(it) }
     }
 
     fun readRuntime(): BoxResource.RuntimeFile = readRuntimeResult().file
@@ -181,7 +189,7 @@ class BoxCatalogService(private val project: Project) {
             val name = BoxResource.imageFileName(fileName)
             val existing = images.firstOrNull { BoxResource.sameImageName(it.file, name) }
             // 已登记且尺寸有效才放行；缺失或 0 尺寸占位的条目从图片头补齐/覆盖
-            if (existing != null && existing.width > 0 && existing.height > 0) return true
+            if (BoxResource.usableImageSize(existing) != null) return true
             val size = templatesDirPath()
                 ?.let { headerSize(it.resolve(name)) }
                 ?: return false

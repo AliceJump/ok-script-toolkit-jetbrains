@@ -99,6 +99,17 @@ object BoxResource {
     fun sameImageName(a: String, b: String): Boolean =
         imageFileName(a).equals(imageFileName(b), ignoreCase = true)
 
+    /**
+     * authoring 尺寸条目 → 可用尺寸。缺失条目、以及 `width/height` 为 0 的条目
+     * （`parseAuthoring` 对"引用了未登记图片"的占位）都算**不可用**。
+     *
+     * 这是"登记尺寸能不能拿来当除数"的**唯一**判据：交换映射、UI 预检查、补登记
+     * 三处都走它。各处各写一遍 `width > 0` 时，漏掉一处的表现是"store 肯换、
+     * 界面先拦住"这种两边不一致的怪相。
+     */
+    fun usableImageSize(entry: AuthoringImage?): AnnotationSwap.Size? =
+        entry?.let { AnnotationSwap.Size(it.width, it.height) }?.takeIf { AnnotationSwap.isUsable(it) }
+
     /* ── Pixel bbox 校验：与模板 COCO 的 bbox 同一条线（整数、正宽高、落在图内）。── */
 
     /** 非整数输入按四舍五入收进像素格（编辑器画布本来就只产生整数）。null 表示不是数字。 */
@@ -258,8 +269,8 @@ object BoxResource {
     fun swapImageBoxes(file: AuthoringFile, fileA: String, fileB: String): SwapResult {
         val entryA = file.images.firstOrNull { sameImageName(it.file, fileA) }
         val entryB = file.images.firstOrNull { sameImageName(it.file, fileB) }
-        val sizeA = entryA?.takeIf { it.width > 0 && it.height > 0 }?.let { AnnotationSwap.Size(it.width, it.height) }
-        val sizeB = entryB?.takeIf { it.width > 0 && it.height > 0 }?.let { AnnotationSwap.Size(it.width, it.height) }
+        val sizeA = usableImageSize(entryA)
+        val sizeB = usableImageSize(entryB)
         if (sizeA == null || sizeB == null) return SwapResult(file, "size")
 
         fun remap(box: AuthoringBox, target: String, from: AnnotationSwap.Size, to: AnnotationSwap.Size): AuthoringBox {

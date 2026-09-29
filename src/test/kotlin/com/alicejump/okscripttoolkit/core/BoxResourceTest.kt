@@ -248,6 +248,33 @@ class BoxResourceTest {
     }
 
     @Test
+    fun `only a registered non-zero image size counts as usable`() {
+        assertNull(BoxResource.usableImageSize(null), "没登记 = 不可用")
+        assertNull(BoxResource.usableImageSize(BoxResource.AuthoringImage("a.png", 0, 0)), "0 尺寸占位 = 不可用")
+        assertNull(BoxResource.usableImageSize(BoxResource.AuthoringImage("a.png", 0, 540)), "只有一边有效 = 不可用")
+        assertEquals(
+            AnnotationSwap.Size(960, 540),
+            BoxResource.usableImageSize(BoxResource.AuthoringImage("a.png", 960, 540)),
+        )
+    }
+
+    @Test
+    fun `a zero-size placeholder entry still blocks the swap`() {
+        val file = BoxResource.AuthoringFile(
+            images = listOf(
+                BoxResource.AuthoringImage("big.png", 1920, 1080),
+                BoxResource.AuthoringImage("small.png", 0, 0),
+            ),
+            boxes = listOf(BoxResource.AuthoringBox("screen.a", "big.png", intArrayOf(0, 0, 10, 10))),
+        )
+        assertEquals(
+            "size",
+            BoxResource.swapImageBoxes(file, "big.png", "small.png").error,
+            "0 尺寸占位条目不能被当成可用尺寸（补登记是调用方的事）",
+        )
+    }
+
+    @Test
     fun `visibility is a set of ids and does not invent a third copy of the data`() {
         val hidden = BoxResource.applyVisibility(listOf("a", "b"), emptySet(), "hideAll")
         assertEquals(setOf("a", "b"), hidden)
