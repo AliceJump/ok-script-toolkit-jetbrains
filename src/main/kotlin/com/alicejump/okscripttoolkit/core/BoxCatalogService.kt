@@ -66,6 +66,42 @@ class BoxCatalogService(private val project: Project) {
     fun boxesForImage(fileName: String): List<BoxResource.AuthoringBox> =
         readAuthoring().boxes.filter { sameImage(it.image, fileName) }
 
+    /** 删图时去掉它的框。标注文件还不存在就什么都不写。 */
+    fun removeImage(fileName: String): Boolean {
+        val target = authoringPath() ?: return false
+        val parsed = readAuthoringResult()
+        if (parsed.errors.isNotEmpty()) return false
+        if (!Files.isRegularFile(target)) return true
+        val next = parsed.file.boxes.filter { !sameImage(it.image, fileName) }
+        if (next.size == parsed.file.boxes.size) return true
+        return write(target, BoxResource.serializeAuthoring(BoxResource.AuthoringFile(boxes = next)))
+    }
+
+    /** 两张图的框整套对调。缺文件且没有框要搬走时不创建文件。 */
+    fun swapImages(fileA: String, fileB: String): Boolean {
+        val target = authoringPath() ?: return false
+        val parsed = readAuthoringResult()
+        if (parsed.errors.isNotEmpty()) return false
+        val nameA = BoxResource.imageFileName(fileA)
+        val nameB = BoxResource.imageFileName(fileB)
+        var changed = false
+        val next = parsed.file.boxes.map { box ->
+            when {
+                sameImage(box.image, nameA) -> {
+                    changed = true
+                    box.copy(image = nameB)
+                }
+                sameImage(box.image, nameB) -> {
+                    changed = true
+                    box.copy(image = nameA)
+                }
+                else -> box
+            }
+        }
+        if (!changed) return true
+        return write(target, BoxResource.serializeAuthoring(BoxResource.AuthoringFile(boxes = next)))
+    }
+
     fun pathOwnersExcept(fileName: String): Map<String, String> =
         readAuthoring().boxes
             .filter { !sameImage(it.image, fileName) }

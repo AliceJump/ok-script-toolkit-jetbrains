@@ -4,9 +4,6 @@ import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.BoxCatalogService
 import com.alicejump.okscripttoolkit.core.OkDataChangeListener
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
-import com.alicejump.okscripttoolkit.core.ScreenshotCapture
-import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
-import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -28,15 +25,16 @@ import java.awt.datatransfer.StringSelection
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.DefaultListModel
-import javax.swing.JButton
 import javax.swing.JPanel
 import javax.swing.ListSelectionModel
 
 /** 框资源管理：同一批模板原图，编辑 `<模板目录>/boxes.json`。 */
 class BoxAssetToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        val panel = BoxAssetPanel(project)
-        toolWindow.contentManager.addContent(ContentFactory.getInstance().createContent(panel, "", false))
+        val panel = TemplateAssetPanel(project, editingBoxes = true)
+        val content = ContentFactory.getInstance().createContent(panel.mainPanel, "", false)
+        content.setDisposer(panel)
+        toolWindow.contentManager.addContent(content)
     }
 }
 
@@ -46,83 +44,6 @@ class BoxGalleryToolWindowFactory : ToolWindowFactory, DumbAware {
         val panel = BoxGalleryPanel(project)
         toolWindow.contentManager.addContent(ContentFactory.getInstance().createContent(panel, "", false))
     }
-}
-
-private class BoxAssetPanel(private val project: Project) : JPanel(BorderLayout(0, 4)), com.intellij.openapi.Disposable {
-    private val model = DefaultListModel<String>()
-    private val list = JBList(model)
-    private val images = mutableListOf<com.alicejump.okscripttoolkit.core.TemplateImage>()
-
-    init {
-        val refresh = JButton(OkScriptToolkitBundle.message("boxAssets.refresh"))
-        val publish = JButton(OkScriptToolkitBundle.message("boxAssets.publish"))
-        refresh.addActionListener { reload() }
-        publish.addActionListener { publishBoxes() }
-        val bar = JPanel()
-        bar.add(refresh)
-        bar.add(publish)
-        add(bar, BorderLayout.NORTH)
-        list.selectionMode = ListSelectionModel.SINGLE_SELECTION
-        list.addMouseListener(object : MouseAdapter() {
-            override fun mouseClicked(e: MouseEvent) {
-                if (e.clickCount == 2) openEditor()
-            }
-        })
-        add(JBScrollPane(list), BorderLayout.CENTER)
-        project.messageBus.connect(this).subscribe(OkDataChangeService.TOPIC, OkDataChangeListener { reload() })
-        reload()
-    }
-
-    private fun reload() {
-        val data = project.service<TemplateAssetDataService>()
-        val projectDir = ScreenshotCapture.detectProjectDir(project)
-        data.load(projectDir, OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory())
-        val catalog = project.service<BoxCatalogService>()
-        images.clear()
-        images.addAll(data.listImages())
-        model.clear()
-        if (images.isEmpty()) {
-            model.addElement(OkScriptToolkitBundle.message("boxAssets.empty"))
-            return
-        }
-        images.forEach { image ->
-            val count = catalog.boxesForImage(image.file.name).size
-            model.addElement(OkScriptToolkitBundle.message("boxAssets.count", image.file.name, count))
-        }
-    }
-
-    private fun openEditor() {
-        val image = images.getOrNull(list.selectedIndex) ?: return
-        val data = project.service<TemplateAssetDataService>()
-        val dialog = AnnotationDialog(project, data, image, images, images.indexOf(image).coerceAtLeast(0), editingBoxes = true)
-        dialog.show()
-        reload()
-    }
-
-    private fun publishBoxes() {
-        val catalog = project.service<BoxCatalogService>()
-        val dropped = catalog.runtimeOnlyPaths()
-        if (dropped.isNotEmpty()) {
-            val answer = Messages.showYesNoDialog(
-                project,
-                OkScriptToolkitBundle.message("boxAssets.publishDrop", dropped.joinToString("\n")),
-                OkScriptToolkitBundle.message("boxAssets.publish"),
-                Messages.getYesButton(),
-                Messages.getNoButton(),
-                null,
-            )
-            if (answer != Messages.YES) return
-        }
-        if (catalog.publish()) {
-            Messages.showInfoMessage(project, OkScriptToolkitBundle.message("boxGallery.published", catalog.readRuntime().boxes.size),
-                OkScriptToolkitBundle.message("boxAssets.publish"))
-        } else {
-            Messages.showErrorDialog(project, OkScriptToolkitBundle.message("annotation.saveFailed"),
-                OkScriptToolkitBundle.message("boxAssets.publish"))
-        }
-    }
-
-    override fun dispose() = Unit
 }
 
 private class BoxGalleryPanel(private val project: Project) : JPanel(BorderLayout()), com.intellij.openapi.Disposable {

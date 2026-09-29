@@ -68,9 +68,15 @@ data class CocoData(
      */
     fun filenameKey(name: String): String = cocoFilenameKey(name)
 
+    /**
+     * 按完整文件名找记录。大小写不同但指向同一文件时可以命中。
+     * 不去掉扩展名：`shot.png` 和 `shot.jpg` 是两张图。
+     */
     fun findImageByFileName(fileName: String): CocoImage? {
-        val key = filenameKey(fileName)
-        return images.find { filenameKey(it.fileName) == key }
+        val base = fileName.replace('\\', '/').substringAfterLast('/')
+        images.find { it.fileName == base }?.let { return it }
+        val lower = base.lowercase()
+        return images.filter { it.fileName.lowercase() == lower }.singleOrNull()
     }
 
     private var nextImageId = 1
@@ -469,13 +475,21 @@ class TemplateAssetDataService(private val project: Project) {
     @Synchronized
     fun deleteImage(file: File): Boolean {
         val updated = copyCoco()
-        updated.findImageByFileName(file.name)?.let { updated.removeImage(it.id) }
+        val hadEntry = updated.findImageByFileName(file.name)?.also { updated.removeImage(it.id) } != null
+        val cocoExists = cocoFile?.let { Files.isRegularFile(it) } == true
         var staged: Path? = null
         try {
             if (file.exists()) {
                 val temporary = Files.createTempFile(file.parentFile.toPath(), ".ok-delete-", ".tmp")
                 staged = temporary
                 Files.move(file.toPath(), temporary, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+            }
+            if (!hadEntry && !cocoExists) {
+                staged?.let { temp ->
+                    runCatching { Files.deleteIfExists(temp) }
+                        .onFailure { LOG.warn("Failed to clean staged template image ${file.name}", it) }
+                }
+                return true
             }
             if (!writeCoco(updated)) {
                 staged?.let { Files.move(it, file.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING) }

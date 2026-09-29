@@ -60,6 +60,23 @@ private const val LABEL_ENUM_REFERENCE_SCAN_LIMIT = 2000
  *
  * **必须在后台线程调用**（不做任何线程调度）。
  */
+private val sharedTemplateThumbs = java.util.concurrent.ConcurrentHashMap<String, ImageIcon>()
+private val sharedTemplateThumbInflight = java.util.concurrent.ConcurrentHashMap<String, CompletableFuture<ImageIcon?>>()
+
+internal fun cachedTemplateThumb(file: File): ImageIcon? = sharedTemplateThumbs[file.absolutePath]
+
+/** 标注管理和框资源管理共用同一张原图的缩略图。按绝对路径去重，两边打开都不再各解一次。 */
+internal fun requestSharedTemplateThumb(file: File): CompletableFuture<ImageIcon?> {
+    cachedTemplateThumb(file)?.let { return CompletableFuture.completedFuture(it) }
+    return sharedTemplateThumbInflight.computeIfAbsent(file.absolutePath) {
+        CompletableFuture.supplyAsync {
+            val icon = decodeTemplateThumb(file)
+            if (icon != null) sharedTemplateThumbs[file.absolutePath] = icon
+            icon
+        }.whenComplete { _, _ -> sharedTemplateThumbInflight.remove(file.absolutePath) }
+    }
+}
+
 internal fun decodeTemplateThumb(file: File): ImageIcon? {
     return try {
         val bi = javax.imageio.ImageIO.read(file) ?: return null
@@ -91,7 +108,10 @@ class TemplateAssetToolWindowFactory : ToolWindowFactory {
     }
 }
 
-class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Disposable {
+class TemplateAssetPanel(
+    private val project: Project,
+    private val editingBoxes: Boolean = false,
+) : com.intellij.openapi.Disposable {
 
     val mainPanel: JPanel
     private val data = project.service<TemplateAssetDataService>()
@@ -119,8 +139,6 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     @Volatile private var enumPathFromConfig: Pair<String, String?>? = null
     // loadData 在后台线程失效缓存，EDT 在渲染时读写，需要并发安全
     private val thumbCache = java.util.concurrent.ConcurrentHashMap<String, ImageIcon?>()
-    // 进行中的缩略图解码（过滤输入会高频触发 renderGrid，按路径去重避免重复读盘解码）
-    private val thumbInflight = java.util.concurrent.ConcurrentHashMap<String, CompletableFuture<ImageIcon?>>()
 
     companion object {
         /**
@@ -184,7 +202,11 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
 
         val importAction = ToolbarAction(AllIcons.Actions.AddFile, OkScriptToolkitBundle.message("templateAsset.import")) { handleImport() }
         val screenshotAction = ToolbarAction(AllIcons.Actions.Preview, OkScriptToolkitBundle.message("templateAsset.screenshot")) { handleScreenshot() }
-        val exportAction = ToolbarAction(AllIcons.Actions.Upload, OkScriptToolkitBundle.message("templateAsset.export")) { handleSaveToAssets() }
+        val exportAction = if (editingBoxes) {
+            ToolbarAction(AllIcons.Actions.Upload, OkScriptToolkitBundle.message("boxAssets.publish")) { publishBoxes() }
+        } else {
+            ToolbarAction(AllIcons.Actions.Upload, OkScriptToolkitBundle.message("templateAsset.export")) { handleSaveToAssets() }
+        }
         val refreshAction = ToolbarAction(AllIcons.Actions.Refresh, OkScriptToolkitBundle.message("templateAsset.refresh")) { loadData() }
         val actionGroup = com.intellij.openapi.actionSystem.DefaultActionGroup(importAction, screenshotAction, exportAction, refreshAction)
         val actionToolbar = com.intellij.openapi.actionSystem.ActionManager.getInstance()
@@ -305,10 +327,18 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             verticalAlignment = SwingConstants.CENTER
             preferredSize = Dimension(0, THUMB_HEIGHT)
         }
-        thumbCache[img.file.absolutePath]?.let { thumbLabel.icon = it } ?: requestThumb(img.file, thumbLabel)
+        cachedTemplateThumb(img.file)?.let {
+            thumbCache[img.file.absolutePath] = it
+            thumbLabel.icon = it
+        } ?: requestThumb(img.file, thumbLabel)
 
-        val annText = if (img.annotations.isNotEmpty()) {
-            " · " + OkScriptToolkitBundle.message("templateAsset.swapBoxes", img.annotations.size)
+        val markCount = if (editingBoxes) {
+            project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>().boxesForImage(img.file.name).size
+        } else {
+            img.annotations.size
+        }
+        val annText = if (markCount > 0) {
+            " · " + OkScriptToolkitBundle.message("templateAsset.swapBoxes", markCount)
         } else {
             ""
         }
@@ -361,7 +391,7 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
      *  传入当前过滤列表，编辑器内 ←/→ 可在列表内连续标注。 */
     private fun openAnnotator(img: TemplateImage) {
         val list = visibleImages.ifEmpty { listOf(img) }
-        val dialog = AnnotationDialog(project, data, img, list, list.indexOf(img).coerceAtLeast(0))
+        val dialog = AnnotationDialog(project, data, img, list, list.indexOf(img).coerceAtLeast(0), editingBoxes = editingBoxes)
         dialog.show()
         loadData()
     }
@@ -391,6 +421,11 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
         val dialog = SwapTargetDialog(project, source, candidates, thumbCache)
         if (!dialog.showAndGet()) return
         val target = dialog.selected ?: return
+
+        if (editingBoxes) {
+            swapBoxesWith(source, target)
+            return
+        }
 
         val sourceSize = resolveSize(source)
         val targetSize = resolveSize(target)
@@ -473,6 +508,56 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
      * 图片的真实尺寸，供比例映射用：先读图片头，读不到再用 COCO 记录。
      * 两者都拿不到就返回 null，让调用方拒绝交换。
      */
+    private fun publishBoxes() {
+        val catalog = project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>()
+        val dropped = catalog.runtimeOnlyPaths()
+        if (dropped.isNotEmpty()) {
+            val answer = Messages.showYesNoDialog(
+                project,
+                OkScriptToolkitBundle.message("boxAssets.publishDrop", dropped.joinToString("\n")),
+                OkScriptToolkitBundle.message("boxAssets.publish"),
+                Messages.getYesButton(),
+                Messages.getNoButton(),
+                null,
+            )
+            if (answer != Messages.YES) return
+        }
+        if (catalog.publish()) {
+            notify(OkScriptToolkitBundle.message("boxGallery.published", catalog.readRuntime().boxes.size), NotificationType.INFORMATION)
+            loadData()
+        } else {
+            notify(OkScriptToolkitBundle.message("annotation.saveFailed"), NotificationType.ERROR)
+        }
+    }
+
+    /** 框坐标相对整张原图。缺 boxes.json 且两边都没有框时不创建文件。 */
+    private fun swapBoxesWith(source: TemplateImage, target: TemplateImage) {
+        val catalog = project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>()
+        val sourceBoxes = catalog.boxesForImage(source.file.name)
+        val targetBoxes = catalog.boxesForImage(target.file.name)
+        if (sourceBoxes.isEmpty() && targetBoxes.isEmpty()) {
+            notify(OkScriptToolkitBundle.message("templateAsset.swapNothing"), NotificationType.INFORMATION)
+            return
+        }
+        val detail = OkScriptToolkitBundle.message(
+            "templateAsset.swapCounts",
+            source.name, sourceBoxes.size, target.name, targetBoxes.size,
+        )
+        val confirmed = Messages.showYesNoDialog(
+            project,
+            OkScriptToolkitBundle.message("templateAsset.swapQuestion", source.name, target.name) + "\n\n" + detail,
+            OkScriptToolkitBundle.message("templateAsset.swapTitle"),
+            Messages.getQuestionIcon(),
+        )
+        if (confirmed != Messages.YES) return
+        if (catalog.swapImages(source.file.name, target.file.name)) {
+            notify(OkScriptToolkitBundle.message("templateAsset.swapDone", source.name, target.name), NotificationType.INFORMATION)
+            loadData()
+        } else {
+            notify(OkScriptToolkitBundle.message("templateAsset.swapFailed"), NotificationType.ERROR)
+        }
+    }
+
     private fun resolveSize(img: TemplateImage): AnnotationSwap.Size? {
         val (width, height) = data.swapImageSize(img.file) ?: return null
         return AnnotationSwap.Size(width, height)
@@ -481,14 +566,8 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
     /** 缩略图解码只在后台线程做，完成后回填到仍显示中的卡片（网格重渲染会换新 label）；
      *  解码结果写回缓存供后续渲染复用，进行中的解码按路径去重。 */
     private fun requestThumb(file: File, label: JBLabel) {
-        val future = thumbInflight.computeIfAbsent(file.absolutePath) {
-            CompletableFuture.supplyAsync {
-                val icon = decodeTemplateThumb(file)
-                if (icon != null) thumbCache[file.absolutePath] = icon
-                icon
-            }.whenComplete { _, _ -> thumbInflight.remove(file.absolutePath) }
-        }
-        future.thenAccept { icon ->
+        requestSharedTemplateThumb(file).thenAccept { icon ->
+            if (icon != null) thumbCache[file.absolutePath] = icon
             SwingUtilities.invokeLater {
                 if (label.isShowing) {
                     label.icon = icon
@@ -538,7 +617,11 @@ class TemplateAssetPanel(private val project: Project) : com.intellij.openapi.Di
             if (confirm == JOptionPane.YES_OPTION) {
                 // 文件删除 + COCO 写盘移出 EDT
                 CompletableFuture.supplyAsync {
-                    data.deleteImage(img.file)
+                    val deleted = data.deleteImage(img.file)
+                    if (deleted) {
+                        project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>().removeImage(img.file.name)
+                    }
+                    deleted
                 }.whenComplete { deleted, error ->
                     SwingUtilities.invokeLater {
                         if (error != null || deleted != true) {
