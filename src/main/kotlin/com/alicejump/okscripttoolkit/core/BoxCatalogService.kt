@@ -119,7 +119,13 @@ class BoxCatalogService(private val project: Project) {
     ): String {
         val snapshot = captureAuthoring() ?: return "boxes"
         if (!removeImage(fileName)) return "boxes"
-        if (deleteImage()) return "ok"
+        val deleted = try {
+            deleteImage()
+        } catch (e: Exception) {
+            LOG.warn("Image delete threw after boxes were removed for $fileName", e)
+            false
+        }
+        if (deleted) return "ok"
         if (imageExists() && restoreAuthoring(snapshot)) return "boxes"
         return "image"
     }
