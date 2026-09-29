@@ -78,6 +78,35 @@ class BoxCatalogService(private val project: Project) {
         return counts
     }
 
+    /** 删图前的 boxes.json。text 为 null 表示当时没有这个文件。读失败返回 null。 */
+    data class AuthoringSnapshot(val text: String?)
+
+    @Synchronized
+    fun captureAuthoring(): AuthoringSnapshot? {
+        val path = authoringPath() ?: return null
+        if (!Files.isRegularFile(path)) return AuthoringSnapshot(null)
+        val text = readFile(path) ?: return null
+        return AuthoringSnapshot(text)
+    }
+
+    /** 图片还在时写回删图前的框文件。快照为空则去掉这次新写出的文件。 */
+    @Synchronized
+    fun restoreAuthoring(snapshot: AuthoringSnapshot): Boolean {
+        val path = authoringPath() ?: return false
+        val text = snapshot.text
+        if (text == null) {
+            if (!Files.isRegularFile(path)) return true
+            return try {
+                Files.deleteIfExists(path)
+                true
+            } catch (e: Exception) {
+                LOG.warn("Failed to remove boxes file created during a failed delete: $path", e)
+                false
+            }
+        }
+        return write(path, text)
+    }
+
     /** 删图时去掉它的框。标注文件还不存在就什么都不写。 */
     @Synchronized
     fun removeImage(fileName: String): Boolean {
