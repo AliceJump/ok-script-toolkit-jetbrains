@@ -26,6 +26,7 @@ data class ProjectConvention(
     val i18n: I18nConvention = I18nConvention(),
     val characters: CharactersConvention = CharactersConvention(),
     val effects: EffectsConvention = EffectsConvention(),
+    val boxes: BoxesConvention = BoxesConvention(),
 ) {
 
     companion object {
@@ -43,6 +44,7 @@ data class ProjectConvention(
                 i18n = I18nConvention.parse(root.get("i18n")),
                 characters = CharactersConvention.parse(root.get("characters")),
                 effects = EffectsConvention.parse(root.get("effects")),
+                boxes = BoxesConvention.parse(root.get("boxes")),
             )
         }
 
@@ -285,6 +287,23 @@ data class TemplatesConvention(
                 directory = node.get("directory").stringOrNull(),
                 cocoAnnotations = node.get("cocoAnnotations").stringOrNull(),
             )
+        }
+    }
+}
+
+/**
+ * `boxes` 一组：运行时框文件。标注工作文件不在这里，它跟随 [TemplatesConvention.directory]。
+ * 没有 IDE 设置。见 [BoxRuntimePath]。
+ */
+data class BoxesConvention(
+    val runtime: String? = null,
+) {
+    fun runtimeOrNull(): String? = normalizeRelPath(runtime)
+
+    companion object {
+        fun parse(node: JsonNode?): BoxesConvention {
+            if (node == null || !node.isObject) return BoxesConvention()
+            return BoxesConvention(runtime = node.get("runtime").stringOrNull())
         }
     }
 }

@@ -35,6 +35,16 @@ class OkPythonCompletionContributor : CompletionContributor() {
                         .withTailText(node?.let { "  ${if (it.type == "pattern") "~${it.value}~" else "「${it.value}」"}" }, true),
                 )
             }
+            CompletionKind.POS -> {
+                val catalog = parameters.position.project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>()
+                val paths = catalog.readRuntime().boxes.map { it.path }
+                OkEditorSupport.boxSegments(paths, context.module.orEmpty()).forEach { segment ->
+                    replacement.addElement(
+                        LookupElementBuilder.create(segment)
+                            .withTypeText("self.pos", true),
+                    )
+                }
+            }
             CompletionKind.FEATURE -> data.features().forEach { feature ->
                 val element = LookupElementBuilder.create(feature.name)
                     .withTypeText("${feature.width}×${feature.height}", true)

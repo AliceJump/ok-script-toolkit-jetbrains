@@ -167,7 +167,7 @@ class OkProjectDataService(private val project: Project) {
 
     /** 探到的 `coco_feature_json` + 它是为哪个项目根探的（换项目要重探）。 */
     @Volatile
-    private var probedCoco: Pair<String, String?>? = null
+    private var probedWindow: Pair<String, WindowConfig?>? = null
 
     /** 后台探测是否在跑 —— 避免每次访问都拉起一个 Python 进程。 */
     private val cocoProbeRunning = AtomicBoolean(false)
@@ -185,7 +185,7 @@ class OkProjectDataService(private val project: Project) {
         // 这是唯一能既保持同步、又拿到异步探针结果的形状。
         ensureCocoFeatureProbed()
         val declared = ProjectConventionConfig.getInstance(project).load().templates.cocoAnnotationsOrNull()
-        val fromPy = probedCoco?.takeIf { it.first == root }?.second
+        val fromPy = probedWindow?.takeIf { it.first == root }?.second?.cocoFeatureJson
         return CocoFeaturePath.plan(root, declared, fromPy)
     }
 
@@ -197,6 +197,17 @@ class OkProjectDataService(private val project: Project) {
      * 运行时模板库的**所有**候选相对路径（含首选与探测候选），用于监听与变更归属判定。
      * 不按存在性过滤 —— 要覆盖"文件还没创建"的情况。
      */
+    fun boxRuntimePlan(): BoxRuntimePath.Plan {
+        val root = rootPath()?.toString().orEmpty()
+        ensureCocoFeatureProbed()
+        val declared = ProjectConventionConfig.getInstance(project).load().boxes.runtimeOrNull()
+        val fromPy = probedWindow?.takeIf { it.first == root }?.second?.boxesJson
+        return BoxRuntimePath.plan(root, declared, fromPy)
+    }
+
+    fun boxRuntimeRelPaths(): List<String> =
+        BoxRuntimePath.relPaths(boxRuntimePlan(), rootPath()?.toString().orEmpty())
+
     fun cocoFeatureRelPaths(): List<String> =
         CocoFeaturePath.relPaths(cocoFeaturePlan(), rootPath()?.toString().orEmpty())
 
@@ -214,7 +225,7 @@ class OkProjectDataService(private val project: Project) {
     fun ensureCocoFeatureProbed(force: Boolean = false) {
         val root = rootPath()?.toString().orEmpty()
         if (root.isBlank()) return
-        if (!force && probedCoco?.first == root) return
+        if (!force && probedWindow?.first == root) return
         if (!cocoProbeRunning.compareAndSet(false, true)) return
 
         val pythonPath = ScreenshotCapture.detectPythonPath(root, project)
@@ -225,7 +236,7 @@ class OkProjectDataService(private val project: Project) {
         CompletableFuture.supplyAsync {
             runCatching { capture.probeWindowConfig(root, pythonPath) }.getOrNull()
         }.whenComplete { config, _ ->
-            probedCoco = root to config?.cocoFeatureJson
+            probedWindow = root to config
             cocoProbeRunning.set(false)
             if (project.isDisposed) return@whenComplete
             // 路径可能变了 → 作废快照并广播，让面板下一次访问拿到新库

@@ -6,6 +6,7 @@ import java.lang.reflect.Proxy
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -113,7 +114,7 @@ class TemplateAssetDataServiceCocoTest {
     }
 
     @Test
-    fun `image lookup list and delete use the same normalized filename key`() {
+    fun `image lookup list and delete match the full filename`() {
         val root = TestTmp.create("ok-coco-key")
         val templates = root.resolve("ok_templates").apply { mkdirs() }
         val diskFile = templates.resolve("shot_001.png").apply { writeBytes(byteArrayOf()) }
@@ -134,8 +135,10 @@ class TemplateAssetDataServiceCocoTest {
 
         assertEquals("shot_001", coco.filenameKey("nested\\SHOT_001.PNG"))
         assertEquals(image, service.getImageEntryForFile("shot_001.png"))
-        assertEquals(image, service.getImageEntryForFile("shot_001"))
-        assertEquals(image, service.addImageEntry("SHOT_001.jpg", 99, 99))
+        assertEquals(image, service.getImageEntryForFile("SHOT_001.PNG"))
+        assertEquals(null, service.getImageEntryForFile("shot_001"))
+        val jpg = service.addImageEntry("SHOT_001.jpg", 99, 99)
+        assertNotEquals(image.id, jpg.id)
         val listed = service.listImages().single()
         assertEquals(10, listed.width, "大小写不一致时仍须读到 COCO 宽度")
         assertEquals(20, listed.height)
@@ -144,10 +147,12 @@ class TemplateAssetDataServiceCocoTest {
         assertTrue(service.deleteImage(diskFile))
         assertTrue(!diskFile.exists())
         assertEquals(null, service.getImageEntryForFile("shot_001.png"))
+        assertEquals(jpg.id, service.getImageEntryForFile("SHOT_001.jpg")?.id)
         val afterDelete = com.fasterxml.jackson.databind.ObjectMapper().readTree(
             templates.resolve("coco_annotations.json"),
         )
-        assertEquals(0, afterDelete.get("images").size())
+        assertEquals(1, afterDelete.get("images").size())
+        assertEquals("SHOT_001.jpg", afterDelete.get("images")[0].get("file_name").asText())
         assertEquals(0, afterDelete.get("annotations").size())
         assertEquals(0, afterDelete.get("categories").size())
     }

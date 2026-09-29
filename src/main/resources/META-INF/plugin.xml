@@ -72,6 +72,16 @@
             icon="/icons/assets.svg"
             factoryClass="com.alicejump.okscripttoolkit.ui.TemplateAssetToolWindowFactory"/>
         <toolWindow
+            id="ok-script Box Assets"
+            anchor="right"
+            icon="/icons/assets.svg"
+            factoryClass="com.alicejump.okscripttoolkit.ui.BoxAssetToolWindowFactory"/>
+        <toolWindow
+            id="ok-script Boxes"
+            anchor="right"
+            icon="/icons/templates.svg"
+            factoryClass="com.alicejump.okscripttoolkit.ui.BoxGalleryToolWindowFactory"/>
+        <toolWindow
             id="ok-script Temp Shots"
             anchor="right"
             icon="/icons/tempShots.svg"
@@ -116,6 +126,16 @@
         <action
             id="com.alicejump.okscripttoolkit.ShowTemplateAssets"
             class="com.alicejump.okscripttoolkit.ui.ShowTemplateAssetsAction">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+        <action
+            id="com.alicejump.okscripttoolkit.ShowBoxAssets"
+            class="com.alicejump.okscripttoolkit.ui.ShowBoxAssetsAction">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+        <action
+            id="com.alicejump.okscripttoolkit.ShowBoxGallery"
+            class="com.alicejump.okscripttoolkit.ui.ShowBoxGalleryAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
         <!-- 文案在 Action 代码里走 bundle（i18n 铁律），这里只声明 id / class / 默认键位。
