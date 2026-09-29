@@ -434,8 +434,9 @@ class AnnotationDialog(
         val pathField = JBTextField(
             session.boxes.getOrNull(canvas.selectedIndex())?.categoryName?.let { "screen.$it" } ?: "screen.region",
         )
-        // 生成框的重复校验：所有**其他**图片已占用的 path。当前图自己占用的在保存时整图替换，不算冲突。
-        val taken = project.service<BoxCatalogService>().pathOwnersExcept(session.fileName)
+        // 生成框的重复校验吃**全项目**占用表（含当前图片自己的框 —— 新建框不允许和
+        // 任何已有框重名），并叠加本次对话框里未保存的会话编辑。
+        val taken = buildTakenCategories(session.fileName)
         val form = JPanel(BorderLayout(0, 6))
         val list = JPanel()
         list.layout = BoxLayout(list, BoxLayout.Y_AXIS)
@@ -485,20 +486,20 @@ class AnnotationDialog(
             OkScriptToolkitBundle.message("annotation.generateTitle"))
     }
 
-    /** 「生成框」路径的即时校验文案：规则在 [BoxResource]，这里只负责把错误码翻成人话。 */
+    /** 「生成框」路径的即时校验文案：规则在 [BoxResource.generateBoxPathProblem]，这里只把错误码翻成人话。 */
     private fun pathProblemMessage(value: String, taken: Map<String, String>): String? {
-        val trimmed = value.trim()
-        if (trimmed.isEmpty()) return OkScriptToolkitBundle.message("box.pathRequired")
-        val segments = trimmed.split('.')
-        if (segments.size < 2) return OkScriptToolkitBundle.message("box.pathTwoSegments")
-        val segment = Regex(BoxResource.SEGMENT_SOURCE)
-        val bad = segments.firstOrNull { !segment.matches(it) }
-        if (bad != null) return OkScriptToolkitBundle.message("box.pathBadSegment", bad)
-        if (segments.first() in BoxResource.RESERVED_ROOTS) {
-            return OkScriptToolkitBundle.message("box.pathReserved", segments.first())
+        val code = BoxResource.generateBoxPathProblem(value, taken) ?: return null
+        val segments = value.trim().split('.')
+        return when (code) {
+            "empty" -> OkScriptToolkitBundle.message("box.pathRequired")
+            "shallow" -> OkScriptToolkitBundle.message("box.pathTwoSegments")
+            "segment" -> OkScriptToolkitBundle.message(
+                "box.pathBadSegment",
+                segments.firstOrNull { !Regex(BoxResource.SEGMENT_SOURCE).matches(it) }.orEmpty(),
+            )
+            "reserved" -> OkScriptToolkitBundle.message("box.pathReserved", segments.first())
+            else -> OkScriptToolkitBundle.message("annotation.generateDuplicate")
         }
-        if (taken.containsKey(trimmed)) return OkScriptToolkitBundle.message("annotation.generateDuplicate")
-        return null
     }
 
     private fun saveBoxEdits(): String? {

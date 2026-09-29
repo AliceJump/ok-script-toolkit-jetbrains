@@ -10,8 +10,8 @@ import java.nio.file.Paths
  * 标注资源是 `<模板目录>/boxes.json`（version 2，与模板标注同一套 Pixel 模型：
  * 每张被引用原图的 width/height + 整数 bbox `[x, y, w, h]`）。
  * normalized 只存在于运行时资源（version 1 不变）；Publish 是唯一的归一化入口。
- * 旧 normalized 格式只能经 [parseLegacyAuthoring] + [migrateAuthoringV1] 迁移，
- * 不进编辑 / 保存 / 读取主流程。设计见仓库根 `docs/box-resources.md`。
+ * 旧 normalized 格式不受支持：解析直接报 version 错误，不做迁移。
+ * 设计见仓库根 `docs/box-resources.md`。
  */
 object BoxResource {
     const val AUTHORING_VERSION = 2
@@ -77,6 +77,19 @@ object BoxResource {
         if (segments.size < 2) return "shallow"
         if (segments.any { !SEGMENT.matches(it) }) return "segment"
         if (segments.first() in RESERVED_ROOTS) return "reserved"
+        return null
+    }
+
+    /**
+     * 「生成框」的即时校验：规则同 [pathError]，再加一条 —— 占用表里的任何 path
+     * （**包括当前图片自己的框**）都是重复，新建框不允许和已有框重名。
+     * `occupied` 是 path → 所属图片的全局占用表；返回错误码，null = 合法。
+     */
+    fun generateBoxPathProblem(value: String, occupied: Map<String, String>): String? {
+        val pathValue = value.trim()
+        val ruleError = pathError(pathValue)
+        if (ruleError != null) return ruleError
+        if (occupied.containsKey(pathValue)) return "duplicate"
         return null
     }
 
@@ -285,8 +298,7 @@ object BoxResource {
         val root = runCatching { JSON.readTree(text) }.getOrNull()
             ?: return ParseResult(AuthoringFile(), listOf("json"))
         if (!root.isObject) return ParseResult(AuthoringFile(), listOf("root"))
-        // 旧版（normalized rect）是迁移入口，不是主流程格式：读盘侧据此走 migrateAuthoringV1。
-        if (root.path("version").asInt(-1) == 1) return ParseResult(AuthoringFile(), listOf("legacy"))
+        // version 1（旧 normalized rect）不受支持：authoring 只有 Pixel 一种模型，不做迁移。
         if (root.path("version").asInt(-1) != AUTHORING_VERSION) {
             return ParseResult(AuthoringFile(), listOf("version"))
         }
@@ -349,73 +361,6 @@ object BoxResource {
             boxes += AuthoringBox(path, imageEntry.file, bbox)
         }
         return ParseResult(AuthoringFile(images = images.sortedBy { it.file }, boxes = boxes.sortedBy { it.path }), errors)
-    }
-
-    /** 旧版结构：`{ version: 1, boxes: [{ path, image, rect: [l,t,r,b] }] }`。 */
-    data class LegacyAuthoringBox(val path: String, val image: String, val rect: DoubleArray)
-
-    fun parseLegacyAuthoring(text: String): ParseResult<List<LegacyAuthoringBox>> {
-        val root = runCatching { JSON.readTree(text) }.getOrNull()
-            ?: return ParseResult(emptyList(), listOf("json"))
-        if (!root.isObject) return ParseResult(emptyList(), listOf("root"))
-        if (root.path("version").asInt(-1) != 1) return ParseResult(emptyList(), listOf("version"))
-        val boxesNode = root.path("boxes")
-        if (!boxesNode.isArray) return ParseResult(emptyList(), listOf("boxes"))
-        val boxes = mutableListOf<LegacyAuthoringBox>()
-        val errors = mutableListOf<String>()
-        boxesNode.forEachIndexed { index, entry ->
-            val path = entry.path("path").takeIf { it.isTextual }?.asText()?.trim().orEmpty()
-            val image = entry.path("image").takeIf { it.isTextual }?.asText()?.let(::imageFileName).orEmpty()
-            val rect = readRectNode(entry.path("rect"))
-            if (path.isEmpty() || pathError(path) != null) {
-                errors += "$index:path"
-                return@forEachIndexed
-            }
-            if (image.isEmpty() || rect == null || !isStorableRuntimeRect(rect)) {
-                errors += "$index:rect"
-                return@forEachIndexed
-            }
-            boxes += LegacyAuthoringBox(path, image, rect)
-        }
-        return ParseResult(boxes, errors)
-    }
-
-    /**
-     * 把旧 normalized 框按图片尺寸转成 Pixel。尺寸由调用方解析（COCO 记录 → 图片头），
-     * 纯对象不读盘。读不出尺寸的框**丢弃并记错** —— 没有尺寸的 normalized 值在 Pixel
-     * 模型里无法落地，硬编一个尺寸才是真正的数据损坏。
-     */
-    fun migrateAuthoringV1(
-        legacy: List<LegacyAuthoringBox>,
-        sizeOf: (String) -> AnnotationSwap.Size?,
-    ): ParseResult<AuthoringFile> {
-        val images = linkedMapOf<String, AuthoringImage>()
-        val boxes = mutableListOf<AuthoringBox>()
-        val errors = mutableListOf<String>()
-        for (box in legacy) {
-            val size = sizeOf(box.image)
-            if (size == null || !AnnotationSwap.isUsable(size)) {
-                errors += "migrate:${box.image}"
-                continue
-            }
-            val name = imageFileName(box.image)
-            images.putIfAbsent(name.lowercase(), AuthoringImage(name, size.width, size.height))
-            val bbox = AnnotationSwap.scaleBox(
-                intArrayOf(
-                    Math.round(box.rect[0] * size.width).toInt(),
-                    Math.round(box.rect[1] * size.height).toInt(),
-                    Math.round((box.rect[2] - box.rect[0]) * size.width).toInt(),
-                    Math.round((box.rect[3] - box.rect[1]) * size.height).toInt(),
-                ),
-                size,
-                size,
-            )
-            boxes += AuthoringBox(box.path, name, bbox)
-        }
-        return ParseResult(
-            AuthoringFile(images = images.values.toList(), boxes = boxes.sortedBy { it.path }),
-            errors,
-        )
     }
 
     fun serializeAuthoring(file: AuthoringFile): String {

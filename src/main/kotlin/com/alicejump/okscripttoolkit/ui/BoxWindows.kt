@@ -5,6 +5,7 @@ import com.alicejump.okscripttoolkit.core.BoxCatalogService
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
 import com.alicejump.okscripttoolkit.core.OkDataChangeListener
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
+import com.alicejump.okscripttoolkit.core.TemplateThumbPipeline
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
@@ -27,18 +28,13 @@ import java.awt.Component
 import java.awt.datatransfer.StringSelection
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
-import java.awt.image.BufferedImage
-import java.nio.file.Path
-import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
-import javax.imageio.ImageIO
 import javax.swing.DefaultListCellRenderer
 import javax.swing.DefaultListModel
-import javax.swing.ImageIcon
+import javax.swing.Icon
 import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.ListSelectionModel
-import javax.swing.SwingUtilities
 
 /** 框资源管理：同一批模板原图，编辑 `<模板目录>/boxes.json`。 */
 class BoxAssetToolWindowFactory : ToolWindowFactory, DumbAware {
@@ -61,17 +57,22 @@ class BoxGalleryToolWindowFactory : ToolWindowFactory, DumbAware {
 /**
  * 框管理对标模板管理：每个 box path 一张 **bbox 裁剪后的资源缩略图**
  * （标注管理 ↔ 框资源管理是原图缩略图；模板管理 ↔ 框管理是裁剪缩略图）。
- * 来源是 authoring 的 Pixel bbox + 原图；裁剪与缓存在这里实现，
- * 不复用整图缩略图管线 —— 那是"原图卡"的缓存键，没有 bbox 维度。
+ *
+ * 裁剪、磁盘缓存（内容哈希 + bbox + 高度）、按源图分组懒解码全部走
+ * [TemplateThumbPipeline] —— 与模板管理同一条管线，这里不自己造缓存。
  */
 private class BoxGalleryPanel(private val project: Project) : JPanel(BorderLayout()), com.intellij.openapi.Disposable {
-    private data class Item(val path: String, val imagePath: Path?, val bbox: IntArray?)
+    private data class Item(val path: String, val imagePath: java.nio.file.Path?, val bbox: IntArray?)
+
+    /** 缩略图目标高度。列表行比卡片矮，48px 足够辨认裁剪区域。 */
+    private val thumbHeight = 48
 
     private val model = DefaultListModel<Item>()
     private var items: List<Item> = emptyList()
     private val list = JBList(model)
-    private val thumbs = ConcurrentHashMap<String, ImageIcon?>()
-    private val inflight = ConcurrentHashMap<String, Boolean>()
+
+    /** UI 侧的"当前图标"表（按 path 索引），真正的缓存/解码在 [TemplateThumbPipeline]。 */
+    private val icons = ConcurrentHashMap<String, Icon>()
 
     init {
         list.selectionMode = ListSelectionModel.SINGLE_SELECTION
@@ -100,7 +101,7 @@ private class BoxGalleryPanel(private val project: Project) : JPanel(BorderLayou
                     label.background = list.background
                     label.foreground = list.foreground
                 }
-                if (item != null) label.icon = thumbs[thumbKey(item)]
+                if (item != null) label.icon = icons[item.path]
                 return label
             }
         }
@@ -134,46 +135,12 @@ private class BoxGalleryPanel(private val project: Project) : JPanel(BorderLayou
         }
         model.clear()
         if (items.isEmpty()) model.addElement(Item("", null, null)) else items.forEach { model.addElement(it) }
-        items.forEach { requestThumb(it) }
-        list.repaint()
-    }
-
-    private fun thumbKey(item: Item): String? {
-        val file = item.imagePath?.toFile() ?: return null
-        if (!file.isFile || item.bbox == null || item.bbox.size < 4) return null
-        return "${file.absolutePath}|${file.lastModified()}|${file.length()}|${item.bbox.joinToString(",")}"
-    }
-
-    /** 裁剪缩略图只在后台线程解码，完成后回 UI 重绘；进行中的解码按 key 去重。 */
-    private fun requestThumb(item: Item) {
-        val key = thumbKey(item) ?: return
-        if (thumbs.containsKey(key)) return
-        if (inflight.putIfAbsent(key, true) == true) return
-        CompletableFuture.supplyAsync {
-            thumbs[key] = runCatching {
-                val file = item.imagePath!!.toFile()
-                val image = ImageIO.read(file) ?: return@runCatching null
-                val b = item.bbox!!
-                val x = b[0].coerceIn(0, image.width - 1)
-                val y = b[1].coerceIn(0, image.height - 1)
-                val w = b[2].coerceAtMost(image.width - x)
-                val h = b[3].coerceAtMost(image.height - y)
-                if (w <= 0 || h <= 0) return@runCatching null
-                val crop = image.getSubimage(x, y, w, h)
-                val targetH = 48
-                val scale = targetH.toDouble() / crop.height
-                val scaled = BufferedImage(
-                    (crop.width * scale).toInt().coerceAtLeast(1),
-                    targetH,
-                    BufferedImage.TYPE_INT_RGB,
-                )
-                val g = scaled.createGraphics()
-                g.drawImage(crop, 0, 0, scaled.width, scaled.height, null)
-                g.dispose()
-                ImageIcon(scaled)
-            }.getOrNull()
-            inflight.remove(key)
-            SwingUtilities.invokeLater { list.repaint() }
+        // 缺 authoring 来源的 path（运行时独有）拿不到 bbox，保持无图占位 —— 与 VS Code 画廊一致
+        val requests = items.filter { it.imagePath != null && it.bbox != null }
+            .map { TemplateThumbPipeline.Request(it.path, it.imagePath!!, it.bbox!!) }
+        TemplateThumbPipeline.loadThumbs(project, requests, thumbHeight) { path, icon ->
+            if (icon != null) icons[path] = icon else icons.remove(path)
+            list.repaint()
         }
     }
 

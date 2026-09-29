@@ -5,8 +5,8 @@ import com.alicejump.okscripttoolkit.core.AnnotatedImageCache
 import com.alicejump.okscripttoolkit.core.FeatureTemplate
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
-import com.alicejump.okscripttoolkit.core.TemplateThumbBatch
 import com.alicejump.okscripttoolkit.core.TemplateThumbCache
+import com.alicejump.okscripttoolkit.core.TemplateThumbPipeline
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
@@ -95,9 +95,6 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
     private val emptyLabel = JBLabel(OkScriptToolkitBundle.message("gallery.empty"), SwingConstants.CENTER)
     private val thumbs = ConcurrentHashMap<String, Icon?>()
     private val requestedThumbs = ConcurrentHashMap.newKeySet<String>()
-    private val thumbExecutor = Executors.newSingleThreadExecutor { r ->
-        Thread(r, "ok-script-template-thumb").apply { isDaemon = true }
-    }
     private val renderGeneration = java.util.concurrent.atomic.AtomicInteger(0)
     private val reloadGeneration = java.util.concurrent.atomic.AtomicInteger(0)
     private var gridCols = 5
@@ -286,98 +283,30 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
     }
 
     /**
-     * 为一批模板请求缩略图。
+     * 为一批模板请求缩略图。重活（磁盘缓存 / 按源图分组懒解码 / 裁剪缩放 / 存储）
+     * 全部在公共管线 [TemplateThumbPipeline.loadThumbs] 里 —— 模板管理是"原图整卡缩略图"，
+     * 框管理是"bbox 裁剪缩略图"，两者共用同一条管线，谁都不许自己手搓缓存。
      *
-     * **按源图分组，每张原图只解码一次** —— 否则"每图模板数"高的项目会反复解同一张图：
-     * 实测 ok-end-field 是 276 模板 / 16 图，按模板逐个处理会把每张原图解 **17 次**。
-     * 父仓对应的是 `warmCropCache` 的"按图分组 + 一次解码多张裁剪"。
-     *
-     * **单线程顺序执行是有意的**：解一张 → 立刻裁完这一组 → 释放，任意时刻只持有一张
-     * 解码后的原图（2560×1440 的 ARGB 就是 ~15MB）。换成线程池要同时持有 N 张，
-     * 堆压力比它省下的那点时间更贵。
+     * 这里只保留面板自己的簿记：generation 过期判断、双击重试与待填标签的回填。
      */
     private fun requestThumbs(batch: List<FeatureTemplate>, generation: Int) {
         if (disposed || batch.isEmpty()) return
-        for (group in TemplateThumbBatch.groupByImage(batch) { it.imagePath }) {
-            for (template in group.items) requestedThumbs.add(template.name)
-            thumbExecutor.submit {
-                // 内容 hash 既做缓存键，也决定"能不能用缓存"：取不到就退回当场解码、不写缓存
-                val contentHash = thumbCache.contentHash(group.imagePath)
-                // **懒解码**：这一组全都命中缓存时，连原图都不用解 —— 这正是磁盘缓存的意义
-                var original: BufferedImage? = null
-                val results = group.items.map { template ->
-                    val cached = contentHash?.let { thumbCache.load(it, template.bbox, THUMB_HEIGHT) }
-                    if (cached != null) return@map template to ImageIcon(cached)
-                    if (original == null) original = decodeImage(group.imagePath)
-                    val thumb = original?.let { cropToThumb(it, template) }
-                    if (thumb != null && contentHash != null) {
-                        thumbCache.store(contentHash, template.bbox, THUMB_HEIGHT, thumb)
-                    }
-                    template to thumb?.let { ImageIcon(it) }
-                }
-                SwingUtilities.invokeLater {
-                    if (disposed) return@invokeLater
-                    val stale = generation != renderGeneration.get()
-                    val retry = mutableListOf<FeatureTemplate>()
-                    for ((template, icon) in results) {
-                        // 清除请求标记，允许后续渲染重新请求
-                        requestedThumbs.remove(template.name)
-                        if (stale) {
-                            // 过期请求：卡片还在的话，用当前生成重排一次
-                            if (pendingThumbLabels.containsKey(template.name)) {
-                                templates.firstOrNull { current -> current.name == template.name }
-                                    ?.let { retry.add(it) }
-                            }
-                            continue
-                        }
-                        if (icon != null) thumbs[template.name] = icon
-                        pendingThumbLabels.remove(template.name)?.forEach { label ->
-                            label.icon = icon
-                            label.repaint()
-                        }
-                    }
-                    if (retry.isNotEmpty()) requestThumbs(retry, renderGeneration.get())
-                }
+        val requests = batch.map { template ->
+            com.alicejump.okscripttoolkit.core.TemplateThumbPipeline.Request(template.name, template.imagePath, template.bbox)
+        }
+        for (request in requests) requestedThumbs.add(request.key)
+        TemplateThumbPipeline.loadThumbs(project, requests, THUMB_HEIGHT) { name, icon ->
+            if (disposed) return@loadThumbs
+            // 清除请求标记，允许后续渲染重新请求
+            requestedThumbs.remove(name)
+            if (icon != null) thumbs[name] = icon
+            pendingThumbLabels.remove(name)?.forEach { label ->
+                label.icon = icon
+                label.repaint()
             }
         }
     }
 
-    /** 解码原图。失败返回 `null` —— 一张坏图不该让整组缩略图都消失。 */
-    private fun decodeImage(imagePath: java.nio.file.Path): BufferedImage? = try {
-        val file = imagePath.toFile()
-        if (file.exists()) ImageIO.read(file) else null
-    } catch (e: Exception) {
-        LOG.warn("Failed to decode template source image: $imagePath", e)
-        null
-    }
-
-    /**
-     * 从**已解码**的原图上裁 bbox 并等比缩放到预览框（绝不拉伸）。
-     *
-     * 返回 `BufferedImage`（不是 `Icon`）—— 调用方要把它写进磁盘缓存。
-     */
-    private fun cropToThumb(original: BufferedImage, template: FeatureTemplate): BufferedImage? {
-        return try {
-            val x = template.bbox[0].coerceIn(0, original.width - 1)
-            val y = template.bbox[1].coerceIn(0, original.height - 1)
-            val w = template.bbox[2].coerceAtMost(original.width - x)
-            val h = template.bbox[3].coerceAtMost(original.height - y)
-            if (w <= 0 || h <= 0) return null
-            val crop = original.getSubimage(x, y, w, h)
-            // 等比适配预览框（高 72、宽不超格子内区），绝不拉伸
-            val scale = minOf(THUMB_HEIGHT.toDouble() / h, (CARD_WIDTH - 16).toDouble() / w)
-            val targetW = (w * scale).toInt().coerceAtLeast(1)
-            val targetH = (h * scale).toInt().coerceAtLeast(1)
-            val thumb = BufferedImage(targetW, targetH, BufferedImage.TYPE_INT_ARGB)
-            val g = thumb.createGraphics()
-            g.drawImage(crop, 0, 0, targetW, targetH, null)
-            g.dispose()
-            thumb
-        } catch (e: Exception) {
-            LOG.warn("Failed to render thumbnail for ${template.name}", e)
-            null
-        }
-    }
 
     private fun escapeHtml(value: String): String =
         value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -512,7 +441,6 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
 
     override fun dispose() {
         disposed = true
-        thumbExecutor.shutdownNow()
     }
 }
 

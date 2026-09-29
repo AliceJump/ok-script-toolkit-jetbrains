@@ -38,51 +38,14 @@ class BoxCatalogService(private val project: Project) {
 
     fun readAuthoring(): BoxResource.AuthoringFile = readAuthoringResult().file
 
-    /** 读盘失败 / 解析失败 / 迁移丢框时的错误码；界面必须报告而不是当成空目录。 */
+    /** 读盘失败 / 解析失败时的错误码；界面必须报告而不是当成空目录。version 1 不受支持也不迁移。 */
     fun authoringErrors(): List<String> = readAuthoringResult().errors
 
     private fun readAuthoringResult(): BoxResource.ParseResult<BoxResource.AuthoringFile> {
         val path = authoringPath() ?: return BoxResource.ParseResult(BoxResource.AuthoringFile(), emptyList())
         if (!Files.isRegularFile(path)) return BoxResource.ParseResult(BoxResource.AuthoringFile(), emptyList())
         val text = readFile(path) ?: return BoxResource.ParseResult(BoxResource.AuthoringFile(), listOf("read"))
-        val parsed = BoxResource.parseAuthoring(text)
-        if ("legacy" !in parsed.errors) return parsed
-
-        // 旧 normalized 格式唯一的入口：读取 → 按图片尺寸转 Pixel → 写回新格式。
-        val templatesDir = templatesDirPath()
-        val coco = cocoImageSizes(templatesDir)
-        val sizeOf = { image: String ->
-            coco[imageFileNameKey(image)]?.let { AnnotationSwap.Size(it.first, it.second) }
-                ?: templatesDir?.let { dir -> headerSize(dir.resolve(BoxResource.imageFileName(image))) }
-        }
-        val legacy = BoxResource.parseLegacyAuthoring(text)
-        val migrated = BoxResource.migrateAuthoringV1(legacy.file, sizeOf)
-        val errors = legacy.errors.map { "legacy:$it" } + migrated.errors
-        if (errors.isEmpty()) {
-            // 迁移完整才写回：半迁移的文件比旧文件更难解释。
-            write(path, BoxResource.serializeAuthoring(migrated.file))
-        }
-        return BoxResource.ParseResult(migrated.file, errors)
-    }
-
-    private fun imageFileNameKey(image: String): String = BoxResource.imageFileName(image).lowercase()
-
-    /** 迁移尺寸第一优先级：模板 COCO 里登记过的 file_name → width/height。宽松解析。 */
-    private fun cocoImageSizes(templatesDir: Path?): Map<String, Pair<Int, Int>> {
-        val sizes = mutableMapOf<String, Pair<Int, Int>>()
-        val file = templatesDir?.resolve("coco_annotations.json") ?: return sizes
-        if (!Files.isRegularFile(file)) return sizes
-        val tree = runCatching {
-            com.fasterxml.jackson.databind.ObjectMapper().readTree(Files.readString(file, StandardCharsets.UTF_8))
-        }.getOrNull() ?: return sizes
-        for (image in tree.path("images")) {
-            val name = image.path("file_name").takeIf { it.isTextual }?.asText()?.let(BoxResource::imageFileName)?.lowercase()
-                ?: continue
-            val width = image.path("width").takeIf { it.isNumber }?.asInt() ?: 0
-            val height = image.path("height").takeIf { it.isNumber }?.asInt() ?: 0
-            if (name.isNotEmpty() && width > 0 && height > 0) sizes[name] = width to height
-        }
-        return sizes
+        return BoxResource.parseAuthoring(text)
     }
 
     private fun headerSize(file: Path): AnnotationSwap.Size? {

@@ -123,21 +123,26 @@ class BoxResourceTest {
     }
 
     @Test
-    fun `legacy normalized authoring is a migration entry only`() {
+    fun `version 1 authoring is unsupported and never migrated`() {
         val legacyText = """{"version":1,"boxes":[
               {"path":"screen.main_viewport","image":"12.png","rect":[0.1,0.2,0.9,0.8]}
             ]}"""
-        assertTrue(BoxResource.parseAuthoring(legacyText).errors.contains("legacy"))
-        val legacy = BoxResource.parseLegacyAuthoring(legacyText)
-        assertTrue(legacy.errors.isEmpty())
-        assertEquals(1, legacy.file.size)
-        val migrated = BoxResource.migrateAuthoringV1(legacy.file) { AnnotationSwap.Size(1920, 1080) }
-        assertTrue(migrated.errors.isEmpty())
-        assertEquals("192,216,1536,648", migrated.file.boxes[0].bbox.joinToString(","))
-        assertEquals(1920, migrated.file.images.single().width)
-        val orphan = BoxResource.migrateAuthoringV1(legacy.file) { null }
-        assertEquals(listOf("migrate:12.png"), orphan.errors)
-        assertEquals(0, orphan.file.boxes.size)
+        val parsed = BoxResource.parseAuthoring(legacyText)
+        assertTrue(parsed.errors.contains("version"), "v1 直接报 version 错误")
+        assertTrue(!parsed.errors.contains("legacy"), "不存在 legacy 迁移入口")
+        assertEquals(0, parsed.file.boxes.size)
+    }
+
+    @Test
+    fun `generate box validation treats every occupied path as a duplicate`() {
+        val occupied = mapOf("screen.foo" to "12.png", "combat.hp" to "3.png")
+        assertNull(BoxResource.generateBoxPathProblem("screen.bar", occupied), "没人占用的 path 放行")
+        assertEquals("duplicate", BoxResource.generateBoxPathProblem("screen.foo", occupied), "当前图片已有的 path 也算占用")
+        assertEquals("duplicate", BoxResource.generateBoxPathProblem("combat.hp", occupied))
+        assertEquals("empty", BoxResource.generateBoxPathProblem("  ", occupied))
+        assertEquals("shallow", BoxResource.generateBoxPathProblem("mainonly", occupied))
+        assertEquals("segment", BoxResource.generateBoxPathProblem("screen.2bad", occupied))
+        assertEquals("reserved", BoxResource.generateBoxPathProblem("panels.esc", occupied))
     }
 
     @Test
