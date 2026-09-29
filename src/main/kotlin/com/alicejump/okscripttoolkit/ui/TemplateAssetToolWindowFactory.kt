@@ -637,15 +637,12 @@ class TemplateAssetPanel(
             if (confirm == JOptionPane.YES_OPTION) {
                 // 文件删除 + COCO 写盘移出 EDT
                 CompletableFuture.supplyAsync {
-                    val boxes = project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>()
-                    val snapshot = boxes.captureAuthoring() ?: return@supplyAsync "boxes"
-                    if (!boxes.removeImage(img.file.name)) return@supplyAsync "boxes"
-                    if (!data.deleteImage(img.file)) {
-                        // 图片还在时把框文件写回去。写不回去才告诉用户框已经去掉、文件还在。
-                        if (img.file.exists() && boxes.restoreAuthoring(snapshot)) return@supplyAsync "boxes"
-                        return@supplyAsync "image"
-                    }
-                    "ok"
+                    project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>()
+                        .removeImageForDeletion(
+                            img.file.name,
+                            { img.file.exists() },
+                            { data.deleteImage(img.file) },
+                        )
                 }.whenComplete { result, error ->
                     SwingUtilities.invokeLater {
                         when {

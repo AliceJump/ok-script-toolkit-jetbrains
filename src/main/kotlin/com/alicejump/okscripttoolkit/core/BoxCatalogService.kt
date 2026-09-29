@@ -107,6 +107,23 @@ class BoxCatalogService(private val project: Project) {
         return write(path, text)
     }
 
+    /**
+     * 去掉这张图的框，再删文件。整段持有同一把锁。
+     * 删除失败且图片还在时，写回进入时的快照；锁没放开前，别的保存进不来。
+     */
+    @Synchronized
+    fun removeImageForDeletion(
+        fileName: String,
+        imageExists: () -> Boolean,
+        deleteImage: () -> Boolean,
+    ): String {
+        val snapshot = captureAuthoring() ?: return "boxes"
+        if (!removeImage(fileName)) return "boxes"
+        if (deleteImage()) return "ok"
+        if (imageExists() && restoreAuthoring(snapshot)) return "boxes"
+        return "image"
+    }
+
     /** 删图时去掉它的框。标注文件还不存在就什么都不写。 */
     @Synchronized
     fun removeImage(fileName: String): Boolean {
