@@ -6,7 +6,7 @@ import com.alicejump.okscripttoolkit.core.BoxResource
 import com.alicejump.okscripttoolkit.core.CocoAnnotation
 import com.alicejump.okscripttoolkit.core.CocoAnnotationEdit
 import com.alicejump.okscripttoolkit.core.CocoCategory
-import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
+import com.alicejump.okscripttoolkit.core.CocoAnnotationData
 import com.alicejump.okscripttoolkit.core.TemplateImage
 import com.alicejump.okscripttoolkit.settings.GlobalPrefs
 import com.intellij.openapi.components.service
@@ -75,7 +75,7 @@ import javax.swing.SwingUtilities
  */
 class AnnotationDialog(
     private val project: Project,
-    private val data: TemplateAssetDataService,
+    private val data: CocoAnnotationData,
     private val image: TemplateImage,
     /** ←/→ 可切换的图片集合（通常是素材面板当前过滤结果） */
     private val imageList: List<TemplateImage> = listOf(image),
@@ -141,18 +141,44 @@ class AnnotationDialog(
     private var annotationListRefreshPosted = false
     private var currentIndex = startIndex.coerceIn(0, (imageList.size - 1).coerceAtLeast(0))
     private var loading = false
+    private var saving = false
+    private var sourceRevision = data.revision
+    private var sourceRefreshPending = false
 
     init {
         title = OkScriptToolkitBundle.message("annotation.title", currentImage.name)
         setOKButtonText(OkScriptToolkitBundle.message("annotation.save"))
         setCancelButtonText(OkScriptToolkitBundle.message("annotation.cancel"))
         init()
+        val changes = com.alicejump.okscripttoolkit.core.AnnotationDataChanges.subscribe { path ->
+            val source = data.annotationFile
+            if (source != null && com.alicejump.okscripttoolkit.core.BoxRuntimePath.sameLocation(path, source)) {
+                SwingUtilities.invokeLater {
+                    refreshSource()
+                }
+            }
+        }
+        com.intellij.openapi.util.Disposer.register(disposable, com.intellij.openapi.Disposable { changes.close() })
         loadImage(currentIndex)
         SwingUtilities.invokeLater { canvas.requestFocusInWindow() }
     }
 
     private val currentImage: TemplateImage
         get() = imageList.getOrNull(currentIndex) ?: image
+
+    private fun refreshSource() {
+        if (isDisposed || saving) return
+        if (loading) { sourceRefreshPending = true; return }
+        sourceRefreshPending = false
+        data.reload()
+        if (sourceRevision == data.revision) return
+        sourceRevision = data.revision
+        sessionByFile.entries.removeIf { !it.value.dirty }
+        if (session?.dirty != true) {
+            session = null
+            loadImage(currentIndex)
+        }
+    }
 
     override fun createCenterPanel(): JComponent {
         val toolbar = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
@@ -325,22 +351,14 @@ class AnnotationDialog(
                 val buffered = ImageIO.read(target.file)
                 val size = buffered?.let { it.width to it.height }
                 var nextId = 1
-                val boxes = if (editingBoxes) {
-                    // Pixel authoring：框就是画布坐标本身，不再经过 normalized 换算，
-                    // 也不存在"打不开要原样保留"的条目（解析阶段已保证 bbox 落在图内）。
-                    project.service<BoxCatalogService>().boxesForImage(target.file.name).map { box ->
-                        BoxItem(box.path, Rect(box.bbox[0], box.bbox[1], box.bbox[2], box.bbox[3]), nextId++)
-                    }.toMutableList()
-                } else {
-                    val annotations: List<CocoAnnotation> =
-                        cocoImage?.let { data.getAnnotationsForImage(it.id) } ?: emptyList()
-                    val categories: List<CocoCategory> = data.categories()
-                    annotations.mapNotNull { ann ->
-                        if (ann.bbox.size < 4) return@mapNotNull null
-                        val name = categories.firstOrNull { it.id == ann.categoryId }?.name ?: "#${ann.categoryId}"
-                        BoxItem(name, Rect(ann.bbox[0], ann.bbox[1], ann.bbox[2], ann.bbox[3]), nextId++)
-                    }.toMutableList()
-                }
+                val annotations: List<CocoAnnotation> =
+                    cocoImage?.let { data.getAnnotationsForImage(it.id) } ?: emptyList()
+                val categories: List<CocoCategory> = data.categories()
+                val boxes = annotations.mapNotNull { ann ->
+                    if (ann.bbox.size < 4) return@mapNotNull null
+                    val name = categories.firstOrNull { it.id == ann.categoryId }?.name ?: "#${ann.categoryId}"
+                    BoxItem(name, Rect(ann.bbox[0], ann.bbox[1], ann.bbox[2], ann.bbox[3]), nextId++)
+                }.toMutableList()
                 ImageSession(
                     fileName = target.file.name,
                     boxes = boxes,
@@ -365,6 +383,7 @@ class AnnotationDialog(
                     }, null)
                 }
                 updateNav()
+                if (sourceRefreshPending) refreshSource()
             }
         }, "ok-script-annotation-image").apply { isDaemon = true; start() }
     }
@@ -387,26 +406,25 @@ class AnnotationDialog(
     }
 
     override fun doOKAction() {
+        saving = true
         val error = try {
             stashCurrent()
-            if (editingBoxes) {
-                saveBoxEdits()
-            } else {
-                val edits = sessionByFile.values.filter { it.dirty }.map { s ->
-                    CocoAnnotationEdit(
-                        s.fileName,
-                        s.newSize,
-                        s.boxes.map { box ->
-                            box.categoryName to intArrayOf(box.rect.x, box.rect.y, box.rect.w, box.rect.h)
-                        },
-                    )
-                }
-                if (data.saveAnnotationEdits(edits)) null else "write"
+            val edits = sessionByFile.values.filter { it.dirty }.map { s ->
+                CocoAnnotationEdit(
+                    s.fileName,
+                    s.newSize,
+                    s.boxes.map { box ->
+                        box.categoryName to intArrayOf(box.rect.x, box.rect.y, box.rect.w, box.rect.h)
+                    },
+                )
             }
+            if (data.saveAnnotationEdits(edits)) null else data.lastError ?: "write"
         } catch (e: Exception) {
             LOG.error("Failed to save annotations for ${currentImage.name}", e)
             "write"
         }
+        sourceRevision = data.revision
+        saving = false
         if (error != null) {
             val key = when (error) {
                 "duplicate" -> "annotation.generateDuplicate"
@@ -501,25 +519,6 @@ class AnnotationDialog(
             "reserved" -> OkScriptToolkitBundle.message("box.pathReserved", segments.first())
             else -> OkScriptToolkitBundle.message("annotation.generateDuplicate")
         }
-    }
-
-    private fun saveBoxEdits(): String? {
-        val catalog = project.service<BoxCatalogService>()
-        val edits = mutableListOf<BoxResource.ImageReplacement>()
-        for (session in sessionByFile.values.filter { it.dirty }) {
-            val size = session.newSize ?: return "image"
-            val boxes = session.boxes.map { box ->
-                BoxResource.ReplacementBox(
-                    box.categoryName,
-                    box.rect.x,
-                    box.rect.y,
-                    box.rect.w,
-                    box.rect.h,
-                )
-            }
-            edits += BoxResource.ImageReplacement(session.fileName, size.first, size.second, boxes)
-        }
-        return catalog.commitImageEdits(edits)
     }
 
     /** 全项目分类名唯一性索引：分类名 -> 已占用它的文件名（不含当前图，对齐 VSCode 版校验语义） */

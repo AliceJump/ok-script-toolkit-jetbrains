@@ -1,6 +1,7 @@
 package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
+import com.alicejump.okscripttoolkit.core.CocoAnnotationData
 import com.alicejump.okscripttoolkit.core.AnnotationSwap
 import com.alicejump.okscripttoolkit.core.LabelEnumGuard
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
@@ -129,7 +130,8 @@ class TemplateAssetPanel(
 ) : com.intellij.openapi.Disposable {
 
     val mainPanel: JPanel
-    private val data = project.service<TemplateAssetDataService>()
+    private val templateData = project.service<TemplateAssetDataService>()
+    private val data: CocoAnnotationData = if (editingBoxes) project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>().annotations else templateData
 
     private val searchField = JBTextField()
     /** 「硬前台」：本次截图强制把游戏窗口切到前台再截（会抢焦点），状态按项目持久化 */
@@ -302,11 +304,7 @@ class TemplateAssetPanel(
         // 标注编辑器的 ←/→ 导航跟随当前过滤结果
         visibleImages = filtered
 
-        val boxCounts = if (editingBoxes) {
-            project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>().boxCounts()
-        } else {
-            emptyMap()
-        }
+        val boxCounts = if (editingBoxes) images.associate { it.file.name.lowercase() to it.annotations.size } else emptyMap()
         for (img in filtered) {
             gridPanel.add(createImageCard(img, boxCounts))
         }
@@ -442,11 +440,6 @@ class TemplateAssetPanel(
         if (!dialog.showAndGet()) return
         val target = dialog.selected ?: return
 
-        if (editingBoxes) {
-            swapBoxesWith(source, target)
-            return
-        }
-
         val sourceSize = resolveSize(source)
         val targetSize = resolveSize(target)
         if (sourceSize == null || targetSize == null) {
@@ -506,10 +499,10 @@ class TemplateAssetPanel(
         if (!swapGate.begin()) return
         CompletableFuture.supplyAsync { data.saveSwapEdits(expected, expectedSizes, edits) }.whenComplete { result, error ->
             SwingUtilities.invokeLater {
-                if (error == null && result == TemplateAssetDataService.SwapSaveResult.CHANGED) {
+                if (error == null && result == CocoAnnotationData.SwapSaveResult.CHANGED) {
                     notify(OkScriptToolkitBundle.message("templateAsset.swapChanged"), NotificationType.WARNING)
                     swapGate.waitForRefresh(loadData())
-                } else if (error != null || result != TemplateAssetDataService.SwapSaveResult.SAVED) {
+                } else if (error != null || result != CocoAnnotationData.SwapSaveResult.SAVED) {
                     swapGate.saveFailed()
                     notify(OkScriptToolkitBundle.message("templateAsset.swapFailed"), NotificationType.ERROR)
                     loadData()
@@ -530,6 +523,10 @@ class TemplateAssetPanel(
      */
     private fun publishBoxes() {
         val catalog = project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>()
+        if (catalog.authoringErrors().isEmpty() && catalog.readAuthoring().boxes.isEmpty()) {
+            notify(OkScriptToolkitBundle.message("box.publishEmpty"), NotificationType.INFORMATION)
+            return
+        }
         val dropped = catalog.runtimeOnlyPaths()
         if (dropped.isNotEmpty()) {
             val answer = Messages.showYesNoDialog(
@@ -559,58 +556,6 @@ class TemplateAssetPanel(
             )
         } else {
             notify(OkScriptToolkitBundle.message("annotation.saveFailed"), NotificationType.ERROR)
-        }
-    }
-
-    /**
-     * 框的图片交换。Pixel authoring 下坐标语义依赖图片尺寸：同尺寸只换所属图片，
-     * 尺寸不同按比例映射（复用模板交换的 AnnotationSwap.scaleBox，纯层完成），
-     * 所以确认框要像模板交换一样把"会缩放"说清楚；读不出尺寸直接拒绝。
-     */
-    private fun swapBoxesWith(source: TemplateImage, target: TemplateImage) {
-        val catalog = project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>()
-        val sourceBoxes = catalog.boxesForImage(source.file.name)
-        val targetBoxes = catalog.boxesForImage(target.file.name)
-        if (sourceBoxes.isEmpty() && targetBoxes.isEmpty()) {
-            notify(OkScriptToolkitBundle.message("templateAsset.swapNothing"), NotificationType.INFORMATION)
-            return
-        }
-        val sourceSize = catalog.imageSize(source.file.name)
-        val targetSize = catalog.imageSize(target.file.name)
-        if (sourceSize == null || targetSize == null) {
-            notify(OkScriptToolkitBundle.message("templateAsset.swapSizeUnknown"), NotificationType.ERROR)
-            return
-        }
-        val detail = buildString {
-            append(
-                OkScriptToolkitBundle.message(
-                    "templateAsset.swapCounts",
-                    source.name, sourceBoxes.size, target.name, targetBoxes.size,
-                ),
-            )
-            if (!AnnotationSwap.isSameSize(sourceSize, targetSize)) {
-                append('\n')
-                append(
-                    OkScriptToolkitBundle.message(
-                        "templateAsset.swapScaled",
-                        "${sourceSize.width}×${sourceSize.height}",
-                        "${targetSize.width}×${targetSize.height}",
-                    ),
-                )
-            }
-        }
-        val confirmed = Messages.showYesNoDialog(
-            project,
-            OkScriptToolkitBundle.message("templateAsset.swapQuestion", source.name, target.name) + "\n\n" + detail,
-            OkScriptToolkitBundle.message("templateAsset.swapTitle"),
-            Messages.getQuestionIcon(),
-        )
-        if (confirmed != Messages.YES) return
-        if (catalog.swapImages(source.file.name, target.file.name)) {
-            notify(OkScriptToolkitBundle.message("templateAsset.swapDone", source.name, target.name), NotificationType.INFORMATION)
-            loadData()
-        } else {
-            notify(OkScriptToolkitBundle.message("templateAsset.swapFailed"), NotificationType.ERROR)
         }
     }
 
@@ -677,7 +622,11 @@ class TemplateAssetPanel(
                         .removeImageForDeletion(
                             img.file.name,
                             { img.file.exists() },
-                            { data.deleteImage(img.file) },
+                            {
+                                val settings = OkScriptToolkitSettings.getInstance(project)
+                                templateData.load(ScreenshotCapture.detectProjectDir(project), settings.okTemplatesDirectory())
+                                templateData.deleteImage(img.file)
+                            },
                         )
                 }.whenComplete { result, error ->
                     SwingUtilities.invokeLater {
@@ -1152,7 +1101,7 @@ class TemplateAssetPanel(
                             projectDir,
                             OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory(),
                         )
-                        data.saveToAssets(targetFolder, generateEnum, enumAbsolutePath) { done, total ->
+                        templateData.saveToAssets(targetFolder, generateEnum, enumAbsolutePath) { done, total ->
                             indicator.checkCanceled()
                             indicator.fraction = if (total > 0) done.toDouble() / total else 0.0
                             indicator.text = OkScriptToolkitBundle.message(

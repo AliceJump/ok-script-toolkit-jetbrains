@@ -250,7 +250,7 @@ class TemplateAssetDataServiceCocoTest {
             CocoAnnotationEdit("target.png", null, listOf("mark" to intArrayOf(3, 3, 1, 1))),
         )))
         val afterInIdeEdit = cocoFile.readText()
-        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, service.saveSwapEdits(expected, sizes, edits))
+        assertEquals(CocoAnnotationData.SwapSaveResult.CHANGED, service.saveSwapEdits(expected, sizes, edits))
         assertEquals(afterInIdeEdit, cocoFile.readText())
 
         // The stale service still matches its own memory; only the external write on disk differs.
@@ -264,7 +264,7 @@ class TemplateAssetDataServiceCocoTest {
             CocoAnnotationEdit("target.png", null, emptyList()),
         )))
         val afterExternalEdit = cocoFile.readText()
-        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, stale.saveSwapEdits(staleExpected, sizes, edits))
+        assertEquals(CocoAnnotationData.SwapSaveResult.CHANGED, stale.saveSwapEdits(staleExpected, sizes, edits))
         assertEquals(afterExternalEdit, cocoFile.readText())
 
         val fresh = serviceAt(root)
@@ -276,7 +276,7 @@ class TemplateAssetDataServiceCocoTest {
             "source.png", AnnotationSwap.Size(10, 10), current.getValue("source.png"),
             "target.png", AnnotationSwap.Size(10, 10), emptyList(),
         )
-        assertEquals(TemplateAssetDataService.SwapSaveResult.SAVED, fresh.saveSwapEdits(current, sizes, freshEdits))
+        assertEquals(CocoAnnotationData.SwapSaveResult.SAVED, fresh.saveSwapEdits(current, sizes, freshEdits))
         val restored = serviceAt(root)
         assertTrue(restored.getAnnotationsForImage(source.id).isEmpty())
         assertEquals(listOf(9, 9, 1, 1), restored.getAnnotationsForImage(target.id).single().bbox.toList())
@@ -314,12 +314,12 @@ class TemplateAssetDataServiceCocoTest {
             CocoAnnotationEdit("third.png", null, listOf("mark" to intArrayOf(1, 1, 1, 1))),
         )))
         val afterThirdEdit = cocoFile.readText()
-        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, service.saveSwapEdits(expected, sizes, edits))
+        assertEquals(CocoAnnotationData.SwapSaveResult.CHANGED, service.saveSwapEdits(expected, sizes, edits))
         assertEquals(afterThirdEdit, cocoFile.readText())
 
         val deleted = serviceAt(root)
         assertTrue(cocoFile.delete())
-        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, deleted.saveSwapEdits(expected, sizes, edits))
+        assertEquals(CocoAnnotationData.SwapSaveResult.CHANGED, deleted.saveSwapEdits(expected, sizes, edits))
         assertFalse(cocoFile.exists(), "a deleted COCO file must not be recreated from stale memory")
 
         assertTrue(deleted.save())
@@ -328,13 +328,13 @@ class TemplateAssetDataServiceCocoTest {
         javax.imageio.ImageIO.write(java.awt.image.BufferedImage(4, 3, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", target)
         assertEquals(4 to 3, replaced.swapImageSize(target), "the image header wins over stale COCO dimensions")
         val beforeReplace = cocoFile.readText()
-        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, replaced.saveSwapEdits(expected, sizes, edits))
+        assertEquals(CocoAnnotationData.SwapSaveResult.CHANGED, replaced.saveSwapEdits(expected, sizes, edits))
         assertEquals(beforeReplace, cocoFile.readText())
 
         // A deleted image must not pass by falling back to its COCO size.
         assertTrue(target.delete())
         assertEquals(10 to 10, replaced.swapImageSize(target))
-        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, replaced.saveSwapEdits(expected, sizes, edits))
+        assertEquals(CocoAnnotationData.SwapSaveResult.CHANGED, replaced.saveSwapEdits(expected, sizes, edits))
         assertEquals(beforeReplace, cocoFile.readText())
     }
 
