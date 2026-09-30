@@ -70,6 +70,7 @@ class TemplateAssetDataService(private val project: Project) : CocoAnnotationDat
         enumPath: String?,
         onProgress: (Int, Int) -> Unit,
     ) {
+        check(readErrors.isEmpty()) { OkScriptToolkitBundle.message("templateAsset.sourceInvalid") }
         // 枚举输出路径**先算出来、先校验，在所有写入之前**：越界就抛，此时 assets/COCO
         // 一个字节都还没动。放到写完 COCO 之后再校验的话，用户会看到"一半成功" ——
         // 资产已经更新、枚举没生成，而且文件被丢到了项目外面。

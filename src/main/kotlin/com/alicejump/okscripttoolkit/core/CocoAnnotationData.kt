@@ -269,6 +269,11 @@ open class CocoAnnotationData(
         }
     }
 
+    private fun displayData(text: String?, parsed: CocoReadResult): CocoData =
+        if (fileName == "coco_annotations.json" && text != null && parsed.errors.isNotEmpty()) {
+            runCatching { parseCoco(JSON.readTree(text)) }.getOrDefault(parsed.data)
+        } else parsed.data
+
     @Synchronized
     open fun load(projectDir: String, templatesDir: String): CocoData {
         templateFolder = templateDir(projectDir, templatesDir)
@@ -276,7 +281,7 @@ open class CocoAnnotationData(
 
         val (text, parsed) = readSource()
         revision = text
-        cocoData = parsed.data
+        cocoData = displayData(text, parsed)
         readErrors = parsed.errors
         legacy = parsed.legacy
         return cocoData
@@ -286,7 +291,7 @@ open class CocoAnnotationData(
     fun reload(): CocoData {
         val (text, parsed) = readSource()
         revision = text
-        cocoData = parsed.data
+        cocoData = displayData(text, parsed)
         readErrors = parsed.errors
         legacy = parsed.legacy
         return cocoData
@@ -327,10 +332,7 @@ open class CocoAnnotationData(
             }
         }
         legacy = parsed.legacy
-        revision = text
-        if (!writeCoco(updated)) return false
-        cocoData = updated
-        return true
+        return writeCoco(updated)
     }
 
     enum class SwapSaveResult { SAVED, CHANGED, FAILED }
@@ -568,6 +570,11 @@ open class CocoAnnotationData(
         // 否则新建的文件会与旧标注撞名（对齐 VSCode 版 nextImageName 的两处来源）。
         val occupiedNames = targetDir.listFiles()?.mapTo(mutableSetOf()) { it.nameWithoutExtension } ?: mutableSetOf()
         occupiedNames.addAll(cocoData.images.map { it.fileName.substringBeforeLast('.') })
+        // Read reservations from the target even when this service has not been loaded yet.
+        val registered = runCatching {
+            parseCoco(JSON.readTree(Files.readString(targetDir.toPath().resolve(fileName)))).images
+        }.getOrDefault(emptyList())
+        occupiedNames.addAll(registered.map { it.fileName.substringBeforeLast('.') })
         var count = 0
         for (sourceFile in sourceFiles) {
             try {
@@ -588,6 +595,7 @@ open class CocoAnnotationData(
                 }
                 occupiedNames.add(next.toString())
                 count++
+                AnnotationDataChanges.notify(targetFile.toPath())
             } catch (_: Exception) {
                 // 跳过失败的文件
             }

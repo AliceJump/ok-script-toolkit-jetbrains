@@ -455,7 +455,8 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
     private fun handleSendToAssets(shot: TempShot) {
         val settings = OkScriptToolkitSettings.getInstance(project)
         val projectDir = project.basePath ?: return
-        val targetDir = File(projectDir, settings.okTemplatesDirectory())
+        val targetDir = com.alicejump.okscripttoolkit.core.TemplateAssetDataService
+            .templateDir(projectDir, settings.okTemplatesDirectory()).toFile()
         val data = project.service<com.alicejump.okscripttoolkit.core.TemplateAssetDataService>()
         CompletableFuture.supplyAsync {
             data.importImages(listOf(shot.file), targetDir)

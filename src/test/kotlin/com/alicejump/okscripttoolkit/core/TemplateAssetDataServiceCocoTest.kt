@@ -11,6 +11,41 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class TemplateAssetDataServiceCocoTest {
+    @Test
+    fun `first import reads target reservations without registering images`() {
+        val root = TestTmp.create("ok-coco-import-first")
+        val target = root.resolve("ok_templates").apply { mkdirs() }
+        val original = """{"images":[{"id":1,"file_name":"1.png","width":3,"height":2}],"categories":[{"id":1,"name":"old"}],"annotations":[{"id":1,"image_id":1,"category_id":1,"bbox":[0,0,1,1]}]}"""
+        val file = target.resolve("coco_annotations.json").apply { writeText(original) }
+        val source = root.resolve("source.png")
+        javax.imageio.ImageIO.write(java.awt.image.BufferedImage(3, 2, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", source)
+        val project = Proxy.newProxyInstance(Project::class.java.classLoader, arrayOf(Project::class.java)) { _, _, _ -> null } as Project
+        val service = TemplateAssetDataService(project)
+        val changed = mutableListOf<java.nio.file.Path>()
+        AnnotationDataChanges.subscribe { changed.add(it) }.use {
+            assertEquals(1, service.importImages(listOf(source), target))
+        }
+        assertTrue(target.resolve("2.png").isFile)
+        assertEquals(listOf(target.resolve("2.png").toPath()), changed)
+        assertEquals(original, file.readText())
+        service.load(root.absolutePath, "ok_templates")
+        assertTrue(service.listImages().single().annotations.isEmpty())
+    }
+
+    @Test
+    fun `invalid template source refuses export without changing existing assets`() {
+        val root = TestTmp.create("ok-coco-invalid-export")
+        val target = root.resolve("ok_templates").apply { mkdirs() }
+        target.resolve("coco_annotations.json").writeText("{" )
+        val service = serviceAt(root)
+        val assets = root.resolve("assets").apply { mkdirs() }
+        val existing = assets.resolve("coco_annotations.json").apply { writeText("existing") }
+        kotlin.test.assertFailsWith<IllegalStateException> {
+            service.saveToAssets(assets.absolutePath, false, null) { _, _ -> }
+        }
+        assertEquals("existing", existing.readText())
+    }
+
 
     private fun serviceAt(root: java.io.File): TemplateAssetDataService {
         val project = Proxy.newProxyInstance(

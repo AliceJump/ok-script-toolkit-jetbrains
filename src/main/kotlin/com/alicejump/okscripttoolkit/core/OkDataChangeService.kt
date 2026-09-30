@@ -13,6 +13,10 @@ import com.intellij.util.ui.UIUtil
 import java.util.concurrent.atomic.AtomicLong
 import javax.swing.Timer
 
+internal fun isTemplateImageChange(path: java.nio.file.Path, directory: java.nio.file.Path): Boolean =
+    path.fileName.toString().substringAfterLast('.', "").lowercase() in setOf("png", "jpg", "jpeg", "bmp") &&
+        path.parent?.let { BoxRuntimePath.sameLocation(it, directory) } == true
+
 /** 数据文件变化回调：工具窗面板借此自动刷新（对应 VSCode 版的 FileSystemWatcher 派发） */
 fun interface OkDataChangeListener {
     fun dataChanged()
@@ -106,7 +110,8 @@ class OkDataChangeService(private val project: Project) : Disposable {
             return false
         }
         if (dirMatches("assets/images", ".png") || dirMatches("ok_tasks/assets/images", ".png")) return true
-        if (dirMatches(settings.okTemplatesDirectory(), ".png")) return true
+        val templatesPath = CocoAnnotationData.templateDir(root?.toString() ?: basePath, settings.okTemplatesDirectory())
+        if (isTemplateImageChange(java.nio.file.Paths.get(normalized), templatesPath)) return true
 
         val effectsFile = exact(settings.effectsFile())
         if (rel.equals(effectsFile, ignoreCase = isWindows())) return true

@@ -313,7 +313,11 @@ class TemplateAssetPanel(
         }
 
         countLabel.text = OkScriptToolkitBundle.message("templateAsset.count", filtered.size)
-        statusLabel.text = OkScriptToolkitBundle.message("templateAsset.loaded", images.size)
+        statusLabel.text = if (data.readErrors.isNotEmpty()) {
+            OkScriptToolkitBundle.message("templateAsset.sourceInvalid")
+        } else {
+            OkScriptToolkitBundle.message("templateAsset.loaded", images.size)
+        }
         gridPanel.revalidate()
         gridPanel.repaint()
     }
@@ -876,6 +880,10 @@ class TemplateAssetPanel(
      * 可选生成 LabelEnum.py，后台 bin-packing 合成 pages 并重写目标 COCO。
      */
     private fun handleSaveToAssets() {
+        if (data.readErrors.isNotEmpty()) {
+            notify(OkScriptToolkitBundle.message("templateAsset.sourceInvalid"), NotificationType.ERROR)
+            return
+        }
         val annotatedCount = images.count { it.annotations.isNotEmpty() }
         if (annotatedCount == 0) {
             notify(OkScriptToolkitBundle.message("templateAsset.exportNoAnnotations"), NotificationType.WARNING)

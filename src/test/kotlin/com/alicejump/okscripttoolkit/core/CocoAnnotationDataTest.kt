@@ -11,6 +11,60 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class CocoAnnotationDataTest {
+    @Test
+    fun `invalid template annotations remain visible but cannot be saved`() {
+        val root = TestTmp.create("ok-coco-invalid-display")
+        image(root, "a.png")
+        val valid = """{"images":[{"id":1,"file_name":"a.png","width":100,"height":80}],"categories":[{"id":1,"name":"icon"}],"annotations":[{"id":1,"image_id":1,"category_id":1,"bbox":[1,2,3,4]}]}"""
+        val file = root.resolve("ok_templates/coco_annotations.json")
+        for (text in listOf(valid.replace("100", "100.0"), valid.replace("[1,2,3,4]", "[99,2,3,4]"), valid.replace("category_id\":1", "category_id\":99"))) {
+            file.writeText(text)
+            val templates = source(root, false)
+            assertTrue(templates.readErrors.isNotEmpty())
+            assertEquals(1, templates.listImages().single().annotations.size)
+            assertEquals(1, templates.reload().annotations.size)
+            assertTrue(templates.readErrors.isNotEmpty())
+            assertFalse(templates.save())
+            assertFalse(templates.saveAnnotationEdits(listOf(CocoAnnotationEdit("a.png", 100 to 80, emptyList()))))
+            assertEquals(text, file.readText())
+        }
+    }
+
+    @Test
+    fun `failed write after external edits keeps revision and preserves edits on retry`() {
+        val root = TestTmp.create("ok-coco-retry-external")
+        image(root, "a.png")
+        image(root, "b.png")
+        val initial = source(root, false)
+        fun edit(file: String, name: String) = CocoAnnotationEdit(file, 100 to 80, listOf(name to intArrayOf(1, 2, 3, 4)))
+        assertTrue(initial.saveAnnotationEdits(listOf(edit("a.png", "old"))))
+        val file = initial.annotationFile!!.toFile()
+        val backup = file.resolveSibling("external.json")
+        var failWrite = true
+        val open = CocoAnnotationData(validateNames = { _, _ ->
+            if (failWrite) {
+                java.nio.file.Files.move(file.toPath(), backup.toPath())
+                file.mkdir()
+                file.resolve("blocker").writeText("block")
+            }
+            null
+        }).also { it.load(root.absolutePath, "ok_templates") }
+        val before = open.revision
+        val other = source(root, false)
+        assertTrue(other.saveAnnotationEdits(listOf(edit("b.png", "external"))))
+        assertFalse(open.saveAnnotationEdits(listOf(edit("a.png", "new"))))
+        assertEquals(before, open.revision)
+        assertTrue(file.resolve("blocker").delete())
+        assertTrue(file.delete())
+        java.nio.file.Files.move(backup.toPath(), file.toPath())
+        failWrite = false
+        assertTrue(open.saveAnnotationEdits(listOf(edit("a.png", "new"))))
+        val restored = source(root, false)
+        val b = restored.getImageEntryForFile("b.png")!!
+        assertEquals(1, restored.getAnnotationsForImage(b.id).size)
+        assertEquals("external", restored.categories().first { it.id == restored.getAnnotationsForImage(b.id).single().categoryId }.name)
+    }
+
     private fun source(root: File, boxes: Boolean = true): CocoAnnotationData =
         (if (boxes) newBoxAnnotationData() else CocoAnnotationData()).also { it.load(root.absolutePath, "ok_templates") }
 
