@@ -540,6 +540,24 @@ open class CocoAnnotationData(
         return readImageHeaderSize(file) ?: ((imgEntry?.width ?: 0) to (imgEntry?.height ?: 0))
     }
 
+    private fun reservedImageNames(directory: Path): Set<String> {
+        val names = mutableSetOf<String>()
+        for (source in setOf(fileName, "coco_annotations.json", "boxes.json")) {
+            runCatching {
+                val root = JSON.readTree(Files.readString(directory.resolve(source)))
+                for (image in root.path("images")) {
+                    for (key in listOf("file_name", "file")) {
+                        image.path(key).takeIf { it.isTextual }?.asText()?.let { names += cocoFilenameKey(it) }
+                    }
+                }
+                for (box in root.path("boxes")) {
+                    box.path("image").takeIf { it.isTextual }?.asText()?.let { names += cocoFilenameKey(it) }
+                }
+            }
+        }
+        return names
+    }
+
     /**
      * 下一个可用图片名：纯数字递增（对齐 VSCode 版 nextImageName），
      * 以 COCO 已有图片的基名为占位判断依据，模板名即数字序号。
@@ -547,6 +565,7 @@ open class CocoAnnotationData(
     fun nextImageName(): String {
         val existing = cocoData.images.mapTo(mutableSetOf()) { it.fileName.substringBeforeLast('.') }
         templateFolder?.toFile()?.listFiles()?.forEach { if (it.isFile) existing += it.nameWithoutExtension }
+        templateFolder?.let { existing.addAll(reservedImageNames(it)) }
         var i = 1
         while (i.toString() in existing) i++
         return i.toString()
@@ -571,10 +590,7 @@ open class CocoAnnotationData(
         val occupiedNames = targetDir.listFiles()?.mapTo(mutableSetOf()) { it.nameWithoutExtension } ?: mutableSetOf()
         occupiedNames.addAll(cocoData.images.map { it.fileName.substringBeforeLast('.') })
         // Read reservations from the target even when this service has not been loaded yet.
-        val registered = runCatching {
-            parseCoco(JSON.readTree(Files.readString(targetDir.toPath().resolve(fileName)))).images
-        }.getOrDefault(emptyList())
-        occupiedNames.addAll(registered.map { it.fileName.substringBeforeLast('.') })
+        occupiedNames.addAll(reservedImageNames(targetDir.toPath()))
         var count = 0
         for (sourceFile in sourceFiles) {
             try {

@@ -12,6 +12,28 @@ import kotlin.test.assertTrue
 
 class CocoAnnotationDataTest {
     @Test
+    fun `imports reserve missing images from both sources including legacy boxes`() {
+        val standard = """{"images":[{"id":1,"file_name":"1.png","width":100,"height":80}],"annotations":[],"categories":[]}"""
+        val legacyV1 = """{"version":1,"boxes":[{"path":"screen.old","image":"1.png","rect":[0,0,1,1]}]}"""
+        val legacyV2 = """{"version":2,"images":[{"file":"1.png","width":100,"height":80}],"boxes":[]}"""
+        for ((fileName, text) in listOf("coco_annotations.json" to standard, "boxes.json" to standard, "boxes.json" to legacyV1, "boxes.json" to legacyV2)) {
+            val root = TestTmp.create("ok-coco-import-both")
+            val directory = root.resolve("ok_templates").apply { mkdirs() }
+            val reserved = directory.resolve(fileName).apply { writeText(text) }
+            val incoming = root.resolve("incoming.png")
+            ImageIO.write(BufferedImage(100, 80, BufferedImage.TYPE_INT_RGB), "png", incoming)
+            val data = source(root, boxes = fileName == "coco_annotations.json")
+            val before = CocoAnnotationData.serializeCoco(data.data)
+            assertEquals("2", data.nextImageName())
+            assertEquals(1, data.importImages(listOf(incoming), directory))
+            assertTrue(directory.resolve("2.png").isFile)
+            assertFalse(directory.resolve("1.png").exists())
+            assertEquals(text, reserved.readText())
+            assertEquals(before, CocoAnnotationData.serializeCoco(data.data))
+        }
+    }
+
+    @Test
     fun `invalid template annotations remain visible but cannot be saved`() {
         val root = TestTmp.create("ok-coco-invalid-display")
         image(root, "a.png")
