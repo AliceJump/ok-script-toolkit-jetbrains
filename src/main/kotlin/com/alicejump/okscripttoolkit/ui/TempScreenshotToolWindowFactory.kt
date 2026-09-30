@@ -451,7 +451,7 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
         store.clear()
     }
 
-    /** 与卡片上的「发送到标注管理」菜单等价：把临时截图复制进 ok_templates 并登记 COCO */
+    /** 与卡片上的「发送到标注管理」菜单等价：把临时截图复制进模板目录（**不写 COCO**） */
     private fun handleSendToAssets(shot: TempShot) {
         val settings = OkScriptToolkitSettings.getInstance(project)
         val projectDir = project.basePath ?: return

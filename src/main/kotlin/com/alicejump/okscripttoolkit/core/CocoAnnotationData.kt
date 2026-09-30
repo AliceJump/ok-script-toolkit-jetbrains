@@ -380,24 +380,6 @@ open class CocoAnnotationData(
         return if (saveAnnotationEdits(edits)) SwapSaveResult.SAVED else SwapSaveResult.FAILED
     }
 
-    /** 截图登记一次性提交；补旧图片尺寸时保留原有 ID、分类和标注。 */
-    @Synchronized
-    fun registerImageAndSave(fileName: String, width: Int, height: Int): Boolean {
-        val updated = copyCoco()
-        val existing = updated.findImageByFileName(fileName)
-        if (existing == null) {
-            updated.addImage(fileName, width, height)
-        } else if (existing.width == 0 || existing.height == 0) {
-            val index = updated.images.indexOf(existing)
-            updated.images[index] = existing.copy(width = width, height = height)
-        } else {
-            return true
-        }
-        if (!writeCoco(updated)) return false
-        cocoData = updated
-        return true
-    }
-
     /** 临时文件与目标同目录，替换前的旧 COCO 始终保持完整。 */
     protected fun writeCoco(data: CocoData): Boolean {
         val target = cocoFile ?: return false
@@ -569,19 +551,23 @@ open class CocoAnnotationData(
     }
 
     /**
-     * 批量导入图片到 ok_templates（对齐 VSCode 版 handleImport）：
-     * 仅支持裁剪/打包管线的 PNG/JPEG/BMP，重命名为数字序号并注册进 COCO，
-     * 全部完成后一次性 save；返回成功导入的数量（失败的文件跳过）。
+     * 批量导入图片到模板目录（对齐 VSCode 版 handleImport）：
+     * 仅支持裁剪/打包管线的 PNG/JPEG/BMP，重命名为数字序号复制过去。
+     *
+     * **不写 `coco_annotations.json`**：导入只是把文件放进模板目录。图片条目由
+     * **标注保存流程**按需补登记（[saveAnnotationEdits]）—— 否则"导进来但一张框都没标"
+     * 的图会立刻在标注文件里占一条空记录。
+     * 返回成功导入的数量（失败的文件跳过）。
      */
     @Synchronized
     fun importImages(sourceFiles: List<File>, targetDir: File): Int {
         if (!targetDir.isDirectory && !targetDir.mkdirs()) return 0
 
         val extensions = setOf("png", "jpg", "jpeg", "bmp")
-        val updated = copyCoco()
-        val copied = mutableListOf<File>()
+        // 序号占位同时看磁盘与 COCO：COCO 里已登记、磁盘上暂时没有的序号也要避开，
+        // 否则新建的文件会与旧标注撞名（对齐 VSCode 版 nextImageName 的两处来源）。
         val occupiedNames = targetDir.listFiles()?.mapTo(mutableSetOf()) { it.nameWithoutExtension } ?: mutableSetOf()
-        occupiedNames.addAll(updated.images.map { it.fileName.substringBeforeLast('.') })
+        occupiedNames.addAll(cocoData.images.map { it.fileName.substringBeforeLast('.') })
         var count = 0
         for (sourceFile in sourceFiles) {
             try {
@@ -600,24 +586,12 @@ open class CocoAnnotationData(
                 } finally {
                     Files.deleteIfExists(staged)
                 }
-                copied.add(targetFile)
                 occupiedNames.add(next.toString())
-
-                val (w, h) = readImageHeaderSize(targetFile) ?: (0 to 0)
-                updated.addImage(targetName, w, h)
                 count++
             } catch (_: Exception) {
                 // 跳过失败的文件
             }
         }
-        if (count > 0 && !writeCoco(updated)) {
-            copied.forEach { file ->
-                runCatching { Files.deleteIfExists(file.toPath()) }
-                    .onFailure { LOG.warn("Failed to roll back imported image ${file.name}", it) }
-            }
-            return 0
-        }
-        if (count > 0) cocoData = updated
         return count
     }
 }

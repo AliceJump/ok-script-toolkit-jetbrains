@@ -371,40 +371,48 @@ class TemplateAssetDataServiceCocoTest {
         assertTrue(service.categories().isEmpty())
     }
 
+    /**
+     * 截图 / 导入 / 临时截图都**只把文件放进模板目录**，不写 `coco_annotations.json`：
+     * 图片条目由标注保存流程按需补登记。旧的 `registerImageAndSave` 已删除，
+     * 这里守住"导入这条路径不碰 COCO"。
+     */
     @Test
-    fun `screenshot dimension repair preserves image id and annotations`() {
-        val root = TestTmp.create("ok-coco-screenshot-repair")
+    fun `importing images copies files without touching coco`() {
+        val root = TestTmp.create("ok-coco-import-no-coco")
+        val source = root.resolve("source.png")
+        javax.imageio.ImageIO.write(java.awt.image.BufferedImage(3, 2,
+            java.awt.image.BufferedImage.TYPE_INT_RGB), "png", source)
+        val targetDir = root.resolve("ok_templates").apply { mkdirs() }
+        val coco = targetDir.resolve("coco_annotations.json")
+        // 已有登记过的 1.png（磁盘上没有）⇒ 新导入必须避开这个序号。
+        val before = """{"images":[{"id":1,"file_name":"1.png","width":10,"height":10}],"annotations":[],"categories":[]}"""
+        coco.writeText(before)
         val service = serviceAt(root)
-        val image = service.addImageEntry("shot.png", 0, 0)
-        val category = service.getOrCreateCategory("icon")
-        service.replaceAnnotationsForImage(image.id, listOf(category.id to intArrayOf(1, 2, 3, 4)))
-        assertTrue(service.save())
 
-        assertTrue(service.registerImageAndSave("shot.png", 120, 80))
-        val restored = serviceAt(root)
-        val repaired = assertNotNull(restored.getImageEntryForFile("shot.png"))
-        assertEquals(image.id, repaired.id)
-        assertEquals(120 to 80, repaired.width to repaired.height)
-        assertEquals(category.id, restored.getAnnotationsForImage(image.id).single().categoryId)
+        assertEquals(1, service.importImages(listOf(source), targetDir))
+        assertTrue(targetDir.resolve("2.png").isFile, "文件按下一个空序号落盘")
+        assertEquals(before, coco.readText(), "导入必须让 coco_annotations.json 逐字节不变")
+        assertEquals(null, service.getImageEntryForFile("2.png"), "导入的图片不进 COCO")
     }
 
     @Test
-    fun `failed import rolls back copied image and COCO state`() {
-        val root = TestTmp.create("ok-coco-import-failure")
+    fun `import copies the file even when the coco path is unwritable`() {
+        val root = TestTmp.create("ok-coco-import-coco-dir")
         val service = serviceAt(root)
         val source = root.resolve("source.png")
         javax.imageio.ImageIO.write(java.awt.image.BufferedImage(2, 2,
             java.awt.image.BufferedImage.TYPE_INT_RGB), "png", source)
         val targetDir = root.resolve("ok_templates").apply { mkdirs() }
+        // 标注文件不可写（被占成目录）不该影响导入 —— 导入本来就不碰 COCO。
         assertTrue(targetDir.resolve("coco_annotations.json").mkdir())
 
-        assertEquals(0, service.importImages(listOf(source), targetDir))
-        assertEquals(null, service.getImageEntryForFile("1.png"))
-        assertFalse(targetDir.resolve("1.png").exists())
+        assertEquals(1, service.importImages(listOf(source), targetDir))
+        assertTrue(targetDir.resolve("1.png").isFile)
+        assertTrue(targetDir.resolve("coco_annotations.json").isDirectory, "导入不去动那个占位的目录")
     }
 
     @Test
-    fun `successful import skips orphan filenames and persists image dimensions`() {
+    fun `successful import skips orphan filenames and leaves coco untouched`() {
         val root = TestTmp.create("ok-coco-import-success")
         val service = serviceAt(root)
         val source = root.resolve("source.png")
@@ -416,9 +424,29 @@ class TemplateAssetDataServiceCocoTest {
         assertEquals(1, service.importImages(listOf(source), targetDir))
         assertTrue(targetDir.resolve("2.png").isFile)
         val restored = serviceAt(root)
-        val image = assertNotNull(restored.getImageEntryForFile("2.png"))
+        assertEquals(null, restored.getImageEntryForFile("2.png"), "导入的图片不进 COCO")
+        assertFalse(targetDir.resolve("coco_annotations.json").exists(), "导入不该凭空造出标注文件")
+    }
+
+    /** 验收项「保存标注时补上缺失的图片条目」：导入后没登记的图，保存标注时才进 COCO。 */
+    @Test
+    fun `saving annotations registers an image that import left unregistered`() {
+        val root = TestTmp.create("ok-coco-import-then-annotate")
+        val service = serviceAt(root)
+        val source = root.resolve("source.png")
+        javax.imageio.ImageIO.write(java.awt.image.BufferedImage(3, 2,
+            java.awt.image.BufferedImage.TYPE_INT_RGB), "png", source)
+        val targetDir = root.resolve("ok_templates").apply { mkdirs() }
+        assertEquals(1, service.importImages(listOf(source), targetDir))
+        assertEquals(null, service.getImageEntryForFile("1.png"))
+
+        assertTrue(service.saveAnnotationEdits(listOf(
+            CocoAnnotationEdit("1.png", 3 to 2, listOf("icon" to intArrayOf(0, 0, 1, 1))),
+        )))
+        val restored = serviceAt(root)
+        val image = assertNotNull(restored.getImageEntryForFile("1.png"), "保存标注时补登记图片条目")
         assertEquals(3 to 2, image.width to image.height)
-        assertEquals(null, restored.getImageEntryForFile("1.png"))
+        assertEquals(1, restored.getAnnotationsForImage(image.id).size)
     }
 
     @Test
