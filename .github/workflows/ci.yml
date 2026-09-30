@@ -18,7 +18,7 @@ jobs:
         with:
           repository: AliceJump/ok-script-toolkit
           # Pin the exact shared core used by this plugin revision.
-          ref: 301885f426b57d5ce585b4da97f33680e39bac54
+          ref: 5afd04ef5a8e396f35b22f84da70d5ec3819fee2
           path: parent-source
       - uses: actions/setup-java@v5
         with:

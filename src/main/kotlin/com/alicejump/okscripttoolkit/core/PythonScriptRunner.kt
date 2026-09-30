@@ -143,6 +143,8 @@ object PythonScriptLocator {
         "parse_config_tasks.py",
         "probe_task_schemas.py",
         "run_executor.py",
+        "executor_runtime.py",
+        "executor_input.py",
         // run_executor.py 顶部 `from task_visibility import install_all_registered_tasks`
         // 从脚本同目录导入 —— 漏掉它执行器一启动就 ModuleNotFoundError 退出。
         "task_visibility.py",
