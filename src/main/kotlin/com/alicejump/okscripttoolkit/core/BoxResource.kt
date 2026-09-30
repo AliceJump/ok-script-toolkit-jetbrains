@@ -1,20 +1,9 @@
 package com.alicejump.okscripttoolkit.core
 
-import kotlin.math.roundToInt
 import java.nio.file.Path
-import java.nio.file.Paths
 
-/**
- * 框资源的纯数据契约。与 VS Code 侧 `src/boxResourcePure.ts` 一一对应。
- *
- * 标注资源是 `<模板目录>/boxes.json`（version 2，与模板标注同一套 Pixel 模型：
- * 每张被引用原图的 width/height + 整数 bbox `[x, y, w, h]`）。
- * normalized 只存在于运行时资源（version 1 不变）；Publish 是唯一的归一化入口。
- * 旧 normalized 格式不受支持：解析直接报 version 错误，不做迁移。
- * 设计见仓库根 `docs/box-resources.md`。
- */
+/** 框的名称规则、旧源文件导入和 normalized 运行时导出；源数据共用模板 COCO。 */
 object BoxResource {
-    const val AUTHORING_VERSION = 2
     const val RUNTIME_VERSION = 1
     const val RECT_DECIMALS = 6
     const val AUTHORING_FILE_NAME = "boxes.json"
@@ -43,7 +32,6 @@ object BoxResource {
     }
 
     data class AuthoringFile(
-        val version: Int = AUTHORING_VERSION,
         val images: List<AuthoringImage> = emptyList(),
         val boxes: List<AuthoringBox> = emptyList(),
     )
@@ -67,7 +55,7 @@ object BoxResource {
     data class PathStatus(val path: String, val status: PublishStatus)
 
     fun authoringFile(projectDir: String, templatesDir: String): Path =
-        Paths.get(projectDir, templatesDir, AUTHORING_FILE_NAME)
+        CocoAnnotationData.templateDir(projectDir, templatesDir).resolve(AUTHORING_FILE_NAME)
 
     /** 合法返回 null。否则返回稳定错误码。 */
     fun pathError(value: String): String? {
@@ -101,7 +89,7 @@ object BoxResource {
 
     /**
      * authoring 尺寸条目 → 可用尺寸。缺失条目、以及 `width/height` 为 0 的条目
-     * （`parseAuthoring` 对"引用了未登记图片"的占位）都算**不可用**。
+     * 都算**不可用**。
      *
      * 这是"登记尺寸能不能拿来当除数"的**唯一**判据：交换映射、UI 预检查、补登记
      * 三处都走它。各处各写一遍 `width > 0` 时，漏掉一处的表现是"store 肯换、
@@ -112,29 +100,9 @@ object BoxResource {
 
     /* ── Pixel bbox 校验：与模板 COCO 的 bbox 同一条线（整数、正宽高、落在图内）。── */
 
-    /** 非整数输入按四舍五入收进像素格（编辑器画布本来就只产生整数）。null 表示不是数字。 */
-    fun roundBbox(values: List<Double?>): IntArray? {
-        if (values.size != 4 || values.any { it == null || !it.isFinite() }) return null
-        return intArrayOf(
-            values[0]!!.roundToInt(),
-            values[1]!!.roundToInt(),
-            values[2]!!.roundToInt(),
-            values[3]!!.roundToInt(),
-        )
-    }
+    fun roundBbox(values: List<Double?>): IntArray? = AnnotationGeometry.roundBbox(values)
 
-    fun bboxError(bbox: IntArray, size: AnnotationSwap.Size?): String? {
-        if (bbox.size != 4 || bbox.any { !it.toFloat().isFinite() }) return "rect"
-        if (bbox[0] < 0 || bbox[1] < 0 || bbox[2] < 1 || bbox[3] < 1) return "rect"
-        if (size != null && AnnotationSwap.isUsable(size)) {
-            // 手改的 boxes.json 可能塞进 Int.MAX_VALUE：加法必须走 Long，否则回绕成
-            // 负数反而骗过边界检查
-            val right = bbox[0].toLong() + bbox[2].toLong()
-            val bottom = bbox[1].toLong() + bbox[3].toLong()
-            if (right > size.width || bottom > size.height) return "rect"
-        }
-        return null
-    }
+    fun bboxError(bbox: IntArray, size: AnnotationSwap.Size?): String? = AnnotationGeometry.bboxError(bbox, size)
 
     /** 同一张原图上的像素框取最小包围矩形。空列表返回 null。不做任何归一化。 */
     fun unionPixelBoxes(boxes: List<PixelBox>): PixelBox? {
@@ -152,8 +120,8 @@ object BoxResource {
         if (rect.size != 4 || width <= 0 || height <= 0) return null
         val x = Math.round(rect[0] * width).toInt()
         val y = Math.round(rect[1] * height).toInt()
-        val w = Math.round((rect[2] - rect[0]) * width).toInt()
-        val h = Math.round((rect[3] - rect[1]) * height).toInt()
+        val w = Math.round(rect[2] * width).toInt() - x
+        val h = Math.round(rect[3] * height).toInt() - y
         if (w <= 0 || h <= 0) return null
         return PixelBox(x, y, w, h)
     }
@@ -163,8 +131,8 @@ object BoxResource {
         return doubleArrayOf(
             box.x.toDouble() / width,
             box.y.toDouble() / height,
-            (box.x + box.w).toDouble() / width,
-            (box.y + box.h).toDouble() / height,
+            (box.x.toLong() + box.w).toDouble() / width,
+            (box.y.toLong() + box.h).toDouble() / height,
         )
     }
 
@@ -173,50 +141,6 @@ object BoxResource {
         if (rect.size != 4 || rect.any { !it.isFinite() }) return false
         if (rect[0] < 0 || rect[1] < 0 || rect[2] > 1 || rect[3] > 1) return false
         return rect[0] < rect[2] && rect[1] < rect[3]
-    }
-
-    /* ── Authoring 的内存编辑。全程 Pixel，不出现 normalized。── */
-
-    data class ReplacementBox(val path: String, val x: Int, val y: Int, val w: Int, val h: Int)
-
-    data class ImageReplacement(
-        val fileName: String,
-        val width: Int,
-        val height: Int,
-        val boxes: List<ReplacementBox>,
-    )
-
-    data class ReplaceResult(val file: AuthoringFile, val error: String?)
-
-    /**
-     * 在内存里依次替换多张图的框，并登记 / 刷新它们的图片尺寸。
-     * 任一图不合法就整批失败，调用方此时还不能写盘。
-     * 尺寸来源是本次编辑拿到的真实值（图片头），已有条目被直接刷新成这个值。
-     */
-    fun replaceAuthoringImages(existing: AuthoringFile, edits: List<ImageReplacement>): ReplaceResult {
-        var images = existing.images
-        var current = existing.boxes
-        for (edit in edits) {
-            val image = imageFileName(edit.fileName)
-            if (image.isEmpty() || edit.width <= 0 || edit.height <= 0) return ReplaceResult(existing, "image")
-            val kept = current.filter { !sameImageName(it.image, image) }
-            val taken = kept.map { it.path }.toMutableSet()
-            val next = ArrayList<AuthoringBox>(edit.boxes.size)
-            for (box in edit.boxes) {
-                val error = pathError(box.path)
-                if (error != null) return ReplaceResult(existing, error)
-                if (!taken.add(box.path)) return ReplaceResult(existing, "duplicate")
-                val bbox = intArrayOf(box.x, box.y, box.w, box.h)
-                if (bboxError(bbox, AnnotationSwap.Size(edit.width, edit.height)) != null) {
-                    return ReplaceResult(existing, "rect")
-                }
-                next += AuthoringBox(box.path, image, bbox)
-            }
-            val entry = AuthoringImage(image, edit.width, edit.height)
-            images = images.filterNot { sameImageName(it.file, image) } + entry
-            current = kept + next
-        }
-        return ReplaceResult(AuthoringFile(boxes = current, images = images), null)
     }
 
     /* ── Publish：Pixel → normalized 的唯一入口。── */
@@ -234,9 +158,12 @@ object BoxResource {
     fun publish(file: AuthoringFile): PublishResult {
         val boxes = mutableListOf<RuntimeBox>()
         val errors = mutableListOf<String>()
+        val seen = mutableSetOf<String>()
         for (box in file.boxes) {
+            val error = pathError(box.path)
+            if (error != null || !seen.add(box.path)) { errors += "path:${box.path}"; continue }
             val rect = publishedRect(box, file.images)
-            if (rect == null) {
+            if (rect == null || !isStorableRuntimeRect(rect)) {
                 errors += "size:${box.path}"
                 continue
             }
@@ -262,33 +189,6 @@ object BoxResource {
         return result
     }
 
-    /* ── 图片交换：尺寸不同时按比例映射（复用模板交换的 AnnotationSwap.scaleBox）。── */
-
-    data class SwapResult(val file: AuthoringFile, val error: String?)
-
-    fun swapImageBoxes(file: AuthoringFile, fileA: String, fileB: String): SwapResult {
-        val entryA = file.images.firstOrNull { sameImageName(it.file, fileA) }
-        val entryB = file.images.firstOrNull { sameImageName(it.file, fileB) }
-        val sizeA = usableImageSize(entryA)
-        val sizeB = usableImageSize(entryB)
-        if (sizeA == null || sizeB == null) return SwapResult(file, "size")
-
-        fun remap(box: AuthoringBox, target: String, from: AnnotationSwap.Size, to: AnnotationSwap.Size): AuthoringBox {
-            if (AnnotationSwap.isSameSize(from, to)) return AuthoringBox(box.path, target, box.bbox.copyOf())
-            val scaled = AnnotationSwap.scaleBox(box.bbox, from, to)
-            return AuthoringBox(box.path, target, scaled)
-        }
-
-        val next = file.boxes.map { box ->
-            when {
-                sameImageName(box.image, fileA) -> remap(box, imageFileName(fileB), sizeA, sizeB)
-                sameImageName(box.image, fileB) -> remap(box, imageFileName(fileA), sizeB, sizeA)
-                else -> box
-            }
-        }
-        return SwapResult(AuthoringFile(images = file.images, boxes = next), null)
-    }
-
     fun applyVisibility(ids: List<String>, hidden: Set<String>, action: String, target: String? = null): Set<String> {
         return when (action) {
             "showAll" -> emptySet()
@@ -307,91 +207,76 @@ object BoxResource {
 
     fun isVisible(id: String, hidden: Set<String>): Boolean = id !in hidden
 
-    /* ── 解析 / 序列化。Authoring 不再与 Runtime 共用 normalized 规则。── */
-
-    fun parseAuthoring(text: String): ParseResult<AuthoringFile> {
-        val root = runCatching { JSON.readTree(text) }.getOrNull()
-            ?: return ParseResult(AuthoringFile(), listOf("json"))
-        if (!root.isObject) return ParseResult(AuthoringFile(), listOf("root"))
-        // version 1（旧 normalized rect）不受支持：authoring 只有 Pixel 一种模型，不做迁移。
-        if (root.path("version").asInt(-1) != AUTHORING_VERSION) {
-            return ParseResult(AuthoringFile(), listOf("version"))
-        }
-        val errors = mutableListOf<String>()
-        val imagesNode = root.path("images")
-        if (!imagesNode.isArray) return ParseResult(AuthoringFile(), listOf("images"))
-        val images = mutableListOf<AuthoringImage>()
-        val byFile = mutableMapOf<String, AuthoringImage>()
-        imagesNode.forEachIndexed { index, entry ->
-            val file = entry.path("file").takeIf { it.isTextual }?.asText()?.let(::imageFileName).orEmpty()
-            val width = entry.path("width").takeIf { it.isNumber }?.asInt() ?: 0
-            val height = entry.path("height").takeIf { it.isNumber }?.asInt() ?: 0
-            if (file.isEmpty() || width <= 0 || height <= 0) {
-                errors += "images:$index"
-                return@forEachIndexed
-            }
-            if (byFile.containsKey(file.lowercase())) {
-                errors += "images:$index:duplicate"
-                return@forEachIndexed
-            }
-            val parsed = AuthoringImage(file, width, height)
-            byFile[file.lowercase()] = parsed
-            images += parsed
-        }
-        val boxesNode = root.path("boxes")
-        if (!boxesNode.isArray) {
-            errors += "boxes"
-            return ParseResult(AuthoringFile(images = images), errors)
-        }
-        val boxes = mutableListOf<AuthoringBox>()
-        val seen = mutableSetOf<String>()
-        boxesNode.forEachIndexed { index, entry ->
-            if (!entry.isObject) {
-                errors += "$index:entry"
-                return@forEachIndexed
-            }
-            val path = entry.path("path").takeIf { it.isTextual }?.asText()?.trim().orEmpty()
-            if (path.isEmpty() || pathError(path) != null) {
-                errors += "$index:path"
-                return@forEachIndexed
-            }
-            val image = entry.path("image").takeIf { it.isTextual }?.asText()?.let(::imageFileName).orEmpty()
-            val imageEntry = byFile[image.lowercase()]
-            if (imageEntry == null) {
-                errors += "$index:image"
-                return@forEachIndexed
-            }
-            // Jackson 的数值节点不实现 java.lang.Number，必须用 isNumber/asDouble 提取
-            val values = entry.path("bbox").takeIf { it.isArray }
-                ?.map { node -> node.takeIf { it.isNumber }?.asDouble() }
-            val bbox = values?.let { roundBbox(it) }
-            if (bbox == null || bboxError(bbox, AnnotationSwap.Size(imageEntry.width, imageEntry.height)) != null) {
-                errors += "$index:rect"
-                return@forEachIndexed
-            }
-            if (!seen.add(path)) {
-                errors += "$index:duplicate"
-                return@forEachIndexed
-            }
-            boxes += AuthoringBox(path, imageEntry.file, bbox)
-        }
-        return ParseResult(AuthoringFile(images = images.sortedBy { it.file }, boxes = boxes.sortedBy { it.path }), errors)
+    /** COCO 仅在发布和预览时投影成框条目，不参与源数据的编辑和序列化。 */
+    fun authoringFromCoco(data: CocoData): AuthoringFile {
+        val names = data.categories.associate { it.id to it.name }
+        val images = data.images.associateBy { it.id }
+        return AuthoringFile(
+            images = data.images.map { AuthoringImage(it.fileName, it.width, it.height) },
+            boxes = data.annotations.mapNotNull { annotation ->
+                val image = images[annotation.imageId] ?: return@mapNotNull null
+                val name = names[annotation.categoryId] ?: return@mapNotNull null
+                AuthoringBox(name, image.fileName, annotation.bbox.copyOf())
+            },
+        )
     }
 
-    fun serializeAuthoring(file: AuthoringFile): String {
-        val imageBody = file.images.sortedBy { it.file }.joinToString(",\n") {
-            "    { \"file\": ${jsonString(it.file)}, \"width\": ${it.width}, \"height\": ${it.height} }"
+    /** 两种旧源格式只做内存转换；首次保存由共用数据层备份原文并写 COCO。 */
+    fun parseBoxCoco(text: String, imageSize: (String) -> Pair<Int, Int>? = { null }): CocoReadResult {
+        val root = runCatching { JSON.readTree(text) }.getOrNull() ?: return CocoReadResult(errors = listOf("json"))
+        if (!root.isObject) return CocoReadResult(errors = listOf("root"))
+        if (root.has("annotations") || root.has("categories")) return parseCocoText(text)
+        val version = root.path("version").asInt(-1)
+        if (version !in listOf(1, 2)) return CocoReadResult(errors = listOf("version"))
+        val data = CocoData()
+        val errors = mutableListOf<String>()
+        if (version == 2) {
+            if (!root.path("images").isArray) return CocoReadResult(errors = listOf("images"))
+            for ((index, node) in root.path("images").withIndex()) {
+                val name = node.path("file").takeIf { it.isTextual }?.asText()?.let(::imageFileName).orEmpty()
+                val w = node.path("width").asInt()
+                val h = node.path("height").asInt()
+                if (name.isEmpty() || w <= 0 || h <= 0 || data.findImageByFileName(name) != null) errors += "images:$index"
+                else data.addImage(name, w, h)
+            }
         }
-        val boxBody = file.boxes.distinctBy { it.path }.sortedBy { it.path }.joinToString(",\n") { box ->
-            listOf(
-                """"path": ${jsonString(box.path)}""",
-                """"image": ${jsonString(box.image)}""",
-                """"bbox": [${box.bbox.joinToString(", ")}]""",
-            ).joinToString(",\n      ", prefix = "    {\n      ", postfix = "\n    }")
+        if (!root.path("boxes").isArray) return CocoReadResult(errors = listOf("boxes"))
+        val paths = mutableSetOf<String>()
+        for ((index, node) in root.path("boxes").withIndex()) {
+            val path = node.path("path").takeIf { it.isTextual }?.asText()?.trim().orEmpty()
+            val name = node.path("image").takeIf { it.isTextual }?.asText()?.let(::imageFileName).orEmpty()
+            val nameError = pathError(path)
+            if (nameError != null || !paths.add(path)) { errors += "$index:${nameError ?: "duplicate"}"; continue }
+            var image = data.findImageByFileName(name)
+            if (image == null && version == 1 && name.isNotBlank()) {
+                imageSize(name)?.takeIf { it.first > 0 && it.second > 0 }?.let { image = data.addImage(name, it.first, it.second) }
+            }
+            val entry = image
+            if (entry == null) { errors += "$index:image"; continue }
+            val bbox = if (version == 2) {
+                node.path("bbox").takeIf { it.isArray }?.map { it.takeIf { n -> n.isNumber }?.asDouble() }?.let(::roundBbox)
+            } else {
+                val rect = node.path("rect").takeIf { it.isArray && it.size() == 4 && it.all { n -> n.isNumber } }
+                    ?.map { it.asDouble() }?.toDoubleArray()
+                rect?.takeIf(::isStorableRuntimeRect)?.let { rectToPixel(it, entry.width, entry.height) }
+                    ?.let { intArrayOf(it.x, it.y, it.w, it.h) }
+            }
+            if (bbox == null || bboxError(bbox, AnnotationSwap.Size(entry.width, entry.height)) != null) { errors += "$index:rect"; continue }
+            data.addAnnotation(entry.id, data.getOrCreateCategory(path).id, bbox)
         }
-        val images = if (imageBody.isEmpty()) "[]" else "[\n$imageBody\n  ]"
-        val boxes = if (boxBody.isEmpty()) "[]" else "[\n$boxBody\n  ]"
-        return "{\n  \"version\": $AUTHORING_VERSION,\n  \"images\": $images,\n  \"boxes\": $boxes\n}\n"
+        if (errors.isNotEmpty()) return CocoReadResult(errors = errors)
+        return parseCocoText(CocoAnnotationData.serializeCoco(data).toString()).copy(legacy = true)
+    }
+
+    /** 名称是框入口唯一的编辑差异；整批排除待替换图片，再查全局唯一性。 */
+    fun boxNamesError(existing: CocoData, edits: List<CocoAnnotationEdit>): String? {
+        val replaced = edits.map { it.fileName.lowercase() }.toSet()
+        val names = authoringFromCoco(existing).boxes.filter { it.image.lowercase() !in replaced }.map { it.path }.toMutableSet()
+        for (edit in edits) for ((name, _) in edit.boxes) {
+            pathError(name)?.let { return it }
+            if (!names.add(name)) return "duplicate"
+        }
+        return null
     }
 
     fun serializeRuntime(file: RuntimeFile): String {
@@ -399,8 +284,8 @@ object BoxResource {
         val body = unique.joinToString(",\n") { box ->
             val rect = stableRect(box.rect)
             listOf(
-                """"path": ${jsonString(box.path)}""",
-                """"rect": [${rect.joinToString(", ") { formatNumber(it) }}]""",
+                "\"path\": ${jsonString(box.path)}",
+                "\"rect\": [${rect.joinToString(", ") { formatNumber(it) }}]",
             ).joinToString(",\n      ", prefix = "    {\n      ", postfix = "\n    }")
         }
         val array = if (body.isEmpty()) "[]" else "[\n$body\n  ]"

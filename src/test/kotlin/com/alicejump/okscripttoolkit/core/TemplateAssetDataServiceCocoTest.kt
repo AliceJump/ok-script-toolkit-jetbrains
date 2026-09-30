@@ -11,6 +11,41 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class TemplateAssetDataServiceCocoTest {
+    @Test
+    fun `first import reads target reservations without registering images`() {
+        val root = TestTmp.create("ok-coco-import-first")
+        val target = root.resolve("ok_templates").apply { mkdirs() }
+        val original = """{"images":[{"id":1,"file_name":"1.png","width":3,"height":2}],"categories":[{"id":1,"name":"old"}],"annotations":[{"id":1,"image_id":1,"category_id":1,"bbox":[0,0,1,1]}]}"""
+        val file = target.resolve("coco_annotations.json").apply { writeText(original) }
+        val source = root.resolve("source.png")
+        javax.imageio.ImageIO.write(java.awt.image.BufferedImage(3, 2, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", source)
+        val project = Proxy.newProxyInstance(Project::class.java.classLoader, arrayOf(Project::class.java)) { _, _, _ -> null } as Project
+        val service = TemplateAssetDataService(project)
+        val changed = mutableListOf<java.nio.file.Path>()
+        AnnotationDataChanges.subscribe { changed.add(it) }.use {
+            assertEquals(1, service.importImages(listOf(source), target))
+        }
+        assertTrue(target.resolve("2.png").isFile)
+        assertEquals(listOf(target.resolve("2.png").toPath()), changed)
+        assertEquals(original, file.readText())
+        service.load(root.absolutePath, "ok_templates")
+        assertTrue(service.listImages().single().annotations.isEmpty())
+    }
+
+    @Test
+    fun `invalid template source refuses export without changing existing assets`() {
+        val root = TestTmp.create("ok-coco-invalid-export")
+        val target = root.resolve("ok_templates").apply { mkdirs() }
+        target.resolve("coco_annotations.json").writeText("{" )
+        val service = serviceAt(root)
+        val assets = root.resolve("assets").apply { mkdirs() }
+        val existing = assets.resolve("coco_annotations.json").apply { writeText("existing") }
+        kotlin.test.assertFailsWith<IllegalStateException> {
+            service.saveToAssets(assets.absolutePath, false, null) { _, _ -> }
+        }
+        assertEquals("existing", existing.readText())
+    }
+
 
     private fun serviceAt(root: java.io.File): TemplateAssetDataService {
         val project = Proxy.newProxyInstance(
@@ -250,7 +285,7 @@ class TemplateAssetDataServiceCocoTest {
             CocoAnnotationEdit("target.png", null, listOf("mark" to intArrayOf(3, 3, 1, 1))),
         )))
         val afterInIdeEdit = cocoFile.readText()
-        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, service.saveSwapEdits(expected, sizes, edits))
+        assertEquals(CocoAnnotationData.SwapSaveResult.CHANGED, service.saveSwapEdits(expected, sizes, edits))
         assertEquals(afterInIdeEdit, cocoFile.readText())
 
         // The stale service still matches its own memory; only the external write on disk differs.
@@ -264,7 +299,7 @@ class TemplateAssetDataServiceCocoTest {
             CocoAnnotationEdit("target.png", null, emptyList()),
         )))
         val afterExternalEdit = cocoFile.readText()
-        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, stale.saveSwapEdits(staleExpected, sizes, edits))
+        assertEquals(CocoAnnotationData.SwapSaveResult.CHANGED, stale.saveSwapEdits(staleExpected, sizes, edits))
         assertEquals(afterExternalEdit, cocoFile.readText())
 
         val fresh = serviceAt(root)
@@ -276,7 +311,7 @@ class TemplateAssetDataServiceCocoTest {
             "source.png", AnnotationSwap.Size(10, 10), current.getValue("source.png"),
             "target.png", AnnotationSwap.Size(10, 10), emptyList(),
         )
-        assertEquals(TemplateAssetDataService.SwapSaveResult.SAVED, fresh.saveSwapEdits(current, sizes, freshEdits))
+        assertEquals(CocoAnnotationData.SwapSaveResult.SAVED, fresh.saveSwapEdits(current, sizes, freshEdits))
         val restored = serviceAt(root)
         assertTrue(restored.getAnnotationsForImage(source.id).isEmpty())
         assertEquals(listOf(9, 9, 1, 1), restored.getAnnotationsForImage(target.id).single().bbox.toList())
@@ -314,12 +349,12 @@ class TemplateAssetDataServiceCocoTest {
             CocoAnnotationEdit("third.png", null, listOf("mark" to intArrayOf(1, 1, 1, 1))),
         )))
         val afterThirdEdit = cocoFile.readText()
-        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, service.saveSwapEdits(expected, sizes, edits))
+        assertEquals(CocoAnnotationData.SwapSaveResult.CHANGED, service.saveSwapEdits(expected, sizes, edits))
         assertEquals(afterThirdEdit, cocoFile.readText())
 
         val deleted = serviceAt(root)
         assertTrue(cocoFile.delete())
-        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, deleted.saveSwapEdits(expected, sizes, edits))
+        assertEquals(CocoAnnotationData.SwapSaveResult.CHANGED, deleted.saveSwapEdits(expected, sizes, edits))
         assertFalse(cocoFile.exists(), "a deleted COCO file must not be recreated from stale memory")
 
         assertTrue(deleted.save())
@@ -328,13 +363,13 @@ class TemplateAssetDataServiceCocoTest {
         javax.imageio.ImageIO.write(java.awt.image.BufferedImage(4, 3, java.awt.image.BufferedImage.TYPE_INT_RGB), "png", target)
         assertEquals(4 to 3, replaced.swapImageSize(target), "the image header wins over stale COCO dimensions")
         val beforeReplace = cocoFile.readText()
-        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, replaced.saveSwapEdits(expected, sizes, edits))
+        assertEquals(CocoAnnotationData.SwapSaveResult.CHANGED, replaced.saveSwapEdits(expected, sizes, edits))
         assertEquals(beforeReplace, cocoFile.readText())
 
         // A deleted image must not pass by falling back to its COCO size.
         assertTrue(target.delete())
         assertEquals(10 to 10, replaced.swapImageSize(target))
-        assertEquals(TemplateAssetDataService.SwapSaveResult.CHANGED, replaced.saveSwapEdits(expected, sizes, edits))
+        assertEquals(CocoAnnotationData.SwapSaveResult.CHANGED, replaced.saveSwapEdits(expected, sizes, edits))
         assertEquals(beforeReplace, cocoFile.readText())
     }
 
@@ -371,40 +406,48 @@ class TemplateAssetDataServiceCocoTest {
         assertTrue(service.categories().isEmpty())
     }
 
+    /**
+     * 截图 / 导入 / 临时截图都**只把文件放进模板目录**，不写 `coco_annotations.json`：
+     * 图片条目由标注保存流程按需补登记。旧的 `registerImageAndSave` 已删除，
+     * 这里守住"导入这条路径不碰 COCO"。
+     */
     @Test
-    fun `screenshot dimension repair preserves image id and annotations`() {
-        val root = TestTmp.create("ok-coco-screenshot-repair")
+    fun `importing images copies files without touching coco`() {
+        val root = TestTmp.create("ok-coco-import-no-coco")
+        val source = root.resolve("source.png")
+        javax.imageio.ImageIO.write(java.awt.image.BufferedImage(3, 2,
+            java.awt.image.BufferedImage.TYPE_INT_RGB), "png", source)
+        val targetDir = root.resolve("ok_templates").apply { mkdirs() }
+        val coco = targetDir.resolve("coco_annotations.json")
+        // 已有登记过的 1.png（磁盘上没有）⇒ 新导入必须避开这个序号。
+        val before = """{"images":[{"id":1,"file_name":"1.png","width":10,"height":10}],"annotations":[],"categories":[]}"""
+        coco.writeText(before)
         val service = serviceAt(root)
-        val image = service.addImageEntry("shot.png", 0, 0)
-        val category = service.getOrCreateCategory("icon")
-        service.replaceAnnotationsForImage(image.id, listOf(category.id to intArrayOf(1, 2, 3, 4)))
-        assertTrue(service.save())
 
-        assertTrue(service.registerImageAndSave("shot.png", 120, 80))
-        val restored = serviceAt(root)
-        val repaired = assertNotNull(restored.getImageEntryForFile("shot.png"))
-        assertEquals(image.id, repaired.id)
-        assertEquals(120 to 80, repaired.width to repaired.height)
-        assertEquals(category.id, restored.getAnnotationsForImage(image.id).single().categoryId)
+        assertEquals(1, service.importImages(listOf(source), targetDir))
+        assertTrue(targetDir.resolve("2.png").isFile, "文件按下一个空序号落盘")
+        assertEquals(before, coco.readText(), "导入必须让 coco_annotations.json 逐字节不变")
+        assertEquals(null, service.getImageEntryForFile("2.png"), "导入的图片不进 COCO")
     }
 
     @Test
-    fun `failed import rolls back copied image and COCO state`() {
-        val root = TestTmp.create("ok-coco-import-failure")
+    fun `import copies the file even when the coco path is unwritable`() {
+        val root = TestTmp.create("ok-coco-import-coco-dir")
         val service = serviceAt(root)
         val source = root.resolve("source.png")
         javax.imageio.ImageIO.write(java.awt.image.BufferedImage(2, 2,
             java.awt.image.BufferedImage.TYPE_INT_RGB), "png", source)
         val targetDir = root.resolve("ok_templates").apply { mkdirs() }
+        // 标注文件不可写（被占成目录）不该影响导入 —— 导入本来就不碰 COCO。
         assertTrue(targetDir.resolve("coco_annotations.json").mkdir())
 
-        assertEquals(0, service.importImages(listOf(source), targetDir))
-        assertEquals(null, service.getImageEntryForFile("1.png"))
-        assertFalse(targetDir.resolve("1.png").exists())
+        assertEquals(1, service.importImages(listOf(source), targetDir))
+        assertTrue(targetDir.resolve("1.png").isFile)
+        assertTrue(targetDir.resolve("coco_annotations.json").isDirectory, "导入不去动那个占位的目录")
     }
 
     @Test
-    fun `successful import skips orphan filenames and persists image dimensions`() {
+    fun `successful import skips orphan filenames and leaves coco untouched`() {
         val root = TestTmp.create("ok-coco-import-success")
         val service = serviceAt(root)
         val source = root.resolve("source.png")
@@ -416,9 +459,29 @@ class TemplateAssetDataServiceCocoTest {
         assertEquals(1, service.importImages(listOf(source), targetDir))
         assertTrue(targetDir.resolve("2.png").isFile)
         val restored = serviceAt(root)
-        val image = assertNotNull(restored.getImageEntryForFile("2.png"))
+        assertEquals(null, restored.getImageEntryForFile("2.png"), "导入的图片不进 COCO")
+        assertFalse(targetDir.resolve("coco_annotations.json").exists(), "导入不该凭空造出标注文件")
+    }
+
+    /** 验收项「保存标注时补上缺失的图片条目」：导入后没登记的图，保存标注时才进 COCO。 */
+    @Test
+    fun `saving annotations registers an image that import left unregistered`() {
+        val root = TestTmp.create("ok-coco-import-then-annotate")
+        val service = serviceAt(root)
+        val source = root.resolve("source.png")
+        javax.imageio.ImageIO.write(java.awt.image.BufferedImage(3, 2,
+            java.awt.image.BufferedImage.TYPE_INT_RGB), "png", source)
+        val targetDir = root.resolve("ok_templates").apply { mkdirs() }
+        assertEquals(1, service.importImages(listOf(source), targetDir))
+        assertEquals(null, service.getImageEntryForFile("1.png"))
+
+        assertTrue(service.saveAnnotationEdits(listOf(
+            CocoAnnotationEdit("1.png", 3 to 2, listOf("icon" to intArrayOf(0, 0, 1, 1))),
+        )))
+        val restored = serviceAt(root)
+        val image = assertNotNull(restored.getImageEntryForFile("1.png"), "保存标注时补登记图片条目")
         assertEquals(3 to 2, image.width to image.height)
-        assertEquals(null, restored.getImageEntryForFile("1.png"))
+        assertEquals(1, restored.getAnnotationsForImage(image.id).size)
     }
 
     @Test

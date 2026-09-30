@@ -1,6 +1,7 @@
 package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
+import com.alicejump.okscripttoolkit.core.CocoAnnotationData
 import com.alicejump.okscripttoolkit.core.AnnotationSwap
 import com.alicejump.okscripttoolkit.core.LabelEnumGuard
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
@@ -129,7 +130,8 @@ class TemplateAssetPanel(
 ) : com.intellij.openapi.Disposable {
 
     val mainPanel: JPanel
-    private val data = project.service<TemplateAssetDataService>()
+    private val templateData = project.service<TemplateAssetDataService>()
+    private val data: CocoAnnotationData = if (editingBoxes) project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>().annotations else templateData
 
     private val searchField = JBTextField()
     /** 「硬前台」：本次截图强制把游戏窗口切到前台再截（会抢焦点），状态按项目持久化 */
@@ -172,7 +174,6 @@ class TemplateAssetPanel(
         val PANEL_KEY: com.intellij.openapi.util.Key<TemplateAssetPanel> =
             com.intellij.openapi.util.Key.create("okScriptToolkit.templateAssetPanel")
 
-        private val LOG = com.intellij.openapi.diagnostic.Logger.getInstance(TemplateAssetPanel::class.java)
         private const val THUMB_HEIGHT = ThumbGridPolicy.THUMB_HEIGHT
         private val DROP_HINT_COLOR = JBColor(0x0078D4, 0x4A9EFF)
     }
@@ -302,11 +303,7 @@ class TemplateAssetPanel(
         // 标注编辑器的 ←/→ 导航跟随当前过滤结果
         visibleImages = filtered
 
-        val boxCounts = if (editingBoxes) {
-            project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>().boxCounts()
-        } else {
-            emptyMap()
-        }
+        val boxCounts = if (editingBoxes) images.associate { it.file.name.lowercase() to it.annotations.size } else emptyMap()
         for (img in filtered) {
             gridPanel.add(createImageCard(img, boxCounts))
         }
@@ -316,7 +313,11 @@ class TemplateAssetPanel(
         }
 
         countLabel.text = OkScriptToolkitBundle.message("templateAsset.count", filtered.size)
-        statusLabel.text = OkScriptToolkitBundle.message("templateAsset.loaded", images.size)
+        statusLabel.text = if (data.readErrors.isNotEmpty()) {
+            OkScriptToolkitBundle.message("templateAsset.sourceInvalid")
+        } else {
+            OkScriptToolkitBundle.message("templateAsset.loaded", images.size)
+        }
         gridPanel.revalidate()
         gridPanel.repaint()
     }
@@ -442,11 +443,6 @@ class TemplateAssetPanel(
         if (!dialog.showAndGet()) return
         val target = dialog.selected ?: return
 
-        if (editingBoxes) {
-            swapBoxesWith(source, target)
-            return
-        }
-
         val sourceSize = resolveSize(source)
         val targetSize = resolveSize(target)
         if (sourceSize == null || targetSize == null) {
@@ -506,10 +502,10 @@ class TemplateAssetPanel(
         if (!swapGate.begin()) return
         CompletableFuture.supplyAsync { data.saveSwapEdits(expected, expectedSizes, edits) }.whenComplete { result, error ->
             SwingUtilities.invokeLater {
-                if (error == null && result == TemplateAssetDataService.SwapSaveResult.CHANGED) {
+                if (error == null && result == CocoAnnotationData.SwapSaveResult.CHANGED) {
                     notify(OkScriptToolkitBundle.message("templateAsset.swapChanged"), NotificationType.WARNING)
                     swapGate.waitForRefresh(loadData())
-                } else if (error != null || result != TemplateAssetDataService.SwapSaveResult.SAVED) {
+                } else if (error != null || result != CocoAnnotationData.SwapSaveResult.SAVED) {
                     swapGate.saveFailed()
                     notify(OkScriptToolkitBundle.message("templateAsset.swapFailed"), NotificationType.ERROR)
                     loadData()
@@ -530,6 +526,10 @@ class TemplateAssetPanel(
      */
     private fun publishBoxes() {
         val catalog = project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>()
+        if (catalog.authoringErrors().isEmpty() && catalog.readAuthoring().boxes.isEmpty()) {
+            notify(OkScriptToolkitBundle.message("box.publishEmpty"), NotificationType.INFORMATION)
+            return
+        }
         val dropped = catalog.runtimeOnlyPaths()
         if (dropped.isNotEmpty()) {
             val answer = Messages.showYesNoDialog(
@@ -559,58 +559,6 @@ class TemplateAssetPanel(
             )
         } else {
             notify(OkScriptToolkitBundle.message("annotation.saveFailed"), NotificationType.ERROR)
-        }
-    }
-
-    /**
-     * 框的图片交换。Pixel authoring 下坐标语义依赖图片尺寸：同尺寸只换所属图片，
-     * 尺寸不同按比例映射（复用模板交换的 AnnotationSwap.scaleBox，纯层完成），
-     * 所以确认框要像模板交换一样把"会缩放"说清楚；读不出尺寸直接拒绝。
-     */
-    private fun swapBoxesWith(source: TemplateImage, target: TemplateImage) {
-        val catalog = project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>()
-        val sourceBoxes = catalog.boxesForImage(source.file.name)
-        val targetBoxes = catalog.boxesForImage(target.file.name)
-        if (sourceBoxes.isEmpty() && targetBoxes.isEmpty()) {
-            notify(OkScriptToolkitBundle.message("templateAsset.swapNothing"), NotificationType.INFORMATION)
-            return
-        }
-        val sourceSize = catalog.imageSize(source.file.name)
-        val targetSize = catalog.imageSize(target.file.name)
-        if (sourceSize == null || targetSize == null) {
-            notify(OkScriptToolkitBundle.message("templateAsset.swapSizeUnknown"), NotificationType.ERROR)
-            return
-        }
-        val detail = buildString {
-            append(
-                OkScriptToolkitBundle.message(
-                    "templateAsset.swapCounts",
-                    source.name, sourceBoxes.size, target.name, targetBoxes.size,
-                ),
-            )
-            if (!AnnotationSwap.isSameSize(sourceSize, targetSize)) {
-                append('\n')
-                append(
-                    OkScriptToolkitBundle.message(
-                        "templateAsset.swapScaled",
-                        "${sourceSize.width}×${sourceSize.height}",
-                        "${targetSize.width}×${targetSize.height}",
-                    ),
-                )
-            }
-        }
-        val confirmed = Messages.showYesNoDialog(
-            project,
-            OkScriptToolkitBundle.message("templateAsset.swapQuestion", source.name, target.name) + "\n\n" + detail,
-            OkScriptToolkitBundle.message("templateAsset.swapTitle"),
-            Messages.getQuestionIcon(),
-        )
-        if (confirmed != Messages.YES) return
-        if (catalog.swapImages(source.file.name, target.file.name)) {
-            notify(OkScriptToolkitBundle.message("templateAsset.swapDone", source.name, target.name), NotificationType.INFORMATION)
-            loadData()
-        } else {
-            notify(OkScriptToolkitBundle.message("templateAsset.swapFailed"), NotificationType.ERROR)
         }
     }
 
@@ -677,7 +625,11 @@ class TemplateAssetPanel(
                         .removeImageForDeletion(
                             img.file.name,
                             { img.file.exists() },
-                            { data.deleteImage(img.file) },
+                            {
+                                val settings = OkScriptToolkitSettings.getInstance(project)
+                                templateData.load(ScreenshotCapture.detectProjectDir(project), settings.okTemplatesDirectory())
+                                templateData.deleteImage(img.file)
+                            },
                         )
                 }.whenComplete { result, error ->
                     SwingUtilities.invokeLater {
@@ -734,7 +686,7 @@ class TemplateAssetPanel(
      * 面板**外部**的截图入口（快捷键 Action 用）。
      *
      * 直接转发到面板自己的 [handleScreenshot] —— **不新增截图实现**，
-     * 否则两条路径的截图行为（落盘位置、COCO 登记）迟早漂移。
+     * 否则两条路径的截图行为（落盘位置、列表刷新）迟早漂移。
      * 与点工具栏那个截图按钮走的是同一段代码。
      *
      * 调用方需在 EDT 上（`AnAction.actionPerformed` 天然满足）。
@@ -745,7 +697,11 @@ class TemplateAssetPanel(
 
     /**
      * 截图采集（对齐 VSCode 版 handleScreenshot）：自动探测窗口配置，
-     * 失败回退手输标题正则；截图落盘 ok_templates 并自动注册进 COCO。
+     * 失败回退手输标题正则；截图落盘模板目录并刷新素材列表。
+     *
+     * **不写 COCO**：截图只把 PNG 放进模板目录。`coco_annotations.json` 的 images
+     * 由**标注保存流程**按需补登记（[CocoAnnotationData.saveAnnotationEdits]）——
+     * 否则每截一张图（哪怕根本没标框）都会往标注文件里塞一条空记录。
      *
      * 探测 / 回退输入 / 采集这一整段由 [ScreenshotCapture.captureInteractive]
      * 统一提供，与临时截图工具窗口共用同一套逻辑。
@@ -779,7 +735,12 @@ class TemplateAssetPanel(
                         statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotFailed", error ?: "")
                         notify(statusLabel.text, NotificationType.ERROR)
                     }
-                    error == null -> registerCapturedImage(outputPath)
+                    error == null -> {
+                        val text = OkScriptToolkitBundle.message("templateAsset.screenshotSaved", outputPath.fileName.toString())
+                        statusLabel.text = text
+                        notify(text, NotificationType.INFORMATION)
+                        loadData()
+                    }
                     error == ScreenshotCapture.CANCELLED -> statusLabel.text = " "
                     else -> {
                         statusLabel.text = OkScriptToolkitBundle.message("templateAsset.screenshotFailed", error)
@@ -787,37 +748,6 @@ class TemplateAssetPanel(
                     }
                 }
             }
-        }
-    }
-
-    /** 把刚落盘的截图登记进 COCO：已存在则补齐尺寸，不存在则新增条目 */
-    private fun registerCapturedImage(outputPath: Path) {
-        val file = outputPath.toFile()
-        try {
-            val settings = OkScriptToolkitSettings.getInstance(project)
-            val projectDir = ScreenshotCapture.detectProjectDir(project).ifBlank { project.basePath.orEmpty() }
-            projectDirectoryError(projectDir)?.let { error ->
-                statusLabel.text = error
-                notify(error, NotificationType.ERROR)
-                return
-            }
-            data.load(projectDir, settings.okTemplatesDirectory())
-            val (w, h) = data.readImageHeaderSize(file) ?: (0 to 0)
-            if (!data.registerImageAndSave(file.name, w, h)) {
-                val message = OkScriptToolkitBundle.message("templateAsset.cocoSaveFailed")
-                statusLabel.text = message
-                notify(message, NotificationType.ERROR)
-                return
-            }
-            val text = OkScriptToolkitBundle.message("templateAsset.screenshotSaved", file.name)
-            statusLabel.text = text
-            notify(text, NotificationType.INFORMATION)
-            loadData()
-        } catch (e: Exception) {
-            LOG.warn("Failed to register captured template image ${file.name}", e)
-            val message = OkScriptToolkitBundle.message("templateAsset.cocoSaveFailed")
-            statusLabel.text = message
-            notify(message, NotificationType.ERROR)
         }
     }
 
@@ -950,6 +880,10 @@ class TemplateAssetPanel(
      * 可选生成 LabelEnum.py，后台 bin-packing 合成 pages 并重写目标 COCO。
      */
     private fun handleSaveToAssets() {
+        if (data.readErrors.isNotEmpty()) {
+            notify(OkScriptToolkitBundle.message("templateAsset.sourceInvalid"), NotificationType.ERROR)
+            return
+        }
         val annotatedCount = images.count { it.annotations.isNotEmpty() }
         if (annotatedCount == 0) {
             notify(OkScriptToolkitBundle.message("templateAsset.exportNoAnnotations"), NotificationType.WARNING)
@@ -1152,7 +1086,7 @@ class TemplateAssetPanel(
                             projectDir,
                             OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory(),
                         )
-                        data.saveToAssets(targetFolder, generateEnum, enumAbsolutePath) { done, total ->
+                        templateData.saveToAssets(targetFolder, generateEnum, enumAbsolutePath) { done, total ->
                             indicator.checkCanceled()
                             indicator.fraction = if (total > 0) done.toDouble() / total else 0.0
                             indicator.text = OkScriptToolkitBundle.message(
