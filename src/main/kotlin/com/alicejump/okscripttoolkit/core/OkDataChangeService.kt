@@ -13,6 +13,10 @@ import com.intellij.util.ui.UIUtil
 import java.util.concurrent.atomic.AtomicLong
 import javax.swing.Timer
 
+internal fun isTemplateImageChange(path: java.nio.file.Path, directory: java.nio.file.Path): Boolean =
+    path.fileName.toString().substringAfterLast('.', "").lowercase() in setOf("png", "jpg", "jpeg", "bmp") &&
+        path.parent?.let { BoxRuntimePath.sameLocation(it, directory) } == true
+
 /** 数据文件变化回调：工具窗面板借此自动刷新（对应 VSCode 版的 FileSystemWatcher 派发） */
 fun interface OkDataChangeListener {
     fun dataChanged()
@@ -44,12 +48,20 @@ class OkDataChangeService(private val project: Project) : Disposable {
     private val debounceTimer = Timer(DEBOUNCE_MS) { fire() }
 
     private val connection = project.messageBus.connect(this)
+    private val annotationChanges = AnnotationDataChanges.subscribe { path ->
+        if (isRelevant(path.toString())) UIUtil.invokeLaterIfNeeded { schedule() }
+    }
 
     init {
         debounceTimer.isRepeats = false
         connection.subscribe(VirtualFileManager.VFS_CHANGES, object : BulkFileListener {
             override fun after(events: List<VFileEvent>) {
-                if (events.any { isRelevant(it.file?.path) }) schedule()
+                for (event in events) {
+                    if (isRelevant(event.path)) {
+                        AnnotationDataChanges.notify(java.nio.file.Paths.get(event.path))
+                        UIUtil.invokeLaterIfNeeded { schedule() }
+                    }
+                }
             }
         })
     }
@@ -85,6 +97,11 @@ class OkDataChangeService(private val project: Project) : Disposable {
         if (rel in dataService.cocoFeatureRelPaths()) return true
         if (rel in dataService.boxRuntimeRelPaths()) return true
         if (rel == exact(settings.okTemplatesDirectory() + "/boxes.json")) return true
+        if (rel == exact(settings.okTemplatesDirectory() + "/coco_annotations.json")) return true
+        val root = dataService.rootPath()
+        if (root != null && listOf("boxes.json", "coco_annotations.json").any { file ->
+                BoxRuntimePath.sameLocation(java.nio.file.Paths.get(normalized), root.resolve(settings.okTemplatesDirectory()).resolve(file))
+            }) return true
         // `config.py` 决定库放在哪：它一变就**重探**（路径可能整体换地方）。
         // 重探完成时会自己作废快照并广播，所以这里不必再走一轮防抖刷新。
         // （在谓词里做副作用不算优雅，但路径判定逻辑集中在这里，散出去更容易漂移。）
@@ -93,7 +110,8 @@ class OkDataChangeService(private val project: Project) : Disposable {
             return false
         }
         if (dirMatches("assets/images", ".png") || dirMatches("ok_tasks/assets/images", ".png")) return true
-        if (dirMatches(settings.okTemplatesDirectory(), ".png")) return true
+        val templatesPath = CocoAnnotationData.templateDir(root?.toString() ?: basePath, settings.okTemplatesDirectory())
+        if (isTemplateImageChange(java.nio.file.Paths.get(normalized), templatesPath)) return true
 
         val effectsFile = exact(settings.effectsFile())
         if (rel.equals(effectsFile, ignoreCase = isWindows())) return true
@@ -122,6 +140,7 @@ class OkDataChangeService(private val project: Project) : Disposable {
 
     override fun dispose() {
         debounceTimer.stop()
+        annotationChanges.close()
     }
 
     private fun isWindows(): Boolean = System.getProperty("os.name").lowercase().contains("win")
