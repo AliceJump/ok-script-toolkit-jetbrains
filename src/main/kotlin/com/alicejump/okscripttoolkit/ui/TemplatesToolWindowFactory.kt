@@ -1,24 +1,22 @@
 package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
-import com.alicejump.okscripttoolkit.core.AnnotatedImageCache
+import com.alicejump.okscripttoolkit.core.AnnotatedSourcePreview
+import com.alicejump.okscripttoolkit.core.HtmlResources
 import com.alicejump.okscripttoolkit.core.FeatureTemplate
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
-import com.alicejump.okscripttoolkit.core.TemplateThumbCache
 import com.alicejump.okscripttoolkit.core.TemplateThumbPipeline
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
-import com.intellij.openapi.fileEditor.FileEditorManager
-import com.intellij.openapi.fileEditor.FileEditorManagerEvent
-import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.DumbAware
@@ -26,7 +24,6 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
-import com.intellij.ui.JBColor
 import com.intellij.ui.SearchTextField
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
@@ -34,8 +31,6 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
 import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
-import java.awt.BasicStroke
-import java.awt.Color
 import java.awt.Container
 import java.awt.Cursor
 import java.awt.Dimension
@@ -47,15 +42,13 @@ import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
-import java.awt.image.BufferedImage
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
-import javax.imageio.ImageIO
 import javax.swing.Icon
 import javax.swing.JLabel
 import javax.swing.ImageIcon
 import javax.swing.JComponent
+import javax.swing.JButton
 import javax.swing.JMenuItem
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
@@ -79,13 +72,9 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
         private val LOG = Logger.getInstance(TemplateGalleryPanel::class.java)
         private const val THUMB_HEIGHT = ThumbGridPolicy.THUMB_HEIGHT
         private const val CARD_WIDTH = ThumbGridPolicy.CELL_WIDTH
-        private const val ANNOTATION_MARGIN = 200
     }
 
     private val data = project.service<OkProjectDataService>()
-    /** 缩略图磁盘缓存：命中时连原图都不用解码（见 `requestThumbs` 的懒解码） */
-    private val thumbCache = TemplateThumbCache.getInstance(project)
-    private val annotatedCache = AnnotatedImageCache(thumbCache.directory.toPath().resolve("annotated"))
     private var templates = emptyList<FeatureTemplate>()
     private val gridPanel = JBPanel<JBPanel<*>>(GridLayout(0, 5, ThumbGridPolicy.HGAP_VALUE, ThumbGridPolicy.HGAP_VALUE))
     private val gridWrap = JPanel(BorderLayout()).apply { isOpaque = false }
@@ -101,8 +90,7 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
     @Volatile
     private var disposed = false
 
-    /** 最近活动的 Python 编辑器（对齐 VSCode 版 lastPythonEditor：插入表达式优先落到最近编辑过的编辑器） */
-    private var lastPythonEditor: com.intellij.openapi.editor.Editor? = null
+    private val pythonEditor = PythonEditorTarget(project, this)
     // 缩略图异步加载完成后回填到已渲染的卡片图标
     private val pendingThumbLabels = ConcurrentHashMap<String, MutableList<JLabel>>()
     val component: JComponent
@@ -148,20 +136,6 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
             com.alicejump.okscripttoolkit.core.OkDataChangeListener { reload(true) },
         )
 
-        // 跟踪最近活动的 Python 编辑器（对齐 VSCode ensureEditorTracker）
-        lastPythonEditor = FileEditorManager.getInstance(project).selectedTextEditor
-            ?.takeIf { it.virtualFile?.extension?.lowercase() == "py" }
-        project.messageBus.connect(this).subscribe(
-            FileEditorManagerListener.FILE_EDITOR_MANAGER,
-            object : FileEditorManagerListener {
-                override fun selectionChanged(event: FileEditorManagerEvent) {
-                    val editor = FileEditorManager.getInstance(project).selectedTextEditor ?: return
-                    if (!editor.isDisposed && editor.virtualFile?.extension?.lowercase() == "py") {
-                        lastPythonEditor = editor
-                    }
-                }
-            },
-        )
     }
 
     private fun reload(force: Boolean) {
@@ -232,30 +206,36 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
         // 在这里逐个请求会让同一张原图被反复解码（实测最高 17 个模板共用一张图）。
         pendingThumbLabels.getOrPut(template.name) { java.util.Collections.synchronizedList(mutableListOf()) }.add(imageArea)
 
+        val preview = ThumbnailActions(imageArea,
+            JButton(OkScriptToolkitBundle.message("gallery.insert"), AllIcons.Actions.AddFile).apply {
+                addActionListener { insertExpression(template) }
+            },
+            JButton(OkScriptToolkitBundle.message("gallery.copy"), AllIcons.Actions.Copy).apply {
+                addActionListener { copyExpression(template) }
+            },
+            JButton(OkScriptToolkitBundle.message("gallery.open"), AllIcons.Actions.Preview).apply {
+                addActionListener { openAnnotatedSource(template) }
+            },
+        )
+
         val sizeText = "${template.width}×${template.height}"
         val nameLabel = JBLabel(
-            "<html><div style=\"text-align:center;width:${CARD_WIDTH - 20}px;\">" +
-                escapeHtml(template.name) +
-                "<span style=\"color:#8a8a8a\">&nbsp;$sizeText</span></div></html>",
+            HtmlResources.render("template-caption", mapOf(
+                "WIDTH" to (CARD_WIDTH - 20).toString(),
+                "NAME" to escapeHtml(template.name),
+                "SIZE" to sizeText,
+            )),
             SwingConstants.CENTER,
         )
         nameLabel.verticalAlignment = SwingConstants.TOP
         nameLabel.isOpaque = false
 
-        card.add(imageArea, BorderLayout.CENTER)
+        card.add(preview, BorderLayout.CENTER)
         card.add(nameLabel, BorderLayout.SOUTH)
         card.toolTipText = "${expression(template)}  ($sizeText)"
         card.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
 
-        card.addMouseListener(object : MouseAdapter() {
-            override fun mouseClicked(e: MouseEvent) {
-                if (e.isPopupTrigger || SwingUtilities.isRightMouseButton(e)) return
-                when {
-                    e.clickCount == 2 -> copyExpression(template)
-                    e.clickCount == 1 -> insertExpression(template)
-                }
-            }
-
+        val mouse = object : ThumbnailClicks(card, { insertExpression(template) }, { copyExpression(template) }) {
             override fun mousePressed(e: MouseEvent) {
                 if (e.isPopupTrigger) showCardMenu(e, template)
             }
@@ -263,7 +243,8 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
             override fun mouseReleased(e: MouseEvent) {
                 if (e.isPopupTrigger) showCardMenu(e, template)
             }
-        })
+        }
+        listOf(card, preview, imageArea, nameLabel).forEach { it.addMouseListener(mouse) }
         return card
     }
 
@@ -327,11 +308,7 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
 
     private fun insertExpression(template: FeatureTemplate) {
         val text = expression(template)
-        // 优先使用最近活动的 Python 编辑器，其次当前选中编辑器（对齐 VSCode insertIntoPythonEditor）
-        val editor = lastPythonEditor
-            ?.takeIf { !it.isDisposed && it.virtualFile?.extension?.lowercase() == "py" }
-            ?: FileEditorManager.getInstance(project).selectedTextEditor
-                ?.takeIf { it.virtualFile?.extension?.lowercase() == "py" }
+        val editor = pythonEditor.editor()
         if (editor == null) {
             CopyPasteManager.getInstance().setContents(StringSelection(text))
             notify(OkScriptToolkitBundle.message("gallery.noEditor"), NotificationType.WARNING)
@@ -360,7 +337,7 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
         CompletableFuture.supplyAsync {
             val (imagePath, bbox) = data.findOkTemplateCocoEntry(template.name)
                 ?: (template.imagePath to template.bbox)
-            renderAnnotatedImage(template.name, imagePath, bbox.toList())
+            AnnotatedSourcePreview.fileFor(project, imagePath, bbox)
         }.whenComplete { path, error ->
             if (error != null) LOG.warn("Failed to open annotated image for ${template.name}", error)
             SwingUtilities.invokeLater {
@@ -378,67 +355,6 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
     private fun openRawSource(template: FeatureTemplate) {
         val file = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(template.imagePath) ?: return
         OpenFileDescriptor(project, file).navigate(true)
-    }
-
-    private fun renderAnnotatedImage(
-        templateName: String,
-        imagePath: java.nio.file.Path,
-        bbox: List<Int>,
-    ): java.nio.file.Path? {
-        return try {
-            if (bbox.size != 4) return null
-            val bboxArray = bbox.toIntArray()
-            val contentHash = thumbCache.contentHash(imagePath) ?: return null
-            annotatedCache.cachedPath(contentHash, bboxArray)?.let { return it }
-            val file = imagePath.toFile()
-            if (!file.exists()) return null
-            val original = ImageIO.read(file) ?: return null
-            val (bx, by, bw, bh) = bbox
-            val margin = ANNOTATION_MARGIN
-            val x0 = (bx - margin).coerceAtLeast(0)
-            val y0 = (by - margin).coerceAtLeast(0)
-            val x1 = (bx + bw + margin).coerceAtMost(original.width)
-            val y1 = (by + bh + margin).coerceAtMost(original.height)
-            if (x1 - x0 <= 0 || y1 - y0 <= 0) return null
-            val cropW = x1 - x0
-            val cropH = y1 - y0
-            val crop = original.getSubimage(x0, y0, cropW, cropH)
-
-            // 归一化：缩放到目标分辨率内，保证不同原图输出视觉效果一致
-            val TARGET = 400
-            val scale = minOf(1.0, TARGET.toDouble() / maxOf(cropW, cropH))
-            val outW = (cropW * scale).toInt()
-            val outH = (cropH * scale).toInt()
-            val scaled = java.awt.image.BufferedImage(outW, outH, java.awt.image.BufferedImage.TYPE_INT_ARGB)
-            val g = scaled.createGraphics()
-            g.drawImage(crop, 0, 0, outW, outH, null)
-
-            // 在缩放后的图上画标注框
-            val stroke = maxOf(2, (2 * scale).toInt())
-            // 白色外圈 halo + 红色边框
-            g.stroke = java.awt.BasicStroke((stroke * 2).toFloat())
-            g.color = java.awt.Color.WHITE
-            g.drawRect(
-                ((bx - x0) * scale).toInt() - stroke,
-                ((by - y0) * scale).toInt() - stroke,
-                (bw * scale).toInt() + stroke * 2,
-                (bh * scale).toInt() + stroke * 2,
-            )
-            g.stroke = java.awt.BasicStroke(stroke.toFloat())
-            g.color = java.awt.Color(255, 40, 40)
-            g.drawRect(
-                ((bx - x0) * scale).toInt(),
-                ((by - y0) * scale).toInt(),
-                (bw * scale).toInt(),
-                (bh * scale).toInt(),
-            )
-            g.dispose()
-
-            annotatedCache.store(contentHash, bboxArray, scaled)
-        } catch (e: Exception) {
-            LOG.warn("Failed to render annotated image for $templateName", e)
-            null
-        }
     }
 
     private fun notify(content: String, type: NotificationType) {

@@ -7,6 +7,7 @@ import com.alicejump.okscripttoolkit.core.TempShotFiles
 import com.alicejump.okscripttoolkit.core.TempScreenshotStore
 import com.alicejump.okscripttoolkit.settings.GlobalPrefs
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
+import com.intellij.icons.AllIcons
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
@@ -251,9 +252,7 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
             BorderFactory.createLineBorder(JBColor.border()),
             BorderFactory.createEmptyBorder(2, 2, 2, 2),
         )
-        card.toolTipText = "${shot.name}<br>${msg("tempShots.dragHint")}".let {
-            "<html>$it</html>"
-        }
+        card.toolTipText = shot.name + " — " + msg("tempShots.dragHint")
 
         val preview = previews[shot.id]
         val iconLabel = JBLabel()
@@ -264,16 +263,24 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
             val w = (preview.width * scale).toInt().coerceAtLeast(1)
             iconLabel.icon = ImageIcon(preview.getScaledInstance(w, THUMB_HEIGHT, Image.SCALE_SMOOTH))
         }
-        card.add(iconLabel, BorderLayout.CENTER)
+        val thumbnail = ThumbnailActions(iconLabel,
+            JButton(msg("tempShots.send"), AllIcons.Actions.AddFile).apply {
+                addActionListener { handleSendToAssets(shot) }
+            },
+            JButton(msg("tempShots.delete"), AllIcons.Actions.GC).apply {
+                addActionListener { store.remove(shot.id) }
+            },
+        )
+        card.add(thumbnail, BorderLayout.CENTER)
 
         val nameLabel = JBLabel(shot.name)
         nameLabel.horizontalAlignment = SwingConstants.CENTER
         nameLabel.font = nameLabel.font.deriveFont(9f)
         card.add(nameLabel, BorderLayout.SOUTH)
 
-        card.addMouseListener(object : MouseAdapter() {
+        val mouse = object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
-                if (e.clickCount == 1) {
+                if (SwingUtilities.isLeftMouseButton(e) && e.clickCount == 1) {
                     setCarousel(false)
                     stage.showIndex(index)
                 }
@@ -284,33 +291,41 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
             override fun mouseReleased(e: MouseEvent) {
                 if (e.isPopupTrigger) showCardMenu(e, shot)
             }
-        })
-        installDragSource(card, shot)
+        }
+        listOf(card, thumbnail, iconLabel, nameLabel).forEach { component ->
+            component.toolTipText = card.toolTipText
+            component.addMouseListener(mouse)
+        }
+        installDragSource(card, shot, listOf(thumbnail, iconLabel, nameLabel))
         return card
     }
 
     /** 拖拽源：把临时截图文件传给「ok-script Assets」工具窗口 */
-    private fun installDragSource(card: JPanel, shot: TempShot) {
+    private fun installDragSource(card: JPanel, shot: TempShot, surfaces: List<JComponent>) {
         card.transferHandler = object : TransferHandler() {
             override fun getSourceActions(c: JComponent?): Int = COPY
             override fun createTransferable(c: JComponent?): Transferable = TempShotTransferable(shot.file)
         }
         var armed = false
-        card.addMouseListener(object : MouseAdapter() {
+        val dragMouse = object : MouseAdapter() {
             override fun mousePressed(e: MouseEvent) {
                 armed = SwingUtilities.isLeftMouseButton(e)
             }
             override fun mouseReleased(e: MouseEvent) {
                 armed = false
             }
-        })
-        card.addMouseMotionListener(object : java.awt.event.MouseMotionAdapter() {
+        }
+        val dragMotion = object : java.awt.event.MouseMotionAdapter() {
             override fun mouseDragged(e: MouseEvent) {
                 if (!armed) return
                 armed = false
                 card.transferHandler?.exportAsDrag(card, e, TransferHandler.COPY)
             }
-        })
+        }
+        (listOf(card) + surfaces).forEach {
+            it.addMouseListener(dragMouse)
+            it.addMouseMotionListener(dragMotion)
+        }
     }
 
     private fun showCardMenu(e: MouseEvent, shot: TempShot) {

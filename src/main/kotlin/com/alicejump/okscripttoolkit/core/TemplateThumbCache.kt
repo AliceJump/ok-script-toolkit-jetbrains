@@ -65,6 +65,7 @@ class TemplateThumbCache(private val project: Project) {
     private val hashes = ConcurrentHashMap<String, ContentHash>()
 
     val directory: File = directoryFor(project)
+    internal val annotatedImages by lazy { AnnotatedImageCache(directory.toPath().resolve("annotated")) }
 
     init {
         try {

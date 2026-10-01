@@ -36,17 +36,28 @@ object TemplateThumbPipeline {
         project: com.intellij.openapi.project.Project,
         requests: List<Request<K>>,
         targetHeight: Int,
+        annotatedSource: Boolean = false,
         onThumb: (K, ImageIcon?) -> Unit,
     ) {
         if (requests.isEmpty()) return
         val cache = TemplateThumbCache.getInstance(project)
         for (group in TemplateThumbBatch.groupByImage(requests) { it.imagePath }) {
             thumbExecutor.submit {
+                if (project.isDisposed) return@submit
                 // 内容 hash 既做缓存键，也决定"能不能用缓存"：取不到就退回当场解码、不写缓存
                 val contentHash = cache.contentHash(group.imagePath)
                 // 懒解码：这一组全都命中磁盘缓存时，连原图都不用解
                 var original: BufferedImage? = null
                 val results = group.items.map { request ->
+                    if (annotatedSource) {
+                        val file = AnnotatedSourcePreview.fileFor(project, request.imagePath, request.bbox) {
+                            if (original == null) original = decode(group.imagePath)
+                            original
+                        }
+                        val image = file?.let { decode(it) }
+                        val thumb = image?.let { cropToThumb(it, intArrayOf(0, 0, it.width, it.height), targetHeight, 240) }
+                        return@map request.key to thumb?.let { ImageIcon(it) }
+                    }
                     val cached = contentHash?.let { cache.load(it, request.bbox, targetHeight) }
                     if (cached != null) return@map request.key to ImageIcon(cached)
                     if (original == null) original = decode(group.imagePath)
@@ -57,7 +68,7 @@ object TemplateThumbPipeline {
                     request.key to thumb?.let { ImageIcon(it) }
                 }
                 SwingUtilities.invokeLater {
-                    results.forEach { (key, icon) -> onThumb(key, icon) }
+                    if (!project.isDisposed) results.forEach { (key, icon) -> onThumb(key, icon) }
                 }
             }
         }
