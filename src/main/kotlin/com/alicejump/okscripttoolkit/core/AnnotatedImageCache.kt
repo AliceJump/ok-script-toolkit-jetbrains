@@ -18,7 +18,7 @@ internal class AnnotatedImageCache(private val directory: Path) {
 
         /** Hashing the key also keeps untrusted template names and path separators out of file names. */
         fun fileNameOf(contentHash: String, bbox: IntArray): String {
-            val input = "v2|$contentHash|${bbox.joinToString(",")}".toByteArray(Charsets.UTF_8)
+            val input = "v3|$contentHash|${bbox.joinToString(",")}".toByteArray(Charsets.UTF_8)
             val digest = MessageDigest.getInstance("SHA-1").digest(input)
                 .joinToString("") { "%02x".format(it) }
                 .take(16)

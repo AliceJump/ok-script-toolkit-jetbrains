@@ -1,11 +1,10 @@
 package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
-import com.alicejump.okscripttoolkit.core.AnnotatedImageCache
+import com.alicejump.okscripttoolkit.core.AnnotatedSourcePreview
 import com.alicejump.okscripttoolkit.core.FeatureTemplate
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
-import com.alicejump.okscripttoolkit.core.TemplateThumbCache
 import com.alicejump.okscripttoolkit.core.TemplateThumbPipeline
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.notification.NotificationGroupManager
@@ -26,7 +25,6 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
-import com.intellij.ui.JBColor
 import com.intellij.ui.SearchTextField
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBPanel
@@ -34,8 +32,6 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
 import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
-import java.awt.BasicStroke
-import java.awt.Color
 import java.awt.Container
 import java.awt.Cursor
 import java.awt.Dimension
@@ -47,11 +43,8 @@ import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
-import java.awt.image.BufferedImage
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
-import javax.imageio.ImageIO
 import javax.swing.Icon
 import javax.swing.JLabel
 import javax.swing.ImageIcon
@@ -79,13 +72,9 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
         private val LOG = Logger.getInstance(TemplateGalleryPanel::class.java)
         private const val THUMB_HEIGHT = ThumbGridPolicy.THUMB_HEIGHT
         private const val CARD_WIDTH = ThumbGridPolicy.CELL_WIDTH
-        private const val ANNOTATION_MARGIN = 200
     }
 
     private val data = project.service<OkProjectDataService>()
-    /** 缩略图磁盘缓存：命中时连原图都不用解码（见 `requestThumbs` 的懒解码） */
-    private val thumbCache = TemplateThumbCache.getInstance(project)
-    private val annotatedCache = AnnotatedImageCache(thumbCache.directory.toPath().resolve("annotated"))
     private var templates = emptyList<FeatureTemplate>()
     private val gridPanel = JBPanel<JBPanel<*>>(GridLayout(0, 5, ThumbGridPolicy.HGAP_VALUE, ThumbGridPolicy.HGAP_VALUE))
     private val gridWrap = JPanel(BorderLayout()).apply { isOpaque = false }
@@ -360,7 +349,7 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
         CompletableFuture.supplyAsync {
             val (imagePath, bbox) = data.findOkTemplateCocoEntry(template.name)
                 ?: (template.imagePath to template.bbox)
-            renderAnnotatedImage(template.name, imagePath, bbox.toList())
+            AnnotatedSourcePreview.fileFor(project, imagePath, bbox)
         }.whenComplete { path, error ->
             if (error != null) LOG.warn("Failed to open annotated image for ${template.name}", error)
             SwingUtilities.invokeLater {
@@ -378,67 +367,6 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
     private fun openRawSource(template: FeatureTemplate) {
         val file = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(template.imagePath) ?: return
         OpenFileDescriptor(project, file).navigate(true)
-    }
-
-    private fun renderAnnotatedImage(
-        templateName: String,
-        imagePath: java.nio.file.Path,
-        bbox: List<Int>,
-    ): java.nio.file.Path? {
-        return try {
-            if (bbox.size != 4) return null
-            val bboxArray = bbox.toIntArray()
-            val contentHash = thumbCache.contentHash(imagePath) ?: return null
-            annotatedCache.cachedPath(contentHash, bboxArray)?.let { return it }
-            val file = imagePath.toFile()
-            if (!file.exists()) return null
-            val original = ImageIO.read(file) ?: return null
-            val (bx, by, bw, bh) = bbox
-            val margin = ANNOTATION_MARGIN
-            val x0 = (bx - margin).coerceAtLeast(0)
-            val y0 = (by - margin).coerceAtLeast(0)
-            val x1 = (bx + bw + margin).coerceAtMost(original.width)
-            val y1 = (by + bh + margin).coerceAtMost(original.height)
-            if (x1 - x0 <= 0 || y1 - y0 <= 0) return null
-            val cropW = x1 - x0
-            val cropH = y1 - y0
-            val crop = original.getSubimage(x0, y0, cropW, cropH)
-
-            // 归一化：缩放到目标分辨率内，保证不同原图输出视觉效果一致
-            val TARGET = 400
-            val scale = minOf(1.0, TARGET.toDouble() / maxOf(cropW, cropH))
-            val outW = (cropW * scale).toInt()
-            val outH = (cropH * scale).toInt()
-            val scaled = java.awt.image.BufferedImage(outW, outH, java.awt.image.BufferedImage.TYPE_INT_ARGB)
-            val g = scaled.createGraphics()
-            g.drawImage(crop, 0, 0, outW, outH, null)
-
-            // 在缩放后的图上画标注框
-            val stroke = maxOf(2, (2 * scale).toInt())
-            // 白色外圈 halo + 红色边框
-            g.stroke = java.awt.BasicStroke((stroke * 2).toFloat())
-            g.color = java.awt.Color.WHITE
-            g.drawRect(
-                ((bx - x0) * scale).toInt() - stroke,
-                ((by - y0) * scale).toInt() - stroke,
-                (bw * scale).toInt() + stroke * 2,
-                (bh * scale).toInt() + stroke * 2,
-            )
-            g.stroke = java.awt.BasicStroke(stroke.toFloat())
-            g.color = java.awt.Color(255, 40, 40)
-            g.drawRect(
-                ((bx - x0) * scale).toInt(),
-                ((by - y0) * scale).toInt(),
-                (bw * scale).toInt(),
-                (bh * scale).toInt(),
-            )
-            g.dispose()
-
-            annotatedCache.store(contentHash, bboxArray, scaled)
-        } catch (e: Exception) {
-            LOG.warn("Failed to render annotated image for $templateName", e)
-            null
-        }
     }
 
     private fun notify(content: String, type: NotificationType) {

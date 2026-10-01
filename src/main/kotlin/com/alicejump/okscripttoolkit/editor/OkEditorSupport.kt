@@ -2,7 +2,8 @@ package com.alicejump.okscripttoolkit.editor
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.BoxCatalogService
-import com.alicejump.okscripttoolkit.core.BoxResource
+import com.alicejump.okscripttoolkit.core.AnnotatedSourcePreview
+import com.alicejump.okscripttoolkit.core.HtmlResources
 import com.alicejump.okscripttoolkit.core.EffectEntry
 import com.alicejump.okscripttoolkit.core.FeatureTemplate
 import com.alicejump.okscripttoolkit.core.LangEntry
@@ -349,54 +350,22 @@ object OkEditorSupport {
         } else {
             null
         }
-        // authoring 里已是 Pixel bbox，直接用；运行时独有的 path 才退回 normalized → Pixel
-        // （Runtime Preview 转换层的合法用途）。
-        val pixel = when {
-            authoring != null -> BoxResource.PixelBox(authoring.bbox[0], authoring.bbox[1], authoring.bbox[2], authoring.bbox[3])
-            imagePath != null -> {
-                val file = imagePath.toFile()
-                val image = if (file.exists()) runCatching { ImageIO.read(file) }.getOrNull() else null
-                if (image != null) BoxResource.rectToPixel(runtime.rect, image.width, image.height) else null
+        val preview = if (imagePath != null && authoring != null) {
+            AnnotatedSourcePreview.fileFor(project, imagePath, authoring.bbox)?.let {
+                runCatching { Base64.getEncoder().encodeToString(java.nio.file.Files.readAllBytes(it)) }.getOrNull()
             }
-            else -> null
-        }
-        val thumb = if (imagePath != null && pixel != null) {
-            cropBox(imagePath, intArrayOf(pixel.x, pixel.y, pixel.w, pixel.h))
-        } else {
-            null
-        }
-        val rect = runtime.rect.joinToString(", ") { "%.6f".format(it) }
-        return "<div class='definition'><code>self.pos.${html(path)}.to_box()</code></div>" +
-            "<div class='content'>" +
-            (if (thumb != null) "<p><img src='data:image/png;base64,$thumb' width='120'/></p>" else "") +
-            "<p><b>rect:</b> <code>$rect</code></p>" +
-            (if (imagePath != null) "<p><b>Source:</b> <code>${html(imagePath.toString())}</code></p>" else "") +
-            "</div>"
-    }
-
-    private fun cropBox(imagePath: java.nio.file.Path, bbox: IntArray): String? {
-        return try {
-            val file = imagePath.toFile()
-            if (!file.exists() || bbox.size < 4) return null
-            val original = ImageIO.read(file) ?: return null
-            val x = bbox[0].coerceIn(0, original.width - 1)
-            val y = bbox[1].coerceIn(0, original.height - 1)
-            val w = bbox[2].coerceAtMost(original.width - x)
-            val h = bbox[3].coerceAtMost(original.height - y)
-            if (w <= 0 || h <= 0) return null
-            val crop = original.getSubimage(x, y, w, h)
-            val targetH = 96
-            val targetW = (w * targetH.toDouble() / h).toInt().coerceIn(1, 240)
-            val thumb = BufferedImage(targetW, targetH, BufferedImage.TYPE_INT_ARGB)
-            val g = thumb.createGraphics()
-            g.drawImage(crop, 0, 0, targetW, targetH, null)
-            g.dispose()
-            val baos = ByteArrayOutputStream()
-            ImageIO.write(thumb, "png", baos)
-            Base64.getEncoder().encodeToString(baos.toByteArray())
-        } catch (_: Exception) {
-            null
-        }
+        } else null
+        return HtmlResources.render("box-documentation", mapOf(
+            "PATH" to html(path),
+            "RECT" to runtime.rect.joinToString(", ") { "%.6f".format(it) },
+            "PREVIEW" to (preview?.let { HtmlResources.render("box-preview", mapOf("IMAGE" to it)) } ?: ""),
+            "SOURCE" to (imagePath?.let {
+                HtmlResources.render("documentation-source", mapOf(
+                    "LABEL" to html(OkScriptToolkitBundle.message("documentation.source")),
+                    "SOURCE_PATH" to html(it.toString()),
+                ))
+            } ?: ""),
+        ))
     }
 
     private fun html(value: String): String = StringUtil.escapeXmlEntities(value)
