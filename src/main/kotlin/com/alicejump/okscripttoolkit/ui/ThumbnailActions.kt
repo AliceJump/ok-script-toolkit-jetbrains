@@ -4,6 +4,7 @@ import com.intellij.util.ui.JBUI
 import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
+import java.awt.Toolkit
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.JButton
@@ -58,13 +59,18 @@ internal class ThumbnailActions(preview: JComponent, vararg buttons: JButton) : 
 
 /** A double click copies without first inserting; direct buttons cancel pending clicks. */
 internal open class ThumbnailClicks(card: JComponent, onSingle: () -> Unit, private val onDouble: () -> Unit) : MouseAdapter() {
-    private val timer = Timer(500) { if (card.isShowing) onSingle() }.apply { isRepeats = false }
+    private val timer = Timer(thumbnailClickDelay(Toolkit.getDefaultToolkit().getDesktopProperty("awt.multiClickInterval"))) {
+        if (card.isShowing) onSingle()
+    }.apply { isRepeats = false }
 
     init { card.putClientProperty(CLICK_TIMER, timer) }
 
     override fun mouseClicked(e: MouseEvent) {
         if (!SwingUtilities.isLeftMouseButton(e)) return
+        timer.initialDelay = thumbnailClickDelay(Toolkit.getDefaultToolkit().getDesktopProperty("awt.multiClickInterval"))
         timer.stop()
         if (e.clickCount >= 2) onDouble() else timer.restart()
     }
 }
+
+internal fun thumbnailClickDelay(value: Any?): Int = (value as? Int)?.takeIf { it > 0 } ?: 500
