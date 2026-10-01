@@ -14,7 +14,6 @@ import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.components.service
-import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.ide.CopyPasteManager
@@ -27,8 +26,6 @@ import com.intellij.ui.components.JBScrollPane
 import com.intellij.util.ui.JBUI
 import java.awt.BorderLayout
 import java.awt.datatransfer.StringSelection
-import java.awt.event.MouseAdapter
-import java.awt.event.MouseEvent
 import java.util.concurrent.ConcurrentHashMap
 import javax.swing.JPanel
 import javax.swing.JButton
@@ -66,6 +63,7 @@ private class BoxGalleryPanel(private val project: Project) : JPanel(BorderLayou
     private val thumbs = ConcurrentHashMap<String, JBLabel>()
     private var generation = 0
     private var disposed = false
+    private val pythonEditor = PythonEditorTarget(project, this)
 
     init {
         grid.border = JBUI.Borders.empty(8)
@@ -133,13 +131,10 @@ private class BoxGalleryPanel(private val project: Project) : JPanel(BorderLayou
             add(preview, BorderLayout.CENTER)
             add(name, BorderLayout.SOUTH)
         }
-        val mouse = object : MouseAdapter() {
-            override fun mouseClicked(e: MouseEvent) {
-                if (!SwingUtilities.isLeftMouseButton(e)) return
-                if (e.clickCount >= 2) CopyPasteManager.getInstance().setContents(StringSelection("self.pos." + item.path))
-                else insert("self.pos." + item.path + ".to_box()")
-            }
-        }
+        val mouse = ThumbnailClicks(card,
+            { insert("self.pos." + item.path + ".to_box()") },
+            { CopyPasteManager.getInstance().setContents(StringSelection("self.pos." + item.path)) },
+        )
         listOf(card, preview, image, name).forEach {
             it.toolTipText = "self.pos." + item.path + ".to_box()"
             it.addMouseListener(mouse)
@@ -161,16 +156,16 @@ private class BoxGalleryPanel(private val project: Project) : JPanel(BorderLayou
     }
 
     private fun insert(text: String) {
-        val editor = FileEditorManager.getInstance(project).selectedTextEditor
-            ?.takeIf { it.virtualFile?.extension?.equals("py", true) == true }
+        val editor = pythonEditor.editor()
         if (editor == null) {
             CopyPasteManager.getInstance().setContents(StringSelection(text))
             return
         }
         WriteCommandAction.runWriteCommandAction(project) {
-            val caret = editor.caretModel.primaryCaret
-            editor.document.insertString(caret.offset, text)
-            caret.moveToOffset(caret.offset + text.length)
+            for (caret in editor.caretModel.allCarets.sortedByDescending { it.offset }) {
+                editor.document.insertString(caret.offset, text)
+                caret.moveToOffset(caret.offset + text.length)
+            }
         }
     }
 

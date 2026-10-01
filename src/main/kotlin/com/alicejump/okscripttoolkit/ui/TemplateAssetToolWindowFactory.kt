@@ -405,7 +405,7 @@ class TemplateAssetPanel(
 
         val mouse = object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
-                if (SwingUtilities.isLeftMouseButton(e) && e.clickCount == 2) openAnnotator(img)
+                if (SwingUtilities.isLeftMouseButton(e) && e.clickCount == 1) openAnnotator(img)
             }
             override fun mousePressed(e: MouseEvent) {
                 if (e.isPopupTrigger) showContextMenu(e, img)
@@ -423,7 +423,7 @@ class TemplateAssetPanel(
         return card
     }
 
-    /** 双击打开 COCO 标注编辑器（对齐 VSCode 版标注编辑器入口），关闭后刷新网格。
+    /** 单击或编辑按钮打开 COCO 标注编辑器（对齐 VSCode 版入口），关闭后刷新网格。
      *  传入当前过滤列表，编辑器内 ←/→ 可在列表内连续标注。 */
     private fun openAnnotator(img: TemplateImage) {
         val list = visibleImages.ifEmpty { listOf(img) }

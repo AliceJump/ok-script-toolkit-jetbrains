@@ -17,9 +17,6 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
-import com.intellij.openapi.fileEditor.FileEditorManager
-import com.intellij.openapi.fileEditor.FileEditorManagerEvent
-import com.intellij.openapi.fileEditor.FileEditorManagerListener
 import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.DumbAware
@@ -93,8 +90,7 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
     @Volatile
     private var disposed = false
 
-    /** 最近活动的 Python 编辑器（对齐 VSCode 版 lastPythonEditor：插入表达式优先落到最近编辑过的编辑器） */
-    private var lastPythonEditor: com.intellij.openapi.editor.Editor? = null
+    private val pythonEditor = PythonEditorTarget(project, this)
     // 缩略图异步加载完成后回填到已渲染的卡片图标
     private val pendingThumbLabels = ConcurrentHashMap<String, MutableList<JLabel>>()
     val component: JComponent
@@ -140,20 +136,6 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
             com.alicejump.okscripttoolkit.core.OkDataChangeListener { reload(true) },
         )
 
-        // 跟踪最近活动的 Python 编辑器（对齐 VSCode ensureEditorTracker）
-        lastPythonEditor = FileEditorManager.getInstance(project).selectedTextEditor
-            ?.takeIf { it.virtualFile?.extension?.lowercase() == "py" }
-        project.messageBus.connect(this).subscribe(
-            FileEditorManagerListener.FILE_EDITOR_MANAGER,
-            object : FileEditorManagerListener {
-                override fun selectionChanged(event: FileEditorManagerEvent) {
-                    val editor = FileEditorManager.getInstance(project).selectedTextEditor ?: return
-                    if (!editor.isDisposed && editor.virtualFile?.extension?.lowercase() == "py") {
-                        lastPythonEditor = editor
-                    }
-                }
-            },
-        )
     }
 
     private fun reload(force: Boolean) {
@@ -253,15 +235,7 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
         card.toolTipText = "${expression(template)}  ($sizeText)"
         card.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
 
-        val mouse = object : MouseAdapter() {
-            override fun mouseClicked(e: MouseEvent) {
-                if (e.isPopupTrigger || SwingUtilities.isRightMouseButton(e)) return
-                when {
-                    e.clickCount == 2 -> copyExpression(template)
-                    e.clickCount == 1 -> insertExpression(template)
-                }
-            }
-
+        val mouse = object : ThumbnailClicks(card, { insertExpression(template) }, { copyExpression(template) }) {
             override fun mousePressed(e: MouseEvent) {
                 if (e.isPopupTrigger) showCardMenu(e, template)
             }
@@ -334,11 +308,7 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
 
     private fun insertExpression(template: FeatureTemplate) {
         val text = expression(template)
-        // 优先使用最近活动的 Python 编辑器，其次当前选中编辑器（对齐 VSCode insertIntoPythonEditor）
-        val editor = lastPythonEditor
-            ?.takeIf { !it.isDisposed && it.virtualFile?.extension?.lowercase() == "py" }
-            ?: FileEditorManager.getInstance(project).selectedTextEditor
-                ?.takeIf { it.virtualFile?.extension?.lowercase() == "py" }
+        val editor = pythonEditor.editor()
         if (editor == null) {
             CopyPasteManager.getInstance().setContents(StringSelection(text))
             notify(OkScriptToolkitBundle.message("gallery.noEditor"), NotificationType.WARNING)

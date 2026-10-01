@@ -5,12 +5,34 @@ import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import javax.swing.JButton
 import javax.swing.JLabel
+import javax.swing.JPanel
 import javax.swing.SwingUtilities
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class ThumbnailActionsTest {
+    @Test
+    fun `double click and direct actions cancel pending insertion`() {
+        var inserts = 0
+        var copies = 0
+        SwingUtilities.invokeAndWait {
+            val card = object : JPanel() { override fun isShowing() = true }
+            val copy = JButton("Copy").apply { addActionListener { copies++ } }
+            card.add(ThumbnailActions(JLabel(), copy))
+            val clicks = ThumbnailClicks(card, { inserts++ }, { copies++ })
+            clicks.mouseClicked(MouseEvent(card, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+            clicks.mouseClicked(MouseEvent(card, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 2, false, MouseEvent.BUTTON1))
+            clicks.mouseClicked(MouseEvent(card, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+            copy.doClick(0)
+        }
+        Thread.sleep(550)
+        SwingUtilities.invokeAndWait {
+            assertEquals(0, inserts)
+            assertEquals(2, copies)
+        }
+    }
+
     @Test
     fun `actions stay visible at bottom right and execute without activating the thumbnail`() {
         SwingUtilities.invokeAndWait {
