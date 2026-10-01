@@ -13,6 +13,24 @@ import kotlin.test.assertTrue
 
 class ThumbnailActionsTest {
     @Test
+    fun `single click delay follows long system intervals and handles unavailable values`() {
+        assertEquals(800, thumbnailClickDelay(800))
+        assertEquals(500, thumbnailClickDelay(null))
+        assertEquals(500, thumbnailClickDelay("800"))
+        assertEquals(500, thumbnailClickDelay(0))
+        assertEquals(500, thumbnailClickDelay(-1))
+        SwingUtilities.invokeAndWait {
+            val card = JPanel()
+            val clicks = ThumbnailClicks(card, {}, {})
+            val systemInterval = java.awt.Toolkit.getDefaultToolkit().getDesktopProperty("awt.multiClickInterval")
+            clicks.mouseClicked(MouseEvent(card, MouseEvent.MOUSE_CLICKED, 0, 0, 5, 5, 1, false, MouseEvent.BUTTON1))
+            val timer = card.getClientProperty("thumbnailClickTimer") as javax.swing.Timer
+            assertEquals(thumbnailClickDelay(systemInterval), timer.initialDelay)
+            timer.stop()
+        }
+    }
+
+    @Test
     fun `double click and direct actions cancel pending insertion`() {
         var inserts = 0
         var copies = 0
