@@ -1,12 +1,12 @@
-# VS Code 扩展与 JetBrains 插件：功能取舍与实现策略差异总结报告 / VS Code Extension vs JetBrains Plugin: Feature Trade-offs and Implementation Strategy Differences Summary Report
+# VS Code and JetBrains: Architecture and Implementation Trade-offs
+
+> Current features: [feature parity](https://github.com/AliceJump/ok-script-toolkit/blob/main/docs/feature-parity.en.md), verified 2026-10-01. This report retains historical trade-offs and line counts; it is not a current missing-feature list.
 
 <div align="center">
 
 [![简体中文](https://img.shields.io/badge/Language-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87-6E7681?style=for-the-badge)](architecture-comparison-report.md) [![English](https://img.shields.io/badge/Language-English%20%E2%9C%93-2EA043?style=for-the-badge)](architecture-comparison-report.en.md)
 
 </div>
-
-基于 `parity-review.md`（2026-09-06）及源代码分析，总结主仓库（VS Code 扩展）与子仓库（JetBrains 插件）之间的架构设计、功能完整性、性能优化、UI/UX 体验、开发维护成本差异，并提出未来改进建议。
 
 Based on `parity-review.md` (2026-09-06) and source code analysis, this report summarizes the differences in architecture design, feature completeness, performance optimization, UI/UX experience, and development/maintenance costs between the main repository (VS Code extension) and sub-repository (JetBrains plugin), and proposes future improvement suggestions.
 

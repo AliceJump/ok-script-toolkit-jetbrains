@@ -1,5 +1,9 @@
 # JetBrains 侧设计对齐规格：#9/#10 Swing 移植 + #7 配置接管
 
+[简体中文](design-parity.md) | [English](design-parity.en.md)
+
+> **2026-10-01 本地复核**：这是一份移植设计与实现参考，不能把原始计划当作当前缺口。全局配置、账号覆盖编辑、健康点和悬停摘要已实现；当前功能状态见主仓 [功能对齐表](https://github.com/AliceJump/ok-script-toolkit/blob/main/docs/feature-parity.md)。以下代码片段说明规则，不保证与当前类签名逐字相同。
+
 > 对应主仓库 PR：#8/#9（运行中心 + 健康度条 + 悬停弹层）、#10（sidebar 规范 + token 化）、
 > #7（配置接管 Phase 1-6）。本文件是 Kotlin/Swing 侧的**等价物规格**：
 > VS Code 侧靠 CSS token 与 webview，Swing 没有 CSS，逐项给出 IntelliJ 平台等价物。
@@ -8,12 +12,12 @@
 
 ## 0. 范围
 
-| 主仓库成果 | Kotlin 侧现状 | 本 PR 动作 |
+| 主仓库成果 | Kotlin 侧当前状态 | 实现入口 |
 |---|---|---|
-| #7 执行器注入（OK_TOOLKIT_GCONFIG + gparams） | **缺失**（唯一真功能差距） | 补齐：probe 解析 → store 持久化 → merge 规则 → env 注入 → gparams 推送 |
-| #9 健康度条 + 运行中心 + 任务卡悬停弹出 | statusBar 只有文字状态 | 升级 statusBar 为健康条；详情面板空闲态渲染运行中心；任务行悬停弹出概览 |
-| #9 全局配置卡悬停弹窗（gpop） | 无全局配置呈现 | 配置组摘要弹层（只读，遵循「弹出层不带交互按钮」规范） |
-| #10 两层可点击语义 + token 化 | 硬编码 JBColor 散落 | 收敛到单点主题对象；chip 已有 styleChip 范式可推广 |
+| #7 执行器注入（OK_TOOLKIT_GCONFIG + gparams） | **已实现**：采集、持久化、启动注入、运行中推送 | `TaskLauncherService`、`GlobalSnapshotRules`、`TaskRunnerService`、`TaskLauncherToolWindowFactory` |
+| #9 健康度条 + 运行中心 + 任务卡悬停弹出 | 健康点、运行概览与任务悬停摘要入口已存在 | `TaskLauncherToolWindowFactory`；布局以当前四页界面为准 |
+| #9 全局配置呈现 | 配置页提供全局组编辑；不是只透传元数据 | `TaskLauncherToolWindowFactory` 的全局配置表单与保存链 |
+| #10 两层可点击语义 + token 化 | 已有共享主题对象与控件样式；具体视觉需 IDE 实测 | `TaskLauncherTheme` |
 
 不移植：12 套皮肤/3 种布局切换（ok-ui-lab 专属，Swing 侧遵循 IDE 主题即可）。
 
@@ -155,10 +159,11 @@ fun pushGlobalParams(json: String): Boolean = sendCommand("gparams $json")
 
 调用点：全局配置修改保存后（flush 时）防抖 400ms 推送，`isRunning()` 才推。
 
-### 4.6 UI 呈现（本轮最小可用）
+### 4.6 UI 呈现（当前状态）
 
-- 运行中心（3.2）列出全局配置组（组名 + source 标签 + 字段数），hover 弹只读摘要（3.4）
-- 组级「重置默认」动作延后到下一 PR（本轮先把接管链路打通）
+- 配置页已有全局配置组编辑与保存，字段控件与任务参数共用；启动注入和运行中 `gparams` 推送均已接线。
+- 账号覆盖通过 `AccountEditorDialog` 编辑，使用共用 Python 账号接口；不新增业务配置迁移。
+- 本文保留原先运行中心与悬停摘要的设计意图；当前页面结构和动作以代码与功能对齐表为准。
 
 ## 5. 测试
 
@@ -171,5 +176,5 @@ fun pushGlobalParams(json: String): Boolean = sendCommand("gparams $json")
 ## 6. 显式不做
 
 - 12 皮肤/3 布局切换（ok-ui-lab 专属）
-- 全局配置的完整编辑表单（与任务参数面板同级复杂度，下一 PR）
-- 多账户覆盖（multiAccount）——probe 已透传 JSON，Kotlin 侧本轮只透传不消费
+- 不把最初推迟的全局配置编辑或多账号覆盖再列为缺失；两者当前都有编辑入口。
+- 不据此加入业务账号生命周期、历史参数搬运或迁移恢复流程。

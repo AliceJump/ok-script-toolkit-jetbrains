@@ -1,4 +1,4 @@
-﻿<div align="center">
+<div align="center">
 
 [![简体中文](https://img.shields.io/badge/Language-%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87%20%E2%9C%93-2EA043?style=for-the-badge)](README.md) [![English](https://img.shields.io/badge/Language-English-6E7681?style=for-the-badge)](README.en.md)
 
@@ -8,10 +8,7 @@
 
 **ok-script Toolkit VS Code 扩展的 JetBrains Platform / PyCharm 移植版。**
 
-**The JetBrains Platform / PyCharm port of the [ok-script Toolkit](https://github.com/AliceJump/ok-script-toolkit) VS Code extension.**
-
 将 ok-script 语言键、OCR 修正、模板、效果和任务带入你的 IDE。
-Brings ok-script language keys, OCR fixes, templates, effects and tasks into your IDE.
 
 [![JetBrains Marketplace](https://img.shields.io/badge/JetBrains%20Marketplace-OK%20Script%20Toolkit-000000?logo=jetbrains&logoColor=white)](https://plugins.jetbrains.com/plugin/34091-ok-script-toolkit)
 [![Downloads](https://img.shields.io/jetbrains/plugin/d/34091)](https://plugins.jetbrains.com/plugin/34091-ok-script-toolkit)
@@ -27,10 +24,6 @@ Brings ok-script language keys, OCR fixes, templates, effects and tasks into you
 ---
 
 本仓库是仓库根目录中 VS Code 扩展的 JetBrains Platform/PyCharm 移植版。两个版本共享相同的数据源和配置模型，因此 ok-script 项目在任一 IDE 中的行为一致。
-
-This repository is the JetBrains Platform/PyCharm port of the VS Code extension in
-the repository root. Both editions share the same data sources and configuration
-model, so an ok-script project behaves the same way in either IDE.
 
 ## 安装
 
@@ -62,6 +55,8 @@ model, so an ok-script project behaves the same way in either IDE.
 | 效果 ID | `EffectType.XXX` 和 JSON/Python 效果 ID 补全（按分类分组）、文档和行内描述提示 |
 
 ### 工具窗口
+
+- **框资源与框画廊**：使用共用标注编辑器编辑 COCO 框资源、从模板生成框并显式发布；运行时画廊提供裁剪预览、来源跳转及 `self.pos` 表达式插入与复制。游戏加载由业务项目负责。当前两端状态见 [功能对齐表](https://github.com/AliceJump/ok-script-toolkit/blob/main/docs/feature-parity.md)。
 <!-- Demo GIF: tool windows. Show the template gallery + temp shots area. Width 900.
      Record from the JetBrains sandbox IDE — the parent repo's GIFs are VS Code. -->
 <!-- Suggested file: screenshots/tool-windows.gif -->
