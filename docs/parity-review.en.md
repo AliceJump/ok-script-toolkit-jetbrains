@@ -1,4 +1,4 @@
-﻿# 子仓库与主仓库功能差异审查（2026-09-21 更新） / Sub-repo vs Main-repo Feature Parity Review (Updated 2026-09-21)
+# Sub-repository Feature Parity Review
 
 <div align="center">
 
@@ -6,10 +6,7 @@
 
 </div>
 
-对照基准：主仓库 VSCode 扩展 v1.8.0、子仓库 JetBrains 插件 v1.8.0。
-下次审查请覆盖本表并更新状态。
-
-Baseline: main repo VSCode extension v1.8.0, sub-repo JetBrains plugin v1.8.0.
+Historical baseline: main VSCode extension v1.8.0, JetBrains plugin v1.8.0. See [current feature and documentation parity](https://github.com/AliceJump/ok-script-toolkit/blob/main/docs/feature-parity.en.md) (2026-10-01; parent efc4ff9 / child 4df0cee).
 Next review should override this table and update the status.
 
 > The previous revision (2026-09-07, baseline v1.4.0) was badly stale: it listed the
@@ -28,7 +25,7 @@ Next review should override this table and update the status.
 > **⚠️ The baseline is frozen at v1.8.0 (2026-09-21)**. Parity work from main-repo
 > v1.9.0 → v1.13.0 (console rework, config takeover Phases 1-6, health bar / run center /
 > hover popups and their Kotlin ports) is recorded in
-> [`design-parity.md`](design-parity.md) and is not folded into this table —
+> [`design-parity.md`](design-parity.en.md) and is not folded into this table —
 > read both documents together with the code.
 
 > **2026-09-27 · v1.15 branch addendum:** the task launcher now has Tasks, Configuration,
@@ -110,10 +107,11 @@ Remaining gaps are two kinds: **one annotation-editor save-semantics difference*
   obtain a "did the user actually change this" signal (parent `inspect()`, sub-repo `overriddenKeys`),
   otherwise the project declaration is **permanently shadowed, silently**.
 - **Collapsible group absorbing inline show/hide**: the sub-repo extracts it into a unit-testable pure object
-  `tasklauncher/SchemaTreeOverlap.kt` (the parent inlines it in `media/taskLauncher/configPanel.js`), plus
+  `tasklauncher/SchemaTreeOverlap.kt` (the parent inlines it in `media/console/configPanel.js`), plus
   `SchemaTreeOverlapTest.kt` with two destructive-control assertions — stricter than the parent side
 - Parameter controls: bool/number/dropdown/multi-select/cascading/condition-sequence JSON/configGroups,
   **ModifyListDialog**, **option_labels/category_labels**, **field descriptions**, **sub_configs tree**
+- **Task cards (2026-09-27):** `TaskCardListPanel` replaces the flat action/task/state JTable with parent-equivalent cards. Triggers come first; one-time tasks group by `schema.groupName`, with collapsible counts and an ungrouped fallback. Collapsed state persists in tasks.json `uiState` using parent-compatible `taskGroupCollapsed::*` keys. Cards show name/description, kind/runtime through two border layers, class/module in tooltips, and icon-only trigger/start actions. Selection opens full descriptions, parameters, synchronization, and default restoration. Search ignores collapsed groups; the queue strip and in-place card updates follow executor state. Pure `TaskListGrouping.kt` with `TaskListGroupingTest.kt` owns grouping. Sync/reset match parent `syncDefaultToSnapshot` / `resetSnapshotToDefault` (union/defaults, retaining orphan keys). The remaining difference is host layout: parent drawer versus child right-hand split details.
 - Character panel (read-only + skill CRUD + enhancement groups), status bar / table header de-hardcoded
   - ⚠️ 2026-09-20 reviewed and fixed: **synced-skill protection granularity differed across repos** (P3-6).
     The parent lets you edit a synced skill's numeric/effect fields and locks only
@@ -152,8 +150,8 @@ Remaining gaps are two kinds: **one annotation-editor save-semantics difference*
 |---|---|---|---|
 | 1 | Annotation editor **save-on-change**: currently OK/Cancel semantics (`doOKAction` writes back all changed images, Cancel discards), vs the parent's save-on-change | Low | Design trade-off, not a defect |
 | 2 | Editor large gallery dual entry | Low | TODO |
-| 3 | Task card-style UI | Low | TODO |
-| 4 | lastPythonEditor tracking | Low | TODO |
+| 3 | Task card-style UI | Low | **Complete (2026-09-27)**; see the task-card addendum below |
+| 4 | Recent Python editor tracking | Low | **Implemented**: `PythonEditorTarget.kt`, shared by template/box galleries |
 | 5 | Annotation panel command (parent has standalone `openAnnotationEditor`; sub-repo has no matching Action) | Low | TODO |
 
 > The previous revision listed `undo/redo, copy/paste, 8-way resize, drag-to-move, zoom/pan,

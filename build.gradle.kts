@@ -52,13 +52,13 @@ val copyPython = tasks.register<Sync>("copyPythonScripts") {
         // __pycache__ 里只有 .pyc，本来就不会被 include 命中；但 Gradle 遍历 `**`
         // 时仍会在目标目录建出空目录，最终以空目录形式进 jar。显式排除掉。
         exclude("**/__pycache__/**")
-        // 测试脚本是开发用途，按 AGENT.md「插件打包」不得进产物。
+        // 测试脚本是开发用途，按 AGENTS.md「插件打包」不得进产物。
         // 它们现在在 python/tests/ 下，这里再设一道防线，避免日后有人把
         // test_*.py 放回 python/ 就被 `**/*.py` 静默收进 jar。
         exclude("tests/**")
         exclude("test_*.py")
         // 原子写的临时产物：`.tmp` 是写一半的中间文件，`.bak` 是旧版实现留在
-        // python 目录旁边的备份。两者都是运行时垃圾，不该进 jar（AGENT.md 打包红线）。
+        // python 目录旁边的备份。两者都是运行时垃圾，不该进 jar（AGENTS.md 打包红线）。
         // 新版实现已把备份移到系统临时目录，这条是针对历史残留与手滑的兜底。
         exclude("**/*.ok-script-toolkit.tmp")
         exclude("**/*.bak")

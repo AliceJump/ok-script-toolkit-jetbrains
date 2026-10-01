@@ -1,4 +1,4 @@
-# 子仓库与主仓库功能差异审查（2026-09-21 更新） / Sub-repo vs Main-repo Feature Parity Review (Updated 2026-09-21)
+# 子仓库与主仓库功能差异审查
 
 <div align="center">
 
@@ -6,11 +6,8 @@
 
 </div>
 
-对照基准：主仓库 VSCode 扩展 v1.8.0、子仓库 JetBrains 插件 v1.8.0。
+历史对照基准：主仓库 VSCode 扩展 v1.8.0、子仓库 JetBrains 插件 v1.8.0。当前本地功能见 [功能与文档对齐表](https://github.com/AliceJump/ok-script-toolkit/blob/main/docs/feature-parity.md)（2026-10-01；主仓 efc4ff9 / 子仓 4df0cee）。
 下次审查请覆盖本表并更新状态。
-
-Baseline: main repo VSCode extension v1.8.0, sub-repo JetBrains plugin v1.8.0.
-Next review should override this table and update the status.
 
 > **上一版（2026-09-07，基线 v1.4.0）已严重失真**：它把当时尚未做的标注编辑器
 > 进阶交互整批列为「待办」，但其中绝大多数随后已实现，文档未同步。本次审查逐条
@@ -96,7 +93,7 @@ Next review should override this table and update the status.
   播种三处键集必须一致）、父仓 `test_convention_sources.js`（登记表必须覆盖每个
   `ideSetting` 键）。
 - **折叠分组吸收内联显隐**：子仓抽成可单测纯对象 `tasklauncher/SchemaTreeOverlap.kt`
-  （父仓对应实现内联在 `media/taskLauncher/configPanel.js`）；子仓另有
+  （父仓对应实现内联在 `media/console/configPanel.js`）；子仓另有
   `SchemaTreeOverlapTest.kt` 两条破坏性对照断言，规范度高于父仓
 - 参数控件：bool/数字/下拉/多选/级联下拉/条件序列 JSON/configGroups 分组、
   **列表字段 ModifyListDialog 弹窗**、**option_labels/category_labels 本地化标签**、
@@ -158,7 +155,7 @@ Next review should override this table and update the status.
 | 1 | 标注编辑器**改动即存**：当前为 OK/Cancel 语义（`doOKAction` 时统一写回，Cancel 全弃），父仓为改动即落盘 | 低 | 设计取舍，非缺陷 |
 | 2 | 编辑器大画廊双入口（编辑器内嵌大画廊视图） | 低 | 待办 |
 | 3 | ~~任务卡片式 UI（VSCode 任务列表为卡片布局）~~ | 低 | **已完成（2026-09-27）**，见「已对齐 · 任务卡列表」 |
-| 4 | lastPythonEditor 跟踪（插入表达式定位最近编辑器） | 低 | 待办 |
+| 4 | 最近 Python 编辑器跟踪（插入表达式定位最近编辑器） | 低 | **已实现**：`PythonEditorTarget.kt`，模板与框画廊共用 |
 | 5 | 注释面板命令（VSCode 有独立 `openAnnotationEditor` 命令；子仓无对应 Action，只能从素材管理器进入） | 低 | 待办 |
 
 > 上一版把 `undo/redo、copy/paste、8 向 resize、拖动移框、缩放平移、跨图导航、
