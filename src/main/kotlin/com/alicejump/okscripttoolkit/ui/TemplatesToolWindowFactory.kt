@@ -2,6 +2,7 @@ package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.AnnotatedSourcePreview
+import com.alicejump.okscripttoolkit.core.HtmlResources
 import com.alicejump.okscripttoolkit.core.FeatureTemplate
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
@@ -9,6 +10,7 @@ import com.alicejump.okscripttoolkit.core.TemplateThumbPipeline
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
+import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -49,6 +51,8 @@ import javax.swing.Icon
 import javax.swing.JLabel
 import javax.swing.ImageIcon
 import javax.swing.JComponent
+import javax.swing.JButton
+import javax.swing.JLayeredPane
 import javax.swing.JMenuItem
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
@@ -221,17 +225,39 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
         // 在这里逐个请求会让同一张原图被反复解码（实测最高 17 个模板共用一张图）。
         pendingThumbLabels.getOrPut(template.name) { java.util.Collections.synchronizedList(mutableListOf()) }.add(imageArea)
 
+        val openSource = JButton(AllIcons.Actions.Preview).apply {
+            toolTipText = OkScriptToolkitBundle.message("gallery.open")
+            accessibleContext.accessibleName = toolTipText
+            margin = JBUI.insets(2)
+            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+            addActionListener { openAnnotatedSource(template) }
+        }
+        val preview = object : JLayeredPane() {
+            override fun doLayout() {
+                imageArea.setBounds(0, 0, width, height)
+                val size = JBUI.scale(24).coerceAtMost(minOf(width, height))
+                val inset = JBUI.scale(3)
+                openSource.setBounds((width - size - inset).coerceAtLeast(0), (height - size - inset).coerceAtLeast(0), size, size)
+            }
+        }.apply {
+            preferredSize = imageArea.preferredSize
+            add(imageArea, Integer.valueOf(JLayeredPane.DEFAULT_LAYER))
+            add(openSource, Integer.valueOf(JLayeredPane.PALETTE_LAYER))
+        }
+
         val sizeText = "${template.width}×${template.height}"
         val nameLabel = JBLabel(
-            "<html><div style=\"text-align:center;width:${CARD_WIDTH - 20}px;\">" +
-                escapeHtml(template.name) +
-                "<span style=\"color:#8a8a8a\">&nbsp;$sizeText</span></div></html>",
+            HtmlResources.render("template-caption", mapOf(
+                "WIDTH" to (CARD_WIDTH - 20).toString(),
+                "NAME" to escapeHtml(template.name),
+                "SIZE" to sizeText,
+            )),
             SwingConstants.CENTER,
         )
         nameLabel.verticalAlignment = SwingConstants.TOP
         nameLabel.isOpaque = false
 
-        card.add(imageArea, BorderLayout.CENTER)
+        card.add(preview, BorderLayout.CENTER)
         card.add(nameLabel, BorderLayout.SOUTH)
         card.toolTipText = "${expression(template)}  ($sizeText)"
         card.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
