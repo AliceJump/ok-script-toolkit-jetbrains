@@ -52,7 +52,6 @@ import javax.swing.JLabel
 import javax.swing.ImageIcon
 import javax.swing.JComponent
 import javax.swing.JButton
-import javax.swing.JLayeredPane
 import javax.swing.JMenuItem
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
@@ -225,25 +224,17 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
         // 在这里逐个请求会让同一张原图被反复解码（实测最高 17 个模板共用一张图）。
         pendingThumbLabels.getOrPut(template.name) { java.util.Collections.synchronizedList(mutableListOf()) }.add(imageArea)
 
-        val openSource = JButton(AllIcons.Actions.Preview).apply {
-            toolTipText = OkScriptToolkitBundle.message("gallery.open")
-            accessibleContext.accessibleName = toolTipText
-            margin = JBUI.insets(2)
-            cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-            addActionListener { openAnnotatedSource(template) }
-        }
-        val preview = object : JLayeredPane() {
-            override fun doLayout() {
-                imageArea.setBounds(0, 0, width, height)
-                val size = JBUI.scale(24).coerceAtMost(minOf(width, height))
-                val inset = JBUI.scale(3)
-                openSource.setBounds((width - size - inset).coerceAtLeast(0), (height - size - inset).coerceAtLeast(0), size, size)
-            }
-        }.apply {
-            preferredSize = imageArea.preferredSize
-            add(imageArea, Integer.valueOf(JLayeredPane.DEFAULT_LAYER))
-            add(openSource, Integer.valueOf(JLayeredPane.PALETTE_LAYER))
-        }
+        val preview = ThumbnailActions(imageArea,
+            JButton(OkScriptToolkitBundle.message("gallery.insert"), AllIcons.Actions.AddFile).apply {
+                addActionListener { insertExpression(template) }
+            },
+            JButton(OkScriptToolkitBundle.message("gallery.copy"), AllIcons.Actions.Copy).apply {
+                addActionListener { copyExpression(template) }
+            },
+            JButton(OkScriptToolkitBundle.message("gallery.open"), AllIcons.Actions.Preview).apply {
+                addActionListener { openAnnotatedSource(template) }
+            },
+        )
 
         val sizeText = "${template.width}×${template.height}"
         val nameLabel = JBLabel(
@@ -262,7 +253,7 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
         card.toolTipText = "${expression(template)}  ($sizeText)"
         card.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
 
-        card.addMouseListener(object : MouseAdapter() {
+        val mouse = object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
                 if (e.isPopupTrigger || SwingUtilities.isRightMouseButton(e)) return
                 when {
@@ -278,7 +269,8 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
             override fun mouseReleased(e: MouseEvent) {
                 if (e.isPopupTrigger) showCardMenu(e, template)
             }
-        })
+        }
+        listOf(card, preview, imageArea, nameLabel).forEach { it.addMouseListener(mouse) }
         return card
     }
 

@@ -273,6 +273,18 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         addEffect.toolTipText = msg("characterManager.effect.addHint")
         addEffect.addActionListener { runAddEffect() }
 
+        val copyEffectId = JButton(msg("characterManager.copyEffectId")).apply {
+            isEnabled = false
+            addActionListener { effectList.selectedValue?.let { copyText(it.id) } }
+        }
+        val openEffectSource = JButton(msg("characterManager.openSource")).apply {
+            isEnabled = false
+            addActionListener { effectList.selectedValue?.let { openEffectsFileAt(it.id) } }
+        }
+        effectList.addListSelectionListener {
+            copyEffectId.isEnabled = effectList.selectedValue != null
+            openEffectSource.isEnabled = effectList.selectedValue != null
+        }
         val toolbar = JPanel(FlowLayout(FlowLayout.LEFT, 6, 0)).apply {
             border = JBUI.Borders.empty(6)
             add(effectSearch)
@@ -280,6 +292,8 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
             add(effectUsageBox)
             add(addCategory)
             add(addEffect)
+            add(copyEffectId)
+            add(openEffectSource)
             add(effectCountLabel)
         }
         val panel = JPanel(BorderLayout())

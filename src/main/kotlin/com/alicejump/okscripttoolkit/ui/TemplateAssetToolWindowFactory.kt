@@ -385,12 +385,27 @@ class TemplateAssetPanel(
             add(sizeLabel)
         }
 
-        card.add(thumbLabel, BorderLayout.CENTER)
+        val preview = ThumbnailActions(thumbLabel,
+            JButton(OkScriptToolkitBundle.message("annotation.title", img.name), AllIcons.Actions.Edit).apply {
+                addActionListener { openAnnotator(img) }
+            },
+            JButton(OkScriptToolkitBundle.message("templateAsset.open"), AllIcons.Actions.Preview).apply {
+                addActionListener { openInEditor(img) }
+            },
+            JButton(OkScriptToolkitBundle.message("templateAsset.swap"), AllIcons.Actions.Refresh).apply {
+                isEnabled = !swapGate.inProgress
+                addActionListener { swapAnnotationsWith(img) }
+            },
+            JButton(OkScriptToolkitBundle.message("templateAsset.delete"), AllIcons.Actions.GC).apply {
+                addActionListener { deleteImage(img) }
+            },
+        )
+        card.add(preview, BorderLayout.CENTER)
         card.add(infoPanel, BorderLayout.SOUTH)
 
         val mouse = object : MouseAdapter() {
             override fun mouseClicked(e: MouseEvent) {
-                if (e.clickCount == 2) openAnnotator(img)
+                if (SwingUtilities.isLeftMouseButton(e) && e.clickCount == 2) openAnnotator(img)
             }
             override fun mousePressed(e: MouseEvent) {
                 if (e.isPopupTrigger) showContextMenu(e, img)
@@ -400,7 +415,7 @@ class TemplateAssetPanel(
             }
         }
         // Swing does not bubble child mouse events to the card. The image and text occupy nearly all of it.
-        listOf(card, thumbLabel, infoPanel, nameLabel, sizeLabel).forEach { component ->
+        listOf(card, preview, thumbLabel, infoPanel, nameLabel, sizeLabel).forEach { component ->
             component.toolTipText = img.name
             component.addMouseListener(mouse)
         }
@@ -418,7 +433,7 @@ class TemplateAssetPanel(
     }
 
     /**
-     * 与另一张图**整套互换**标注（卡片右键菜单的「交换标注…」）。
+     * 与另一张图**整套互换**标注（卡片按钮 / 右键菜单的「交换标注…」）。
      *
      * 尺寸不同时按比例映射（判据与数值都在 `core/AnnotationSwap`），并且**在确认框里
      * 把这件事说出来**：缩放会改变框的真实像素尺寸，而模板裁剪是按像素取的，
@@ -611,44 +626,45 @@ class TemplateAssetPanel(
         popup.add(swapItem)
 
         val deleteItem = JMenuItem(OkScriptToolkitBundle.message("templateAsset.delete"))
-        deleteItem.addActionListener {
-            val confirm = JOptionPane.showConfirmDialog(
-                mainPanel,
-                OkScriptToolkitBundle.message("templateAsset.deleteConfirm", img.name),
-                OkScriptToolkitBundle.message("templateAsset.delete"),
-                JOptionPane.YES_NO_OPTION,
-            )
-            if (confirm == JOptionPane.YES_OPTION) {
-                // 文件删除 + COCO 写盘移出 EDT
-                CompletableFuture.supplyAsync {
-                    project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>()
-                        .removeImageForDeletion(
-                            img.file.name,
-                            { img.file.exists() },
-                            {
-                                val settings = OkScriptToolkitSettings.getInstance(project)
-                                templateData.load(ScreenshotCapture.detectProjectDir(project), settings.okTemplatesDirectory())
-                                templateData.deleteImage(img.file)
-                            },
-                        )
-                }.whenComplete { result, error ->
-                    SwingUtilities.invokeLater {
-                        when {
-                            error != null || result == "boxes" ->
-                                notify(OkScriptToolkitBundle.message("templateAsset.deleteFailed", img.name),
-                                    NotificationType.ERROR)
-                            result == "image" ->
-                                notify(OkScriptToolkitBundle.message("templateAsset.deleteFileLeft", img.name),
-                                    NotificationType.ERROR)
-                        }
-                        loadData()
-                    }
-                }
-            }
-        }
+        deleteItem.addActionListener { deleteImage(img) }
         popup.add(deleteItem)
 
         popup.show(e.component, e.x, e.y)
+    }
+    private fun deleteImage(img: TemplateImage) {
+        val confirm = JOptionPane.showConfirmDialog(
+            mainPanel,
+            OkScriptToolkitBundle.message("templateAsset.deleteConfirm", img.name),
+            OkScriptToolkitBundle.message("templateAsset.delete"),
+            JOptionPane.YES_NO_OPTION,
+        )
+        if (confirm == JOptionPane.YES_OPTION) {
+            // 文件删除 + COCO 写盘移出 EDT
+            CompletableFuture.supplyAsync {
+                project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>()
+                    .removeImageForDeletion(
+                        img.file.name,
+                        { img.file.exists() },
+                        {
+                            val settings = OkScriptToolkitSettings.getInstance(project)
+                            templateData.load(ScreenshotCapture.detectProjectDir(project), settings.okTemplatesDirectory())
+                            templateData.deleteImage(img.file)
+                        },
+                    )
+            }.whenComplete { result, error ->
+                SwingUtilities.invokeLater {
+                    when {
+                        error != null || result == "boxes" ->
+                            notify(OkScriptToolkitBundle.message("templateAsset.deleteFailed", img.name),
+                                NotificationType.ERROR)
+                        result == "image" ->
+                            notify(OkScriptToolkitBundle.message("templateAsset.deleteFileLeft", img.name),
+                                NotificationType.ERROR)
+                    }
+                    loadData()
+                }
+            }
+        }
     }
 
     private fun handleImport() {
