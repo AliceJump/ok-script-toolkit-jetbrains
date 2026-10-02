@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: jetbrains-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   review-scripts:
     runs-on: windows-latest
@@ -46,6 +50,13 @@ jobs:
         with:
           # 配置缓存里可能含凭据，Action 只有拿到这把密钥才会保存和恢复它。
           cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+          # IntelliJ Platform Gradle Plugin 默认把产品列表和 localPlatformArtifacts
+          # 放在工作区 .intellijPlatform/；Hosted Runner 每次重建工作区会让
+          # configuration cache 记录的输入消失。移到 Gradle home 后随 setup-gradle
+          # 一起跨运行恢复，同时不缓存完整 IDE。
+          gradle-home-cache-includes: |
+            caches
+            intellij-platform
       # ⚠️ 这里**没有也不该有** `verifyPlugin`（Plugin Verifier：真的下载 IDE 去查
       # 废弃 / 实验性 / internal API）：
       #   1. 它慢且要联网，真正的校验放在父仓 `release.yml`；
@@ -53,7 +64,7 @@ jobs:
       # ⚠️ `verifyPluginStructure` 只查 JAR / plugin.xml 的**结构**，**不查 API 兼容性** ——
       # 别把它当成"API 已经验过了"。
       - name: Test and build plugin
-        run: ./gradlew -PpythonScriptsDir=parent-source/python -PconventionSchemaFile=parent-source/schemas/ok-script-toolkit.schema.json test buildPlugin verifyPluginStructure verifyPluginConfiguration
+        run: ./gradlew -Porg.jetbrains.intellij.platform.intellijPlatformCache="$HOME/.gradle/intellij-platform" -PpythonScriptsDir=parent-source/python -PconventionSchemaFile=parent-source/schemas/ok-script-toolkit.schema.json test buildPlugin verifyPluginStructure verifyPluginConfiguration
       - name: Upload plugin archive
         uses: actions/upload-artifact@v4
         with:
