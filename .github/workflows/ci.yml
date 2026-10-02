@@ -55,7 +55,7 @@ jobs:
           # IntelliJ Platform Gradle Plugin 默认把产品列表和 localPlatformArtifacts
           # 放在工作区 .intellijPlatform/；Hosted Runner 每次重建工作区会让
           # configuration cache 记录的输入消失。移到 Gradle home 后随 setup-gradle
-          # 一起跨运行恢复，同时不缓存完整 IDE。
+          # 一起跨运行恢复，同时不缓存完整 IDE，避免显著放大缓存体积。
           gradle-home-cache-includes: |
             caches
             intellij-platform
