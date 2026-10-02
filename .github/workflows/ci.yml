@@ -50,8 +50,6 @@ jobs:
         with:
           # 配置缓存里可能含凭据，Action 只有拿到这把密钥才会保存和恢复它。
           cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
-          # 临时用于本 PR 的两轮跨运行缓存验证；验证完成后移除，恢复 PR 默认只读。
-          cache-read-only: false
           # IntelliJ Platform Gradle Plugin 默认把产品列表和 localPlatformArtifacts
           # 放在工作区 .intellijPlatform/；Hosted Runner 每次重建工作区会让
           # configuration cache 记录的输入消失。移到 Gradle home 后随 setup-gradle
