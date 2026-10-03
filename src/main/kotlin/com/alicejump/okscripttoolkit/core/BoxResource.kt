@@ -102,10 +102,6 @@ object BoxResource {
         )
     }
 
-    /** Rect authoring is current COCO only. Legacy version/boxes/rect schemas are intentionally unsupported. */
-    fun parseBoxCoco(text: String, @Suppress("UNUSED_PARAMETER") imageSize: (String) -> Pair<Int, Int>? = { null }): CocoReadResult =
-        parseCocoText(text)
-
     /** Name validation is the only rect-specific editing rule. */
     fun boxNamesError(existing: CocoData, edits: List<CocoAnnotationEdit>): String? {
         val replaced = edits.map { it.fileName.lowercase() }.toSet()
