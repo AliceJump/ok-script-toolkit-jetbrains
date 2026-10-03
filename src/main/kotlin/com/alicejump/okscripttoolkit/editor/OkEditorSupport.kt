@@ -48,15 +48,18 @@ object OkEditorSupport {
 
     fun references(document: Document, startOffset: Int, endOffset: Int, project: Project): List<EditorReference> {
         val result = mutableListOf<EditorReference>()
+        val resolvedPaths by lazy(LazyThreadSafetyMode.NONE) { positionPaths(project) }
         var line = document.getLineNumber(startOffset.coerceIn(0, document.textLength))
         val lastLine = document.getLineNumber(endOffset.coerceIn(0, document.textLength))
         while (line <= lastLine) {
             val lineStart = document.getLineStartOffset(line)
             val lineEnd = document.getLineEndOffset(line)
+            val lineText = document.charsSequence.subSequence(lineStart, lineEnd).toString()
             result += referencesInLine(
-                document.charsSequence.subSequence(lineStart, lineEnd).toString(),
+                lineText,
                 lineStart,
                 project,
+                if ("self.pos." in lineText) resolvedPaths else null,
             )
             line++
         }
@@ -76,7 +79,12 @@ object OkEditorSupport {
         ).firstOrNull { safeOffset in it.range.startOffset..it.range.endOffset }
     }
 
-    fun referencesInLine(text: String, baseOffset: Int, project: Project): List<EditorReference> {
+    fun referencesInLine(
+        text: String,
+        baseOffset: Int,
+        project: Project,
+        resolvedPositionPaths: Set<String>? = null,
+    ): List<EditorReference> {
         val refs = mutableListOf<EditorReference>()
         langPattern.matcher(text).run {
             while (find()) refs += EditorReference(
@@ -87,7 +95,8 @@ object OkEditorSupport {
             )
         }
 
-        val positionPaths = positionPaths(project)
+        val positionPaths = resolvedPositionPaths
+            ?: if ("self.pos." in text) positionPaths(project) else emptySet()
         fun addPos(matcher: java.util.regex.Matcher) {
             while (matcher.find()) {
                 val path = matcher.group(1)
