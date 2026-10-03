@@ -181,13 +181,13 @@ class BoundScreenRatio:
     }
 
     private fun className(parts: List<String>): String {
-        if (parts == listOf("screen")) return "ScreenPosition"
-        return parts.joinToString("") { part -> part.split(Regex("[^A-Za-z0-9]+"))
-            .filter { it.isNotEmpty() }
-            .joinToString("") { token -> token.replaceFirstChar { c -> c.uppercase() } } } + "Position"
-    }
+    if (parts == listOf("screen")) return "ScreenPosition"
+    // Preserve exact segment boundaries and spelling so distinct valid paths cannot collapse
+    // to the same generated Python class name (a_b.c vs a.b_c, foo vs Foo).
+    return "Position_" + parts.joinToString("__") { part -> "${part.length}_$part" }
+}
 
-    private fun pyNumber(value: Double): String = if (value % 1.0 == 0.0) String.format(Locale.ROOT, "%.1f", value) else value.toString()
+private fun pyNumber(value: Double): String = if (value % 1.0 == 0.0) String.format(Locale.ROOT, "%.1f", value) else value.toString()
     private fun round(value: Double): Double = String.format(Locale.ROOT, "%.${DECIMALS}f", value).toDouble()
 }
 

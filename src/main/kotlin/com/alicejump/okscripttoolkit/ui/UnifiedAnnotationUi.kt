@@ -952,7 +952,7 @@ private class ResourcePreviewPanel(private val project: Project) : JPanel(Border
 
     private fun publish() {
         val publisher=project.service<PositionPublisherService>()
-        val choice=Messages.showChooseDialog(project,"Export Position resources as:","Publish positions",arrayOf("JSON","Python data + parser"),"JSON",null)
+        val choice=Messages.showChooseDialog(project,"Export Position resources as:","Publish positions",null,arrayOf("JSON","Python data + parser"),"JSON")
         if(choice<0)return
         val format=if(choice==0)PositionPublisherService.Format.JSON else PositionPublisherService.Format.PYTHON
         var result=publisher.publish(format,false)
