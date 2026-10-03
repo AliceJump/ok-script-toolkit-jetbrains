@@ -26,7 +26,6 @@ data class ProjectConvention(
     val i18n: I18nConvention = I18nConvention(),
     val characters: CharactersConvention = CharactersConvention(),
     val effects: EffectsConvention = EffectsConvention(),
-    val boxes: BoxesConvention = BoxesConvention(),
 ) {
 
     companion object {
@@ -44,7 +43,6 @@ data class ProjectConvention(
                 i18n = I18nConvention.parse(root.get("i18n")),
                 characters = CharactersConvention.parse(root.get("characters")),
                 effects = EffectsConvention.parse(root.get("effects")),
-                boxes = BoxesConvention.parse(root.get("boxes")),
             )
         }
 
@@ -98,7 +96,7 @@ private val LEADING_SLASH_OR_DOT_SLASH = Regex("^(?:\\.?/)+")
  * 旧实现只给"项目声明"补后缀、把"上次保存"原样返回，于是从输入框里填模块路径会生成一个
  * **没有扩展名**的文件。统一在这里补，消费点不用各自判断。
  *
- * 与 VS Code 侧 `projectConfigPure.normalizeLabelEnumFile` 一一对应。
+ * 与 VS Code 侧 `projectConfigPure.normalizeLabelEnumFile` 语义一一对应。
  */
 internal fun normalizeLabelEnumFile(value: String?): String? {
     val rel = normalizeRelPath(value) ?: return null
@@ -291,30 +289,13 @@ data class TemplatesConvention(
     }
 }
 
-/**
- * `boxes` 一组：运行时框文件。标注工作文件不在这里，它跟随 [TemplatesConvention.directory]。
- * 没有 IDE 设置。见 [BoxRuntimePath]。
- */
-data class BoxesConvention(
-    val runtime: String? = null,
-) {
-    fun runtimeOrNull(): String? = normalizeRelPath(runtime)
-
-    companion object {
-        fun parse(node: JsonNode?): BoxesConvention {
-            if (node == null || !node.isObject) return BoxesConvention()
-            return BoxesConvention(runtime = node.get("runtime").stringOrNull())
-        }
-    }
-}
-
 /** `i18n` 一组：gettext / 语言 JSON 的位置与开关。 */
 data class I18nConvention(
     /** 是否读 po 数据 */
     val enabled: Boolean? = null,
     /** 语言 JSON 目录（角色名等），相对项目根 */
     val langDirectory: String? = null,
-    /** gettext .po 目录，相对项目根 */
+    /** gettext .po 目录（相对项目根） */
     val poDirectory: String? = null,
     /** 参与索引的 po domain */
     val poDomains: List<String> = emptyList(),
@@ -442,7 +423,8 @@ data class CharactersConvention(
         resolveSetting(normalizeRelPath(ideValue), normalizeRelPath(localeFile), fallback)
 
     /** 只要值时的薄封装。 */
-    fun localeFileOr(ideValue: String?, fallback: String): String = localeFileResolved(ideValue, fallback).value
+    fun localeFileOr(ideValue: String?, fallback: String): String =
+        localeFileResolved(ideValue, fallback).value
 
     /**
      * 头像模板的命名正则。
