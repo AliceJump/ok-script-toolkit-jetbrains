@@ -39,11 +39,9 @@ class PointCatalogService(private val project: Project) {
         if (result.errors.isNotEmpty()) emptyMap() else result.file.points.associate { it.path to it.image }
     }
 
-    /** 保存一张图的全部点。命名唯一性只在 point 域内检查。 */
     fun savePointsForImage(imagePath: Path, points: List<Pair<String, java.awt.Point>>): String? =
         savePoints(linkedMapOf(imagePath to points))
 
-    /** 一次替换所有编辑图片后再统一校验并写盘，避免跨图片改名受保存顺序影响。 */
     @Synchronized
     fun savePoints(edits: Map<Path, List<Pair<String, java.awt.Point>>>): String? {
         if (edits.isEmpty()) return null
@@ -199,6 +197,7 @@ class PointCatalogService(private val project: Project) {
     companion object {
         const val FILE_NAME = "points.json"
         private val SEGMENT = Regex("^[A-Za-z_][A-Za-z0-9_]*$")
+        private val DUNDER_MEMBER = Regex("^__.*__$")
         private val PYTHON_KEYWORDS = setOf(
             "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class",
             "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global",
@@ -212,7 +211,7 @@ class PointCatalogService(private val project: Project) {
             if (path.isEmpty()) return "empty"
             val parts = path.split('.')
             if (parts.size < 2) return "shallow"
-            if (parts.any { !SEGMENT.matches(it) || it in PYTHON_KEYWORDS || it in GENERATED_MEMBER_NAMES }) return "segment"
+            if (parts.any { !SEGMENT.matches(it) || it in PYTHON_KEYWORDS || it in GENERATED_MEMBER_NAMES || DUNDER_MEMBER.matches(it) }) return "segment"
             return null
         }
 
