@@ -59,12 +59,12 @@
             id="ok-script Annotation Management"
             anchor="right"
             icon="/icons/assets.svg"
-            factoryClass="com.alicejump.okscripttoolkit.ui.UnifiedAnnotationToolWindowFactory"/>
+            factoryClass="com.alicejump.okscripttoolkit.ui.PublishingAnnotationToolWindowFactory"/>
         <toolWindow
             id="ok-script Resource Preview"
             anchor="right"
             icon="/icons/templates.svg"
-            factoryClass="com.alicejump.okscripttoolkit.ui.UnifiedResourcePreviewToolWindowFactory"/>
+            factoryClass="com.alicejump.okscripttoolkit.ui.PreviewOnlyResourceToolWindowFactory"/>
         <toolWindow
             id="ok-script Temp Shots"
             anchor="right"
@@ -95,7 +95,7 @@
         <action id="com.alicejump.okscripttoolkit.ShowTasks" class="com.alicejump.okscripttoolkit.tasklauncher.ShowTasksAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
-        <action id="com.alicejump.okscripttoolkit.ScreenshotToTemplateAssets" class="com.alicejump.okscripttoolkit.ui.ScreenshotToUnifiedAnnotationsAction">
+        <action id="com.alicejump.okscripttoolkit.ScreenshotToTemplateAssets" class="com.alicejump.okscripttoolkit.ui.ScreenshotToPublishingAnnotationsAction">
             <keyboard-shortcut keymap="$default" first-keystroke="control alt S"/>
             <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt S"/>
             <add-to-group group-id="ToolsMenu" anchor="last"/>
