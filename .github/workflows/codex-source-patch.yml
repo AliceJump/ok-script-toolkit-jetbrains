@@ -22,6 +22,7 @@ jobs:
         run: |
           python - <<'PY'
           from pathlib import Path
+          import re
 
           ui = Path('src/main/kotlin/com/alicejump/okscripttoolkit/ui/UnifiedAnnotationUi.kt')
           text = ui.read_text(encoding='utf-8')
@@ -33,21 +34,19 @@ jobs:
 
           pos = Path('src/main/kotlin/com/alicejump/okscripttoolkit/core/PositionResource.kt')
           text = pos.read_text(encoding='utf-8')
-          old = '''    private fun className(parts: List<String>): String {
+          pattern = re.compile(r'    private fun className\(parts: List<String>\): String \{.*?\n    \}\n\n    private fun pyNumber', re.S)
+          replacement = '''    private fun className(parts: List<String>): String {
               if (parts == listOf("screen")) return "ScreenPosition"
-              return parts.joinToString("") { part -> part.split(Regex("[^A-Za-z0-9]+"))
-                  .filter { it.isNotEmpty() }
-                  .joinToString("") { token -> token.replaceFirstChar { c -> c.uppercase() } } } + "Position"
-          }'''
-          new = '''    private fun className(parts: List<String>): String {
-              if (parts == listOf("screen")) return "ScreenPosition"
-              // Preserve exact segment boundaries and spelling so different valid paths cannot collapse
-              // to the same generated Python class name (e.g. a_b.c vs a.b_c, foo vs Foo).
+              // Preserve exact segment boundaries and spelling so distinct valid paths cannot collapse
+              // to the same generated Python class name (a_b.c vs a.b_c, foo vs Foo).
               return "Position_" + parts.joinToString("__") { part -> "${part.length}_$part" }
-          }'''
-          if old not in text:
-              raise SystemExit('className source pattern not found')
-          pos.write_text(text.replace(old, new, 1), encoding='utf-8')
+          }
+
+          private fun pyNumber'''
+          text2, count = pattern.subn(replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f'className source pattern count={count}')
+          pos.write_text(text2, encoding='utf-8')
           PY
       - name: Commit source fixes and remove temporary workflow
         shell: bash
