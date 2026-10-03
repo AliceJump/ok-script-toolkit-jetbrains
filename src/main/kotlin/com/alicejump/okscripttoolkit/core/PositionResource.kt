@@ -194,16 +194,18 @@ class BoundScreenRatio:
 @Service(Service.Level.PROJECT)
 class PositionPublisherService(private val project: Project) {
     enum class Format { JSON, PYTHON }
+    data class Selection(val rect: Boolean, val point: Boolean) {
+        val any: Boolean get() = rect || point
+    }
     data class Result(val errors: List<String> = emptyList(), val conflicts: List<Path> = emptyList(), val written: List<Path> = emptyList())
 
-    fun collect(): PositionResource.PublishResult {
-        val boxCatalog = project.service<BoxCatalogService>()
-        val boxErrors = boxCatalog.authoringErrors()
-        if (boxErrors.isNotEmpty()) return PositionResource.PublishResult(emptyList(), boxErrors.map { "box:$it" })
-        val boxes = boxCatalog.readAuthoring()
-        val points = project.service<PointCatalogService>().read()
-        if (points.errors.isNotEmpty()) return PositionResource.PublishResult(emptyList(), points.errors.map { "point:$it" })
+    fun collect(): PositionResource.PublishResult = collect(Selection(rect = true, point = true))
+
+    fun collect(selection: Selection): PositionResource.PublishResult {
+        if (!selection.any) return PositionResource.PublishResult(emptyList(), listOf("selection"))
+
         val imageMap = linkedMapOf<String, PositionResource.Image>()
+        val items = mutableListOf<PositionResource.Item>()
         val root = project.service<OkProjectDataService>().rootPath()
         val templates = OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory()
         fun resolved(file: String, fallbackW: Int, fallbackH: Int): PositionResource.Image {
@@ -211,15 +213,27 @@ class PositionPublisherService(private val project: Project) {
             val actual = path?.toFile()?.let { project.service<TemplateAssetDataService>().readImageHeaderSize(it) }
             return PositionResource.Image(file, actual?.first ?: fallbackW, actual?.second ?: fallbackH)
         }
-        boxes.images.forEach { image -> imageMap[image.file.lowercase()] = resolved(image.file, image.width, image.height) }
-        points.file.images.forEach { image -> imageMap[image.file.lowercase()] = resolved(image.file, image.width, image.height) }
-        val items = mutableListOf<PositionResource.Item>()
-        boxes.boxes.forEach { box ->
-            items += PositionResource.Item(box.path, box.image, PositionResource.Kind.RECT, box.bbox[0], box.bbox[1], box.bbox[2], box.bbox[3])
+
+        if (selection.rect) {
+            val boxCatalog = project.service<BoxCatalogService>()
+            val boxErrors = boxCatalog.authoringErrors()
+            if (boxErrors.isNotEmpty()) return PositionResource.PublishResult(emptyList(), boxErrors.map { "box:$it" })
+            val boxes = boxCatalog.readAuthoring()
+            boxes.images.forEach { image -> imageMap[image.file.lowercase()] = resolved(image.file, image.width, image.height) }
+            boxes.boxes.forEach { box ->
+                items += PositionResource.Item(box.path, box.image, PositionResource.Kind.RECT, box.bbox[0], box.bbox[1], box.bbox[2], box.bbox[3])
+            }
         }
-        points.file.points.forEach { point ->
-            items += PositionResource.Item(point.path, point.image, PositionResource.Kind.POINT, point.x, point.y)
+
+        if (selection.point) {
+            val points = project.service<PointCatalogService>().read()
+            if (points.errors.isNotEmpty()) return PositionResource.PublishResult(emptyList(), points.errors.map { "point:$it" })
+            points.file.images.forEach { image -> imageMap[image.file.lowercase()] = resolved(image.file, image.width, image.height) }
+            points.file.points.forEach { point ->
+                items += PositionResource.Item(point.path, point.image, PositionResource.Kind.POINT, point.x, point.y)
+            }
         }
+
         return PositionResource.publish(items, imageMap.values.toList())
     }
 
@@ -233,9 +247,13 @@ class PositionPublisherService(private val project: Project) {
         return scene
     }
 
-    fun publish(format: Format, overwriteHandwritten: Boolean = false): Result {
-        val published = collect()
+    fun publish(format: Format, overwriteHandwritten: Boolean = false): Result =
+        publish(format, Selection(rect = true, point = true), overwriteHandwritten)
+
+    fun publish(format: Format, selection: Selection, overwriteHandwritten: Boolean = false): Result {
+        val published = collect(selection)
         if (published.errors.isNotEmpty()) return Result(errors = published.errors)
+        if (published.positions.isEmpty()) return Result(errors = listOf("empty"))
         val root = project.service<OkProjectDataService>().rootPath() ?: return Result(errors = listOf("root"))
         val scene = sceneDirectory(root) ?: return Result(errors = listOf("outside"))
         return when (format) {
