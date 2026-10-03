@@ -52,6 +52,27 @@ class PositionResourceTest {
     }
 
     @Test
+    fun `screen ratio serializer emits literal Python quotes`() {
+        val source = PositionResource.serializeScreenRatioPython()
+        assertFalse(source.contains(charArrayOf('\\', '"').concatToString()))
+        assertTrue(source.contains("raise ValueError(\"ScreenRatio requires either 2 point coordinates or 4 rect coordinates\")"))
+        assertTrue(source.contains("'''A normalized screen point"))
+    }
+
+    @Test
+    fun `Python keyword and generated member paths are rejected`() {
+        val result = PositionResource.publish(
+            listOf(
+                PositionResource.Item("screen.class", "a.png", PositionResource.Kind.POINT, 1, 1),
+                PositionResource.Item("screen._parent", "a.png", PositionResource.Kind.POINT, 2, 2),
+            ),
+            listOf(PositionResource.Image("a.png", 10, 10)),
+        )
+        assertTrue("segment:screen.class" in result.errors)
+        assertTrue("segment:screen._parent" in result.errors)
+    }
+
+    @Test
     fun `json serializer keeps two coordinates for points and four for rects`() {
         val result = PositionResource.PublishResult(
             positions = listOf(
