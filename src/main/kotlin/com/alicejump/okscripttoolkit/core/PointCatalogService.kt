@@ -40,31 +40,35 @@ class PointCatalogService(private val project: Project) {
     }
 
     /** 保存一张图的全部点。命名唯一性只在 point 域内检查。 */
+    fun savePointsForImage(imagePath: Path, points: List<Pair<String, java.awt.Point>>): String? =
+        savePoints(linkedMapOf(imagePath to points))
+
+    /** 一次替换所有编辑图片后再统一校验并写盘，避免跨图片改名受保存顺序影响。 */
     @Synchronized
-    fun savePointsForImage(imagePath: Path, points: List<Pair<String, java.awt.Point>>): String? {
+    fun savePoints(edits: Map<Path, List<Pair<String, java.awt.Point>>>): String? {
+        if (edits.isEmpty()) return null
         val current = read()
         if (current.errors.isNotEmpty()) return "parse"
-        val imageName = imagePath.fileName.toString()
-        val size = project.service<TemplateAssetDataService>().readImageHeaderSize(imagePath.toFile()) ?: return "image"
-        if (size.first <= 0 || size.second <= 0) return "image"
+        val editedNames = edits.keys.map { it.fileName.toString() }
+        current.file.points.removeAll { point -> editedNames.any { sameImage(point.image, it) } }
+        val occupied = current.file.points.mapTo(mutableSetOf()) { it.path }
 
-        val occupied = current.file.points
-            .filter { !sameImage(it.image, imageName) }
-            .mapTo(mutableSetOf()) { it.path }
-        val normalized = mutableListOf<Point>()
-        for ((rawPath, p) in points) {
-            val path = rawPath.trim()
-            if (positionPathError(path) != null) return "path"
-            if (!occupied.add(path)) return "duplicate"
-            if (p.x < 0 || p.y < 0 || p.x > size.first || p.y > size.second) return "geometry"
-            normalized += Point(path, imageName, p.x, p.y)
+        for ((imagePath, points) in edits) {
+            val imageName = imagePath.fileName.toString()
+            val size = project.service<TemplateAssetDataService>().readImageHeaderSize(imagePath.toFile()) ?: return "image"
+            if (size.first <= 0 || size.second <= 0) return "image"
+            for ((rawPath, p) in points) {
+                val path = rawPath.trim()
+                if (positionPathError(path) != null) return "path"
+                if (!occupied.add(path)) return "duplicate"
+                if (p.x < 0 || p.y < 0 || p.x > size.first || p.y > size.second) return "geometry"
+                current.file.points += Point(path, imageName, p.x, p.y)
+            }
+            val image = current.file.images.firstOrNull { sameImage(it.file, imageName) }
+            if (image == null) current.file.images += Image(imageName, size.first, size.second)
+            else { image.width = size.first; image.height = size.second }
         }
 
-        current.file.points.removeAll { sameImage(it.image, imageName) }
-        current.file.points.addAll(normalized)
-        val image = current.file.images.firstOrNull { sameImage(it.file, imageName) }
-        if (image == null) current.file.images += Image(imageName, size.first, size.second)
-        else { image.width = size.first; image.height = size.second }
         current.file.images.removeAll { candidate ->
             current.file.points.none { sameImage(it.image, candidate.file) }
         }
@@ -195,13 +199,20 @@ class PointCatalogService(private val project: Project) {
     companion object {
         const val FILE_NAME = "points.json"
         private val SEGMENT = Regex("^[A-Za-z_][A-Za-z0-9_]*$")
+        private val PYTHON_KEYWORDS = setOf(
+            "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class",
+            "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global",
+            "if", "import", "in", "is", "lambda", "nonlocal", "not", "or", "pass", "raise", "return",
+            "try", "while", "with", "yield",
+        )
+        private val GENERATED_MEMBER_NAMES = setOf("__init__", "_parent")
 
         fun positionPathError(value: String): String? {
             val path = value.trim()
             if (path.isEmpty()) return "empty"
             val parts = path.split('.')
             if (parts.size < 2) return "shallow"
-            if (parts.any { !SEGMENT.matches(it) }) return "segment"
+            if (parts.any { !SEGMENT.matches(it) || it in PYTHON_KEYWORDS || it in GENERATED_MEMBER_NAMES }) return "segment"
             return null
         }
 
