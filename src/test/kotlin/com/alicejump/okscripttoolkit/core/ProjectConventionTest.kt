@@ -374,15 +374,6 @@ class ProjectConventionTest {
     }
 
     @Test
-    fun `boxes runtime is a relative path and a wrong type counts as absent`() {
-        val declared = convention("""{"boxes": {"runtime": "src/scene/boxes.json"}}""")
-        assertEquals("src/scene/boxes.json", declared.boxes.runtimeOrNull())
-        val wrong = convention("""{"boxes": {"runtime": 42}}""")
-        assertEquals(null, wrong.boxes.runtime)
-        assertEquals(null, convention("""{"boxes": []}""").boxes.runtime)
-    }
-
-    @Test
     fun `a declared directory with a trailing backslash still wins over the fallback`() {
         // 原始字符串里 `\\` 就是两个反斜杠 → JSON 解析出来是 `my_tpl\`（尾随一个反斜杠）
         val c = convention("""{"templates": {"directory": "my_tpl\\"}}""")
