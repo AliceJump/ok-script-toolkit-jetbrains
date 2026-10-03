@@ -1,0 +1,79 @@
+name: Apply PR 22 resource transaction fix
+
+on:
+  push:
+    branches:
+      - codex/unified-annotation-resources-parity
+    paths:
+      - .github/workflows/fix-pr22-resource-transaction.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/unified-annotation-resources-parity
+          fetch-depth: 0
+      - name: Add multi-store rollback boundary
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          p = Path('src/main/kotlin/com/alicejump/okscripttoolkit/ui/UnifiedAnnotationUi.kt')
+          text = p.read_text(encoding='utf-8')
+
+          import_anchor = 'import com.alicejump.okscripttoolkit.core.PositionPublisherService\n'
+          if import_anchor not in text:
+              raise SystemExit('missing import anchor')
+          text = text.replace(
+              import_anchor,
+              import_anchor + 'import com.alicejump.okscripttoolkit.core.ResourceFileTransaction\n',
+              1,
+          )
+
+          old = '''        pointCatalog.savePoints(pointEdits)?.let { return "point:$it" }
+        if (templateEdits.isNotEmpty() && !templateData.saveAnnotationEdits(templateEdits)) {
+            return "template:${templateData.lastError ?: "write"}"
+        }
+        if (rectEdits.isNotEmpty() && !boxCatalog.annotations.saveAnnotationEdits(rectEdits)) {
+            return "rect:${boxCatalog.annotations.lastError ?: "write"}"
+        }
+        return null
+'''
+          new = '''        val resourcePaths = mutableListOf<Path>()
+        if (pointEdits.isNotEmpty()) resourcePaths += pointCatalog.authoringPath() ?: return "point:path"
+        if (templateEdits.isNotEmpty()) resourcePaths += templateData.annotationFile ?: return "template:path"
+        if (rectEdits.isNotEmpty()) resourcePaths += boxCatalog.authoringPath() ?: return "rect:path"
+        val transaction = ResourceFileTransaction.capture(resourcePaths) ?: return "snapshot"
+
+        fun rollback(error: String): String {
+            val restored = transaction.rollback()
+            if (templateEdits.isNotEmpty()) templateData.reload()
+            if (rectEdits.isNotEmpty()) boxCatalog.annotations.reload()
+            return if (restored) error else "$error:rollback"
+        }
+
+        pointCatalog.savePoints(pointEdits)?.let { return rollback("point:$it") }
+        if (templateEdits.isNotEmpty() && !templateData.saveAnnotationEdits(templateEdits)) {
+            return rollback("template:${templateData.lastError ?: "write"}")
+        }
+        if (rectEdits.isNotEmpty() && !boxCatalog.annotations.saveAnnotationEdits(rectEdits)) {
+            return rollback("rect:${boxCatalog.annotations.lastError ?: "write"}")
+        }
+        return null
+'''
+          if text.count(old) != 1:
+              raise SystemExit(f'expected one save block, found {text.count(old)}')
+          p.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+          git rm .github/workflows/fix-pr22-resource-transaction.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: roll back partial annotation resource saves"
+          git push origin HEAD:codex/unified-annotation-resources-parity
