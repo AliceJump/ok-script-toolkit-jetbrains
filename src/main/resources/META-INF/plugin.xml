@@ -17,17 +17,10 @@
             id="com.alicejump.okscripttoolkit.settings"
             displayName="ok-script Toolkit"/>
 
-        <completion.contributor
-            language="Python"
-            implementationClass="com.alicejump.okscripttoolkit.editor.OkPythonCompletionContributor"/>
-        <completion.contributor
-            language="JSON"
-            implementationClass="com.alicejump.okscripttoolkit.editor.OkJsonCompletionContributor"/>
+        <completion.contributor language="Python" implementationClass="com.alicejump.okscripttoolkit.editor.OkPythonCompletionContributor"/>
+        <completion.contributor language="JSON" implementationClass="com.alicejump.okscripttoolkit.editor.OkJsonCompletionContributor"/>
+        <documentationProvider implementation="com.alicejump.okscripttoolkit.editor.OkDocumentationProvider"/>
 
-        <documentationProvider implementationClass="com.alicejump.okscripttoolkit.editor.OkDocumentationProvider"/>
-
-        <!-- 角色管理开成编辑器标签页（对齐 VSCode 的 ViewColumn.One 大窗口），
-             载体是非物理的 CharacterManagerFile，只由下面的 provider 接管。 -->
         <fileType
             name="ok-script Character Manager"
             implementationClass="com.alicejump.okscripttoolkit.ui.CharacterManagerFileType"
@@ -61,106 +54,59 @@
             isEnabledByDefault="true"
             implementationClass="com.alicejump.okscripttoolkit.editor.OkInlayHintsProvider"/>
 
+        <!-- 用户侧只保留两个资源入口：原图/统一标注器，以及模板/框/点统一资源预览。 -->
         <toolWindow
-            id="ok-script Templates"
-            anchor="right"
-            icon="/icons/templates.svg"
-            factoryClass="com.alicejump.okscripttoolkit.ui.TemplatesToolWindowFactory"/>
-        <toolWindow
-            id="ok-script Assets"
+            id="ok-script Annotation Management"
             anchor="right"
             icon="/icons/assets.svg"
-            factoryClass="com.alicejump.okscripttoolkit.ui.TemplateAssetToolWindowFactory"/>
+            factoryClass="com.alicejump.okscripttoolkit.ui.UnifiedAnnotationToolWindowFactory"/>
         <toolWindow
-            id="ok-script Box Assets"
-            anchor="right"
-            icon="/icons/assets.svg"
-            factoryClass="com.alicejump.okscripttoolkit.ui.BoxAssetToolWindowFactory"/>
-        <toolWindow
-            id="ok-script Boxes"
+            id="ok-script Resource Preview"
             anchor="right"
             icon="/icons/templates.svg"
-            factoryClass="com.alicejump.okscripttoolkit.ui.BoxGalleryToolWindowFactory"/>
+            factoryClass="com.alicejump.okscripttoolkit.ui.UnifiedResourcePreviewToolWindowFactory"/>
         <toolWindow
             id="ok-script Temp Shots"
             anchor="right"
             icon="/icons/tempShots.svg"
             factoryClass="com.alicejump.okscripttoolkit.ui.TempScreenshotToolWindowFactory"/>
-        <!-- 任务启动器改成左（列表）/ 右（参数）主从分栏，需要纵向空间，所以停靠右侧；
-             日志本身不在这里，而是输出到 Run 工具窗口的「ok-script 执行器」标签页。 -->
         <toolWindow
             id="ok-script Tasks"
             anchor="right"
             icon="/icons/task.svg"
             factoryClass="com.alicejump.okscripttoolkit.tasklauncher.TaskLauncherToolWindowFactory"/>
 
-        <notificationGroup
-            id="okScriptToolkit"
-            displayType="BALLOON"
-            isLogByDefault="true"/>
-
-        <!-- 项目约定文件 ok-script-toolkit.json 的 schema（补全/文档/校验），
-             与 VS Code 侧 jsonValidation 共用父仓 schemas/ 的同一份 schema 文件 -->
-        <JavaScript.JsonSchema.ProviderFactory
-            implementation="com.alicejump.okscripttoolkit.editor.OkConventionSchemaProviderFactory"/>
+        <notificationGroup id="okScriptToolkit" displayType="BALLOON" isLogByDefault="true"/>
+        <JavaScript.JsonSchema.ProviderFactory implementation="com.alicejump.okscripttoolkit.editor.OkConventionSchemaProviderFactory"/>
     </extensions>
 
     <actions>
-        <action
-            id="com.alicejump.okscripttoolkit.ShowTemplates"
-            class="com.alicejump.okscripttoolkit.ui.ShowTemplatesAction">
+        <action id="com.alicejump.okscripttoolkit.ShowUnifiedAnnotations" class="com.alicejump.okscripttoolkit.ui.ShowUnifiedAnnotationsAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
             <keyboard-shortcut keymap="$default" first-keystroke="control alt T"/>
             <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt T"/>
         </action>
-        <action
-            id="com.alicejump.okscripttoolkit.OpenTemplateGalleryEditor"
-            class="com.alicejump.okscripttoolkit.ui.OpenTemplateGalleryEditorAction">
+        <action id="com.alicejump.okscripttoolkit.ShowUnifiedResources" class="com.alicejump.okscripttoolkit.ui.ShowUnifiedResourcesAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
-        <action
-            id="com.alicejump.okscripttoolkit.ShowTasks"
-            class="com.alicejump.okscripttoolkit.tasklauncher.ShowTasksAction">
+        <action id="com.alicejump.okscripttoolkit.OpenTemplateGalleryEditor" class="com.alicejump.okscripttoolkit.ui.OpenTemplateGalleryEditorAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
-        <action
-            id="com.alicejump.okscripttoolkit.ShowTemplateAssets"
-            class="com.alicejump.okscripttoolkit.ui.ShowTemplateAssetsAction">
+        <action id="com.alicejump.okscripttoolkit.ShowTasks" class="com.alicejump.okscripttoolkit.tasklauncher.ShowTasksAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
-        <action
-            id="com.alicejump.okscripttoolkit.ShowBoxAssets"
-            class="com.alicejump.okscripttoolkit.ui.ShowBoxAssetsAction">
-            <add-to-group group-id="ToolsMenu" anchor="last"/>
-        </action>
-        <action
-            id="com.alicejump.okscripttoolkit.ShowBoxGallery"
-            class="com.alicejump.okscripttoolkit.ui.ShowBoxGalleryAction">
-            <add-to-group group-id="ToolsMenu" anchor="last"/>
-        </action>
-        <!-- 文案在 Action 代码里走 bundle（i18n 铁律），这里只声明 id / class / 默认键位。
-             用户可在「设置 → 按键映射」里改键位 —— 键位是个人偏好，不进项目约定文件。 -->
-        <action
-            id="com.alicejump.okscripttoolkit.ScreenshotToTemplateAssets"
-            class="com.alicejump.okscripttoolkit.ui.ScreenshotToTemplateAssetsAction">
+        <action id="com.alicejump.okscripttoolkit.ScreenshotToTemplateAssets" class="com.alicejump.okscripttoolkit.ui.ScreenshotToUnifiedAnnotationsAction">
             <keyboard-shortcut keymap="$default" first-keystroke="control alt S"/>
             <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt S"/>
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
-        <action
-            id="com.alicejump.okscripttoolkit.ShowCharacterManager"
-            class="com.alicejump.okscripttoolkit.ui.ShowCharacterManagerAction">
+        <action id="com.alicejump.okscripttoolkit.ShowCharacterManager" class="com.alicejump.okscripttoolkit.ui.ShowCharacterManagerAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
-        <action
-            id="com.alicejump.okscripttoolkit.ShowTempShots"
-            class="com.alicejump.okscripttoolkit.ui.ShowTempShotsAction">
+        <action id="com.alicejump.okscripttoolkit.ShowTempShots" class="com.alicejump.okscripttoolkit.ui.ShowTempShotsAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
-        <!-- 文案同样走 Action 代码里的 bundle，这里只声明 id / class -->
-        <action
-            id="com.alicejump.okscripttoolkit.ShowConventionSources"
-            class="com.alicejump.okscripttoolkit.ui.ShowConventionSourcesAction">
+        <action id="com.alicejump.okscripttoolkit.ShowConventionSources" class="com.alicejump.okscripttoolkit.ui.ShowConventionSourcesAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
     </actions>

@@ -7,6 +7,8 @@ import com.alicejump.okscripttoolkit.core.ProjectDirResolution
 import com.alicejump.okscripttoolkit.core.RunDir
 import com.alicejump.okscripttoolkit.toolbox.ToolboxService
 import com.alicejump.okscripttoolkit.ui.ToolbarAction
+import com.alicejump.okscripttoolkit.ui.UNIFIED_ANNOTATION_TOOL_WINDOW_ID
+import com.alicejump.okscripttoolkit.ui.UNIFIED_RESOURCE_PREVIEW_TOOL_WINDOW_ID
 import com.alicejump.okscripttoolkit.ui.openCharacterManager
 import com.alicejump.okscripttoolkit.ui.openTemplateGalleryEditor
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
@@ -1210,7 +1212,7 @@ class TaskLauncherPanel(private val project: Project) {
                 toolRow(
                     OkScriptToolkitBundle.message("taskLauncher.toolTemplatesTitle"),
                     OkScriptToolkitBundle.message("taskLauncher.toolTemplatesDesc"),
-                ) { showToolWindow("ok-script Templates") },
+                ) { showToolWindow(UNIFIED_RESOURCE_PREVIEW_TOOL_WINDOW_ID) },
             )
             body.add(
                 toolRow(
@@ -1228,7 +1230,7 @@ class TaskLauncherPanel(private val project: Project) {
                 toolRow(
                     OkScriptToolkitBundle.message("taskLauncher.toolAssetsTitle"),
                     OkScriptToolkitBundle.message("taskLauncher.toolAssetsDesc"),
-                ) { showToolWindow("ok-script Assets") },
+                ) { showToolWindow(UNIFIED_ANNOTATION_TOOL_WINDOW_ID) },
             )
         }
         return singleColumnPage(listOf(card))
