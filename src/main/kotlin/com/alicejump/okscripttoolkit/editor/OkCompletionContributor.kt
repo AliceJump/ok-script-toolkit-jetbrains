@@ -1,6 +1,8 @@
 package com.alicejump.okscripttoolkit.editor
 
+import com.alicejump.okscripttoolkit.core.BoxCatalogService
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
+import com.alicejump.okscripttoolkit.core.PointCatalogService
 import com.intellij.codeInsight.completion.CompletionContributor
 import com.intellij.codeInsight.completion.CompletionParameters
 import com.intellij.codeInsight.completion.CompletionResultSet
@@ -17,7 +19,8 @@ class OkPythonCompletionContributor : CompletionContributor() {
             parameters.offset,
             parameters.position.project,
         ) ?: return
-        val data = parameters.position.project.service<OkProjectDataService>()
+        val project = parameters.position.project
+        val data = project.service<OkProjectDataService>()
         val replacement = if (context.prefix.isEmpty()) result else result.withPrefixMatcher(context.prefix)
 
         when (context.kind) {
@@ -36,8 +39,10 @@ class OkPythonCompletionContributor : CompletionContributor() {
                 )
             }
             CompletionKind.POS -> {
-                val catalog = parameters.position.project.service<com.alicejump.okscripttoolkit.core.BoxCatalogService>()
-                val paths = catalog.readRuntime().boxes.map { it.path }
+                val rects = project.service<BoxCatalogService>().readAuthoring().boxes.map { it.path }
+                val pointResult = project.service<PointCatalogService>().read()
+                val points = if (pointResult.errors.isEmpty()) pointResult.file.points.map { it.path } else emptyList()
+                val paths = (rects + points).distinct().sorted()
                 OkEditorSupport.boxSegments(paths, context.module.orEmpty()).forEach { segment ->
                     replacement.addElement(
                         LookupElementBuilder.create(segment)
@@ -48,7 +53,6 @@ class OkPythonCompletionContributor : CompletionContributor() {
             CompletionKind.FEATURE -> data.features().forEach { feature ->
                 val element = LookupElementBuilder.create(feature.name)
                     .withTypeText("${feature.width}×${feature.height}", true)
-                // 对齐 VSCode 版：模板名强制置顶（sortText \u0000 + preselect）
                 replacement.addElement(PrioritizedLookupElement.withPriority(element, 1000.0))
             }
             CompletionKind.EFFECT -> data.effectIds()
