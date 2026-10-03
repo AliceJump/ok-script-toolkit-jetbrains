@@ -19,7 +19,7 @@
 
         <completion.contributor language="Python" implementationClass="com.alicejump.okscripttoolkit.editor.OkPythonCompletionContributor"/>
         <completion.contributor language="JSON" implementationClass="com.alicejump.okscripttoolkit.editor.OkJsonCompletionContributor"/>
-        <documentationProvider implementationClass="com.alicejump.okscripttoolkit.editor.OkDocumentationProvider"/>
+        <documentationProvider implementation="com.alicejump.okscripttoolkit.editor.OkDocumentationProvider"/>
 
         <fileType
             name="ok-script Character Manager"
@@ -95,7 +95,7 @@
         <action id="com.alicejump.okscripttoolkit.ShowTasks" class="com.alicejump.okscripttoolkit.tasklauncher.ShowTasksAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
-        <action id="com.alicejump.okscripttoolkit.ScreenshotToTemplateAssets" class="com.alicejump.okscripttoolkit.ui.ScreenshotToTemplateAssetsAction">
+        <action id="com.alicejump.okscripttoolkit.ScreenshotToTemplateAssets" class="com.alicejump.okscripttoolkit.ui.ScreenshotToUnifiedAnnotationsAction">
             <keyboard-shortcut keymap="$default" first-keystroke="control alt S"/>
             <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt S"/>
             <add-to-group group-id="ToolsMenu" anchor="last"/>
