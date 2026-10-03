@@ -191,6 +191,24 @@ class BoundScreenRatio:
     private fun round(value: Double): Double = String.format(Locale.ROOT, "%.${DECIMALS}f", value).toDouble()
 }
 
+/** Conflicts in the single exported PositionMap namespace, independent of authoring resource kind. */
+internal fun positionNamespaceConflicts(selectedPaths: Collection<String>, otherPaths: Collection<String>): List<String> {
+    val errors = linkedSetOf<String>()
+    for (selectedRaw in selectedPaths) {
+        val selected = selectedRaw.trim()
+        if (selected.isEmpty()) continue
+        for (otherRaw in otherPaths) {
+            val other = otherRaw.trim()
+            if (other.isEmpty()) continue
+            when {
+                selected == other -> errors += "duplicate:$selected"
+                selected.startsWith("$other.") || other.startsWith("$selected.") -> errors += "prefix:$selected"
+            }
+        }
+    }
+    return errors.toList()
+}
+
 @Service(Service.Level.PROJECT)
 class PositionPublisherService(private val project: Project) {
     enum class Format { JSON, PYTHON }
@@ -232,6 +250,22 @@ class PositionPublisherService(private val project: Project) {
             points.file.points.forEach { point ->
                 items += PositionResource.Item(point.path, point.image, PositionResource.Kind.POINT, point.x, point.y)
             }
+        }
+
+        // Partial publishing replaces the complete output. Check the shared namespace against a
+        // readable unselected catalog, but never let errors in an intentionally unselected source
+        // block the selected resource type.
+        if (selection.rect != selection.point) {
+            val selectedPaths = items.map { it.path }
+            val otherPaths = if (selection.rect) {
+                val points = project.service<PointCatalogService>().read()
+                if (points.errors.isEmpty()) points.file.points.map { it.path } else emptyList()
+            } else {
+                val boxes = project.service<BoxCatalogService>()
+                if (boxes.authoringErrors().isEmpty()) boxes.readAuthoring().boxes.map { it.path } else emptyList()
+            }
+            val namespaceErrors = positionNamespaceConflicts(selectedPaths, otherPaths)
+            if (namespaceErrors.isNotEmpty()) return PositionResource.PublishResult(emptyList(), namespaceErrors)
         }
 
         return PositionResource.publish(items, imageMap.values.toList())
