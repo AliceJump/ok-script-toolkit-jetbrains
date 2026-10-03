@@ -182,8 +182,6 @@ class BoundScreenRatio:
 
     private fun className(parts: List<String>): String {
         if (parts == listOf("screen")) return "ScreenPosition"
-        // Preserve exact segment boundaries and spelling so distinct valid paths cannot collapse
-        // to the same generated Python class name (a_b.c vs a.b_c, foo vs Foo).
         return "Position_" + parts.joinToString("__") { part -> "${part.length}_$part" }
     }
 
@@ -255,13 +253,18 @@ class PositionPublisherService(private val project: Project) {
 
                 val screenSource = PositionResource.serializeScreenRatioPython()
                 val mapSource = PositionResource.serializePositionMapPython(published)
-                val previousScreen = if (Files.isRegularFile(screen)) runCatching { Files.readString(screen) }.getOrNull() else null
+                val screenExisted = Files.isRegularFile(screen)
+                val previousScreen = if (screenExisted) {
+                    runCatching { Files.readAllBytes(screen) }.getOrElse {
+                        return Result(errors = listOf("backup:ScreenRatio.py"))
+                    }
+                } else null
                 if (!writeAnnotationText(screen, screenSource)) return Result(errors = listOf("write:ScreenRatio.py"))
                 if (!writeAnnotationText(map, mapSource)) {
                     val restored = if (previousScreen == null) {
                         runCatching { Files.deleteIfExists(screen); true }.getOrDefault(false)
                     } else {
-                        writeAnnotationText(screen, previousScreen)
+                        runCatching { Files.write(screen, previousScreen); true }.getOrDefault(false)
                     }
                     return Result(errors = listOf(if (restored) "write:PositionMap.py" else "write:PositionMap.py:rollback"))
                 }
