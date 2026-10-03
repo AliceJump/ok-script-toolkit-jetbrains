@@ -219,6 +219,15 @@ private object UnifiedPublishController {
     ) {
         val publisher = project.service<PositionPublisherService>()
         val positionSelection = PositionPublisherService.Selection(selection.rect, selection.point)
+        if (positionSelection.rect != positionSelection.point) {
+            val answer = Messages.showYesNoDialog(
+                project,
+                "Publishing only the selected position type replaces the complete Position output and removes unselected positions.\n\nContinue?",
+                "Publish",
+                Messages.getWarningIcon(),
+            )
+            if (answer != Messages.YES) return
+        }
         var result = publisher.publish(format, positionSelection, false)
         if (result.conflicts.isNotEmpty()) {
             val answer = Messages.showYesNoDialog(
