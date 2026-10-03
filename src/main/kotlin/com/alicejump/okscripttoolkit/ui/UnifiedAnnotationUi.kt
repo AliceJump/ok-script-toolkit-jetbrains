@@ -8,6 +8,7 @@ import com.alicejump.okscripttoolkit.core.NormalizedAnnotationRect
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
 import com.alicejump.okscripttoolkit.core.PointCatalogService
 import com.alicejump.okscripttoolkit.core.PositionPublisherService
+import com.alicejump.okscripttoolkit.core.ResourceFileTransaction
 import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
 import com.alicejump.okscripttoolkit.core.TemplateImage
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
@@ -296,12 +297,25 @@ class UnifiedAnnotationDialog(
             pointEdits[file.toPath()] = session.shapes.map { it.name to Point(it.x, it.y) }
         }
 
-        pointCatalog.savePoints(pointEdits)?.let { return "point:$it" }
+        val resourcePaths = mutableListOf<Path>()
+        if (pointEdits.isNotEmpty()) resourcePaths += pointCatalog.authoringPath() ?: return "point:path"
+        if (templateEdits.isNotEmpty()) resourcePaths += templateData.annotationFile ?: return "template:path"
+        if (rectEdits.isNotEmpty()) resourcePaths += boxCatalog.authoringPath() ?: return "rect:path"
+        val transaction = ResourceFileTransaction.capture(resourcePaths) ?: return "snapshot"
+
+        fun rollback(error: String): String {
+            val restored = transaction.rollback()
+            if (templateEdits.isNotEmpty()) templateData.reload()
+            if (rectEdits.isNotEmpty()) boxCatalog.annotations.reload()
+            return if (restored) error else "$error:rollback"
+        }
+
+        pointCatalog.savePoints(pointEdits)?.let { return rollback("point:$it") }
         if (templateEdits.isNotEmpty() && !templateData.saveAnnotationEdits(templateEdits)) {
-            return "template:${templateData.lastError ?: "write"}"
+            return rollback("template:${templateData.lastError ?: "write"}")
         }
         if (rectEdits.isNotEmpty() && !boxCatalog.annotations.saveAnnotationEdits(rectEdits)) {
-            return "rect:${boxCatalog.annotations.lastError ?: "write"}"
+            return rollback("rect:${boxCatalog.annotations.lastError ?: "write"}")
         }
         return null
     }
