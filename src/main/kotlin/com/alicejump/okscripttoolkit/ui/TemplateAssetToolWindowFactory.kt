@@ -1170,7 +1170,7 @@ class ShowTemplateAssetsAction : AnAction() {
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
-            .getToolWindow(TemplateAssetPanel.TOOL_WINDOW_ID)
+            .getToolWindow(UNIFIED_ANNOTATION_TOOL_WINDOW_ID)
             ?.show()
     }
 
@@ -1196,11 +1196,11 @@ class ScreenshotToTemplateAssetsAction : AnAction() {
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
         val toolWindow = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
-            .getToolWindow(TemplateAssetPanel.TOOL_WINDOW_ID) ?: return
+            .getToolWindow(UNIFIED_ANNOTATION_TOOL_WINDOW_ID) ?: return
         toolWindow.show()
         // 面板还没被创建过时 content 为空 —— show() 之后由 ToolWindowFactory 建好，所以这时能拿到
         val content = toolWindow.contentManager.contents.firstOrNull() ?: return
-        content.getUserData(TemplateAssetPanel.PANEL_KEY)?.screenshotNow()
+        content.getUserData(UNIFIED_ANNOTATION_PANEL_KEY)?.screenshotNow()
     }
 
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT
