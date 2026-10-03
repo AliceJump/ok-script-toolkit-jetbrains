@@ -10,12 +10,24 @@ import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.vfs.newvfs.BulkFileListener
 import com.intellij.openapi.vfs.newvfs.events.VFileEvent
 import com.intellij.util.ui.UIUtil
+import java.nio.file.Files
+import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicLong
 import javax.swing.Timer
 
-internal fun isTemplateImageChange(path: java.nio.file.Path, directory: java.nio.file.Path): Boolean =
+internal fun samePath(a: Path, b: Path): Boolean {
+    val left = a.toAbsolutePath().normalize()
+    val right = b.toAbsolutePath().normalize()
+    if (Files.exists(left) && Files.exists(right)) {
+        runCatching { if (Files.isSameFile(left, right)) return true }
+    }
+    val windows = System.getProperty("os.name", "").contains("win", ignoreCase = true)
+    return if (windows) left.toString().equals(right.toString(), ignoreCase = true) else left == right
+}
+
+internal fun isTemplateImageChange(path: Path, directory: Path): Boolean =
     path.fileName.toString().substringAfterLast('.', "").lowercase() in setOf("png", "jpg", "jpeg", "bmp") &&
-        path.parent?.let { BoxRuntimePath.sameLocation(it, directory) } == true
+        path.parent?.let { samePath(it, directory) } == true
 
 /** 数据文件变化回调：工具窗面板借此自动刷新（对应 VSCode 版的 FileSystemWatcher 派发） */
 fun interface OkDataChangeListener {
@@ -25,28 +37,20 @@ fun interface OkDataChangeListener {
 /**
  * ok-script 项目数据文件监听（项目级）：语言 JSON / gettext PO / COCO 与模板图 /
  * effects.py / 角色数据任一变化时，300ms 防抖后使数据快照失效并广播 [OkDataChangeListener]。
- *
- * 对齐 VSCode 版 extension.ts 的 createFileSystemWatcher 派发：编辑器侧数据本就按
- * 时间戳懒刷新，这里主要让工具窗面板无需手动点击刷新。
  */
 @Service(Service.Level.PROJECT)
 class OkDataChangeService(private val project: Project) : Disposable {
 
     companion object {
         val TOPIC = Topic.create("ok-script data changed", OkDataChangeListener::class.java)
-
         private const val DEBOUNCE_MS = 300
         private const val DEBOUNCE_MAX_WAIT_MS = 1500
     }
 
     private val settings: OkScriptToolkitSettings = OkScriptToolkitSettings.getInstance(project)
     private val dataService: OkProjectDataService = project.service()
-
     private val firstPendingAt = AtomicLong(0)
-
-    /** EDT 防抖计时器（VFS 事件线程触发、面板刷新统一切回 EDT） */
     private val debounceTimer = Timer(DEBOUNCE_MS) { fire() }
-
     private val connection = project.messageBus.connect(this)
     private val annotationChanges = AnnotationDataChanges.subscribe { path ->
         if (isRelevant(path.toString())) UIUtil.invokeLaterIfNeeded { schedule() }
@@ -72,11 +76,9 @@ class OkDataChangeService(private val project: Project) : Disposable {
         val basePath = project.basePath?.replace('\\', '/')?.trimEnd('/') ?: return false
         val lowerBase = basePath.lowercase()
         val rel = when {
-            normalized.length > lowerBase.length + 1 &&
-                normalized.lowercase().startsWith("$lowerBase/") ->
+            normalized.length > lowerBase.length + 1 && normalized.lowercase().startsWith("$lowerBase/") ->
                 normalized.substring(lowerBase.length + 1)
             normalized.lowercase() == lowerBase -> return false
-            // 非项目内路径（effectsFile 可能配置为项目外绝对路径）按原样参与比较
             else -> normalized
         }.trimStart('/')
 
@@ -92,19 +94,20 @@ class OkDataChangeService(private val project: Project) : Disposable {
         if (dirMatches(settings.characterSkillsDirectory(), ".json")) return true
         if (rel == exact(settings.characterMasterFile())) return true
         if (rel == exact(settings.characterLocaleFile())) return true
-        // 运行时模板库路径可配（项目约定 → config.py → 两个惯例位置），所以按**所有候选**判定，
-        // 而不是那两个写死的路径 —— 否则库搬到别处后，改它不再触发刷新（静默）。
         if (rel in dataService.cocoFeatureRelPaths()) return true
-        if (rel in dataService.boxRuntimeRelPaths()) return true
-        if (rel == exact(settings.okTemplatesDirectory() + "/boxes.json")) return true
-        if (rel == exact(settings.okTemplatesDirectory() + "/coco_annotations.json")) return true
+
+        val templateDir = exact(settings.okTemplatesDirectory())
+        if (rel in setOf(
+                "$templateDir/boxes.json",
+                "$templateDir/points.json",
+                "$templateDir/coco_annotations.json",
+            )) return true
+
         val root = dataService.rootPath()
-        if (root != null && listOf("boxes.json", "coco_annotations.json").any { file ->
-                BoxRuntimePath.sameLocation(java.nio.file.Paths.get(normalized), root.resolve(settings.okTemplatesDirectory()).resolve(file))
+        if (root != null && listOf("boxes.json", "points.json", "coco_annotations.json").any { file ->
+                samePath(java.nio.file.Paths.get(normalized), root.resolve(settings.okTemplatesDirectory()).resolve(file))
             }) return true
-        // `config.py` 决定库放在哪：它一变就**重探**（路径可能整体换地方）。
-        // 重探完成时会自己作废快照并广播，所以这里不必再走一轮防抖刷新。
-        // （在谓词里做副作用不算优雅，但路径判定逻辑集中在这里，散出去更容易漂移。）
+
         if (rel == "config.py" || rel == "src/config.py") {
             dataService.ensureCocoFeatureProbed(force = true)
             return false
@@ -118,7 +121,6 @@ class OkDataChangeService(private val project: Project) : Disposable {
         return false
     }
 
-    /** 防抖：密集保存只触发一轮刷新；持续变化最多延迟 [DEBOUNCE_MAX_WAIT_MS] 后必发 */
     private fun schedule() {
         val now = System.currentTimeMillis()
         firstPendingAt.compareAndSet(0, now)
@@ -132,7 +134,6 @@ class OkDataChangeService(private val project: Project) : Disposable {
         firstPendingAt.set(0)
         if (project.isDisposed) return
         dataService.invalidate()
-        // 面板的 loadData 自带后台加载；统一在 EDT 上广播
         UIUtil.invokeLaterIfNeeded {
             project.messageBus.syncPublisher(TOPIC).dataChanged()
         }

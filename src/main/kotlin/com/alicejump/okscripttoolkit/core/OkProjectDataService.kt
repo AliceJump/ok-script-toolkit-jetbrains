@@ -197,17 +197,6 @@ class OkProjectDataService(private val project: Project) {
      * 运行时模板库的**所有**候选相对路径（含首选与探测候选），用于监听与变更归属判定。
      * 不按存在性过滤 —— 要覆盖"文件还没创建"的情况。
      */
-    fun boxRuntimePlan(): BoxRuntimePath.Plan {
-        val root = rootPath()?.toString().orEmpty()
-        ensureCocoFeatureProbed()
-        val declared = ProjectConventionConfig.getInstance(project).load().boxes.runtimeOrNull()
-        val fromPy = probedWindow?.takeIf { it.first == root }?.second?.boxesJson
-        return BoxRuntimePath.plan(root, declared, fromPy)
-    }
-
-    fun boxRuntimeRelPaths(): List<String> =
-        BoxRuntimePath.relPaths(boxRuntimePlan(), rootPath()?.toString().orEmpty())
-
     fun cocoFeatureRelPaths(): List<String> =
         CocoFeaturePath.relPaths(cocoFeaturePlan(), rootPath()?.toString().orEmpty())
 

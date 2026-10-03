@@ -16,7 +16,7 @@ class PointCatalogService(private val project: Project) {
     data class Image(val file: String, var width: Int, var height: Int)
     data class Point(val path: String, val image: String, val x: Int, val y: Int)
     data class Snapshot(val images: MutableList<Image> = mutableListOf(), val points: MutableList<Point> = mutableListOf())
-    data class ReadResult(val file: Snapshot = Snapshot(), val errors: List<String> = emptyList(), val legacy: Boolean = false)
+    data class ReadResult(val file: Snapshot = Snapshot(), val errors: List<String> = emptyList())
 
     private val mapper = ObjectMapper()
 
@@ -28,7 +28,7 @@ class PointCatalogService(private val project: Project) {
         if (Files.notExists(path)) return ReadResult()
         val text = runCatching { Files.readString(path) }.getOrElse { return ReadResult(errors = listOf("read")) }
         val root = runCatching { mapper.readTree(text) }.getOrElse { return ReadResult(errors = listOf("json")) }
-        return if (root.has("version") && root.has("points")) parseLegacy(root) else parseCoco(root)
+        return parseCoco(root)
     }
 
     fun pointsForImage(fileName: String): List<Point> = read().let { result ->
@@ -82,34 +82,6 @@ class PointCatalogService(private val project: Project) {
         current.file.images.removeAll { sameImage(it.file, fileName) }
         if (before == current.file.points.size && Files.notExists(authoringPath() ?: return true)) return true
         return write(current.file) == null
-    }
-
-    private fun parseLegacy(root: JsonNode): ReadResult {
-        if (root.path("version").asInt(-1) != 1 || !root.path("images").isArray || !root.path("points").isArray) {
-            return ReadResult(errors = listOf("schema"))
-        }
-        val images = mutableListOf<Image>()
-        val imageNames = mutableSetOf<String>()
-        for (node in root.path("images")) {
-            val file = node.path("file").asText("")
-            val width = node.path("width").asInt(0)
-            val height = node.path("height").asInt(0)
-            if (file.isBlank() || width <= 0 || height <= 0 || !imageNames.add(file.lowercase())) return ReadResult(errors = listOf("image"))
-            images += Image(file, width, height)
-        }
-        val paths = mutableSetOf<String>()
-        val points = mutableListOf<Point>()
-        for (node in root.path("points")) {
-            val path = node.path("path").asText("").trim()
-            val image = node.path("image").asText("")
-            val x = node.path("x").takeIf { it.isNumber }?.asDouble()?.roundToInt()
-            val y = node.path("y").takeIf { it.isNumber }?.asDouble()?.roundToInt()
-            val img = images.firstOrNull { sameImage(it.file, image) }
-            if (positionPathError(path) != null || image.isBlank() || x == null || y == null || !paths.add(path)
-                || img == null || x < 0 || y < 0 || x > img.width || y > img.height) return ReadResult(errors = listOf("point"))
-            points += Point(path, image, x, y)
-        }
-        return ReadResult(Snapshot(images, points), legacy = true)
     }
 
     private fun parseCoco(root: JsonNode): ReadResult {

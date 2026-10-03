@@ -15,27 +15,24 @@ import java.awt.Component
 import java.awt.Dimension
 import java.awt.Font
 import java.awt.GridLayout
+import java.io.File
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
+import javax.imageio.ImageIO
 import javax.swing.ImageIcon
 import javax.swing.JComponent
 import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.ListCellRenderer
 import javax.swing.ListSelectionModel
-import javax.swing.SwingUtilities
 import javax.swing.SwingConstants
+import javax.swing.SwingUtilities
 
 /**
  * 「交换标注」的目标图片选择器。
  *
- * 只负责**选哪张图**：比例映射与落盘都在 `TemplateAssetPanel.swapAnnotationsWith` 里做
- * —— 对话框不该知道 COCO 的存在，否则它就没法脱离 IDE 单测（与标注编辑器的分层一致）。
- *
- * 为什么必须给缩略图：`ok_templates` 里的模板名就是数字序号（`1.png`、`2.png`…），
- * 只列名字等于让用户凭记忆选，选错的代价是两张图的标注一起被换掉。
- * 缩略图复用工具窗自己的 [thumbCache]，缺的在这里后台补齐（大图 `ImageIO.read`
- * 可达数秒，绝不能在 EDT 上同步解码 —— 那条路工具窗已经踩过一次 EDT 冻结）。
+ * 只负责**选哪张图**；比例映射与落盘由统一标注器处理。
+ * 缩略图必须后台解码，避免大图 ImageIO 阻塞 EDT。
  */
 class SwapTargetDialog(
     project: Project,
@@ -46,7 +43,6 @@ class SwapTargetDialog(
 
     private val list = JBList<TemplateImage>(CollectionListModel(candidates))
 
-    /** 用户选中的目标图；未选中为 null（调用方据此放弃）。 */
     val selected: TemplateImage?
         get() = list.selectedValue
 
@@ -70,18 +66,17 @@ class SwapTargetDialog(
         val scroll = JBScrollPane(list)
         scroll.preferredSize = Dimension(520, 300)
 
-        val root = JPanel(BorderLayout(0, 6))
-        root.add(hint, BorderLayout.NORTH)
-        root.add(scroll, BorderLayout.CENTER)
-        return root
+        return JPanel(BorderLayout(0, 6)).apply {
+            add(hint, BorderLayout.NORTH)
+            add(scroll, BorderLayout.CENTER)
+        }
     }
 
-    /** 缩略图后台补齐；只缓存成功的，失败保持占位（不反复重试）。 */
     private fun loadThumbs(items: List<TemplateImage>) {
         for (item in items) {
             if (thumbCache.containsKey(item.file.absolutePath)) continue
             CompletableFuture
-                .supplyAsync { decodeTemplateThumb(item.file) }
+                .supplyAsync { decodeThumb(item.file) }
                 .thenAccept { icon ->
                     if (icon == null) return@thenAccept
                     SwingUtilities.invokeLater {
@@ -93,7 +88,18 @@ class SwapTargetDialog(
         }
     }
 
-    /** Native two-line cell: thumbnail, filename, dimensions, and box count. */
+    private fun decodeThumb(file: File): ImageIcon? = runCatching {
+        val image = ImageIO.read(file) ?: return@runCatching null
+        val scale = minOf(
+            ThumbGridPolicy.THUMB_HEIGHT.toDouble() / image.height,
+            ThumbGridPolicy.CELL_WIDTH.toDouble() / image.width,
+            1.0,
+        )
+        val width = (image.width * scale).toInt().coerceAtLeast(1)
+        val height = (image.height * scale).toInt().coerceAtLeast(1)
+        ImageIcon(image.getScaledInstance(width, height, java.awt.Image.SCALE_SMOOTH))
+    }.getOrNull()
+
     private inner class SwapCellRenderer : ListCellRenderer<TemplateImage> {
         private val thumbnail = JBLabel().apply {
             preferredSize = Dimension(ThumbGridPolicy.CELL_WIDTH, ThumbGridPolicy.THUMB_HEIGHT)
@@ -127,12 +133,9 @@ class SwapTargetDialog(
             thumbnail.icon = thumbCache[value.file.absolutePath]
             nameLabel.text = value.name
             detailsLabel.text = "${value.width}×${value.height} · $count"
-            cell.background =
-                if (isSelected) UIUtil.getListSelectionBackground(true) else UIUtil.getListBackground()
-            nameLabel.foreground =
-                if (isSelected) UIUtil.getListSelectionForeground(true) else UIUtil.getListForeground()
-            detailsLabel.foreground =
-                if (isSelected) UIUtil.getListSelectionForeground(true) else UIUtil.getContextHelpForeground()
+            cell.background = if (isSelected) UIUtil.getListSelectionBackground(true) else UIUtil.getListBackground()
+            nameLabel.foreground = if (isSelected) UIUtil.getListSelectionForeground(true) else UIUtil.getListForeground()
+            detailsLabel.foreground = if (isSelected) UIUtil.getListSelectionForeground(true) else UIUtil.getContextHelpForeground()
             return cell
         }
     }

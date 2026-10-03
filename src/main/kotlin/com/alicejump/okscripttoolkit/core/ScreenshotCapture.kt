@@ -147,8 +147,6 @@ class ScreenshotCapture(private val project: Project) {
                     ?.takeIf { it.isTextual && it.asText().isNotBlank() }?.asText(),
                 labelEnumRelativePath = node.path("label_enum_relative_path")
                     ?.takeIf { it.isTextual && it.asText().isNotBlank() }?.asText(),
-                boxesJson = node.path("boxes_json")
-                    ?.takeIf { it.isTextual && it.asText().isNotBlank() }?.asText(),
             ).also { LOG.info("Detected window config: ${it.describe()}") }
         } catch (e: Exception) {
             LOG.warn("probe_window_config failed", e)
@@ -649,8 +647,6 @@ data class WindowConfig(
      */
     val cocoFeatureJson: String? = null,
     val labelEnumRelativePath: String? = null,
-    /** `config.py` 顶层 `boxes_json`。缺省时插件探测 `src/scene/boxes.json`。 */
-    val boxesJson: String? = null,
 ) {
     fun describe(): String = listOfNotNull(
         exe?.takeIf { it.isNotEmpty() }?.let { "exe: ${it.joinToString(", ")}" },

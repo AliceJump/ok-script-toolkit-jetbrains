@@ -33,6 +33,19 @@ class PositionResourceTest {
     }
 
     @Test
+    fun `partial publish checks readable unselected paths in the shared namespace`() {
+        assertEquals(
+            listOf("duplicate:screen.same"),
+            positionNamespaceConflicts(listOf("screen.same"), listOf("screen.same")),
+        )
+        assertEquals(
+            listOf("prefix:screen.group"),
+            positionNamespaceConflicts(listOf("screen.group"), listOf("screen.group.child")),
+        )
+        assertTrue(positionNamespaceConflicts(listOf("screen.left"), listOf("screen.right")).isEmpty())
+    }
+
+    @Test
     fun `generated grouping classes preserve exact path segment boundaries`() {
         val result = PositionResource.PublishResult(
             positions = listOf(
