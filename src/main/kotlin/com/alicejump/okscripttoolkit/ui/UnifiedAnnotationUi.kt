@@ -48,7 +48,11 @@ import java.awt.event.MouseEvent
 import java.awt.event.MouseMotionAdapter
 import java.awt.event.MouseWheelEvent
 import java.awt.image.BufferedImage
+import java.nio.file.Files
 import java.nio.file.Path
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
+import java.util.concurrent.CompletableFuture
 import javax.imageio.ImageIO
 import javax.swing.AbstractAction
 import javax.swing.BorderFactory
@@ -70,6 +74,11 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
+
+internal const val UNIFIED_ANNOTATION_TOOL_WINDOW_ID = "ok-script Annotation Management"
+internal const val UNIFIED_RESOURCE_PREVIEW_TOOL_WINDOW_ID = "ok-script Resource Preview"
+internal val UNIFIED_ANNOTATION_PANEL_KEY =
+    com.intellij.openapi.util.Key.create<AnnotationManagerPanel>("okScriptToolkit.unifiedAnnotationPanel")
 
 private enum class AnnotationKind { TEMPLATE, RECT, POINT }
 
@@ -149,7 +158,7 @@ class UnifiedAnnotationDialog(
         title = "Annotation Management"
         setOKButtonText("Save")
         init()
-        boxCatalog.readAuthoring() // loads boxes COCO source before sessions are requested
+        boxCatalog.readAuthoring()
         loadImage(currentIndex, preserveViewport = false)
     }
 
@@ -265,21 +274,34 @@ class UnifiedAnnotationDialog(
     }
 
     private fun saveAll(): String? {
-        for (session in sessions.values.filter { it.dirty }) {
-            val file = images.firstOrNull { PointCatalogService.sameImage(it.file.name, session.key.file) }?.file ?: return "image"
-            val size = templateData.readImageHeaderSize(file) ?: return "image"
-            val error = when (session.key.kind) {
-                AnnotationKind.TEMPLATE -> {
-                    val edit = CocoAnnotationEdit(file.name, size, session.shapes.map { it.name to intArrayOf(it.x, it.y, it.w, it.h) })
-                    if (templateData.saveAnnotationEdits(listOf(edit))) null else templateData.lastError ?: "write"
-                }
-                AnnotationKind.RECT -> {
-                    val edit = CocoAnnotationEdit(file.name, size, session.shapes.map { it.name to intArrayOf(it.x, it.y, it.w, it.h) })
-                    if (boxCatalog.annotations.saveAnnotationEdits(listOf(edit))) null else boxCatalog.annotations.lastError ?: "write"
-                }
-                AnnotationKind.POINT -> pointCatalog.savePointsForImage(file.toPath(), session.shapes.map { it.name to Point(it.x, it.y) })
-            }
-            if (error != null) return "${session.key.kind.name.lowercase()}:$error"
+        val dirty = sessions.values.filter { it.dirty }
+        if (dirty.isEmpty()) return null
+
+        fun fileFor(session: ShapeSession) =
+            images.firstOrNull { PointCatalogService.sameImage(it.file.name, session.key.file) }?.file
+
+        val templateEdits = dirty.filter { it.key.kind == AnnotationKind.TEMPLATE }.map { session ->
+            val file = fileFor(session) ?: return "template:image"
+            val size = templateData.readImageHeaderSize(file) ?: return "template:image"
+            CocoAnnotationEdit(file.name, size, session.shapes.map { it.name to intArrayOf(it.x, it.y, it.w, it.h) })
+        }
+        val rectEdits = dirty.filter { it.key.kind == AnnotationKind.RECT }.map { session ->
+            val file = fileFor(session) ?: return "rect:image"
+            val size = templateData.readImageHeaderSize(file) ?: return "rect:image"
+            CocoAnnotationEdit(file.name, size, session.shapes.map { it.name to intArrayOf(it.x, it.y, it.w, it.h) })
+        }
+        val pointEdits = linkedMapOf<Path, List<Pair<String, Point>>>()
+        dirty.filter { it.key.kind == AnnotationKind.POINT }.forEach { session ->
+            val file = fileFor(session) ?: return "point:image"
+            pointEdits[file.toPath()] = session.shapes.map { it.name to Point(it.x, it.y) }
+        }
+
+        pointCatalog.savePoints(pointEdits)?.let { return "point:$it" }
+        if (templateEdits.isNotEmpty() && !templateData.saveAnnotationEdits(templateEdits)) {
+            return "template:${templateData.lastError ?: "write"}"
+        }
+        if (rectEdits.isNotEmpty() && !boxCatalog.annotations.saveAnnotationEdits(rectEdits)) {
+            return "rect:${boxCatalog.annotations.lastError ?: "write"}"
         }
         return null
     }
@@ -296,12 +318,19 @@ class UnifiedAnnotationDialog(
 
     private fun occupiedNames(targetKind: AnnotationKind, currentFile: String): MutableSet<String> {
         val names = when (targetKind) {
-            AnnotationKind.TEMPLATE -> templateData.categories().mapTo(mutableSetOf()) { it.name }
+            AnnotationKind.TEMPLATE -> {
+                val categoryNames = templateData.categories().associate { it.id to it.name }
+                val openFiles = sessions.keys.filter { it.kind == AnnotationKind.TEMPLATE }
+                    .mapTo(mutableSetOf()) { it.file.lowercase() }
+                templateData.listImages()
+                    .filter { it.file.name.lowercase() !in openFiles }
+                    .flatMap { image -> image.annotations.mapNotNull { categoryNames[it.categoryId] } }
+                    .toMutableSet()
+            }
             AnnotationKind.RECT -> boxCatalog.pathOwners().keys.toMutableSet()
             AnnotationKind.POINT -> pointCatalog.pathOwners().keys.toMutableSet()
         }
         sessions.filterKeys { it.kind == targetKind }.values.forEach { open ->
-            // open sessions are authoritative for files edited in this dialog
             when (targetKind) {
                 AnnotationKind.TEMPLATE -> Unit
                 AnnotationKind.RECT -> boxCatalog.boxesForImage(open.key.file).forEach { names.remove(it.path) }
@@ -591,7 +620,7 @@ class UnifiedAnnotationDialog(
                 override fun mouseMoved(e: MouseEvent) { hovered = hit(e.point) ?: -1; repaint() }
             })
             addMouseWheelListener { e: MouseWheelEvent ->
-                val source = image ?: return@addMouseWheelListener
+                image ?: return@addMouseWheelListener
                 val old = scale
                 val next = (if (e.wheelRotation < 0) scale * 1.1 else scale / 1.1).coerceIn(fitScale, fitScale * 50.0)
                 if (abs(next - old) < 1e-9) return@addMouseWheelListener
@@ -717,7 +746,6 @@ class UnifiedAnnotationDialog(
             }
         }
 
-        /** 带名 JSON bbox 明确为 XYWH；数组/裸四元组才进行 XYXY/XYWH 双判定。 */
         private fun parseClipboard(text: String): Pair<String?, NormalizedAnnotationRect>? {
             runCatching {
                 val json = MAPPER.readTree(text)
@@ -848,34 +876,35 @@ class UnifiedAnnotationDialog(
     }
 }
 
-/** 原图列表。双击永远进入三态统一标注器，不再按 ToolWindow 分流。 */
 class UnifiedAnnotationToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val panel = AnnotationManagerPanel(project)
         val content = ContentFactory.getInstance().createContent(panel, "", false)
+        content.putUserData(UNIFIED_ANNOTATION_PANEL_KEY, panel)
         toolWindow.contentManager.addContent(content)
     }
 }
 
-private class AnnotationManagerPanel(private val project: Project) : JPanel(BorderLayout(0, 4)) {
+internal class AnnotationManagerPanel(private val project: Project) : JPanel(BorderLayout(0, 4)) {
     private val data = project.service<TemplateAssetDataService>()
     private val list = JBList<TemplateImage>()
+    private val hardForegroundCheck = HardForegroundToggle.create(project)
     private var images: List<TemplateImage> = emptyList()
 
     init {
         val toolbar = JPanel(FlowLayout(FlowLayout.LEFT,4,2))
         val refresh = JButton("Refresh")
         val import = JButton("Import")
+        val screenshot = JButton("Screenshot")
         val open = JButton("Open")
-        toolbar.add(refresh); toolbar.add(import); toolbar.add(open)
+        toolbar.add(hardForegroundCheck); toolbar.add(refresh); toolbar.add(import); toolbar.add(screenshot); toolbar.add(open)
         add(toolbar, BorderLayout.NORTH)
         list.selectionMode = ListSelectionModel.SINGLE_SELECTION
-        list.cellRenderer = javax.swing.DefaultListCellRenderer().also { renderer ->
-            // default renderer already handles TemplateImage.toString; value text is normalized below by model refresh.
-        }
+        list.cellRenderer = javax.swing.DefaultListCellRenderer()
         add(JScrollPane(list), BorderLayout.CENTER)
         refresh.addActionListener { reload() }
         import.addActionListener { importImages() }
+        screenshot.addActionListener { screenshotNow() }
         open.addActionListener { openSelected() }
         list.addMouseListener(object:MouseAdapter(){ override fun mouseClicked(e:MouseEvent){ if(e.clickCount==2)openSelected() } })
         reload()
@@ -910,9 +939,28 @@ private class AnnotationManagerPanel(private val project: Project) : JPanel(Bord
         data.importImages(chooser.selectedFiles.toList(),target)
         reload()
     }
+
+    fun screenshotNow() {
+        val root = project.service<OkProjectDataService>().rootPath() ?: return
+        val outputDir = root.resolve(OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory())
+        val methodOverride = HardForegroundToggle.methodOverride(hardForegroundCheck)
+        CompletableFuture.supplyAsync {
+            Files.createDirectories(outputDir)
+            val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
+            val output = outputDir.resolve("screenshot_$stamp.png")
+            output to ScreenshotCapture(project).captureInteractive(output, methodOverride) { }
+        }.whenComplete { result, error ->
+            SwingUtilities.invokeLater {
+                when {
+                    error != null -> Messages.showErrorDialog(project, error.message ?: "Screenshot failed", "Annotation Management")
+                    result?.second == null -> reload()
+                    result?.second != ScreenshotCapture.CANCELLED -> Messages.showErrorDialog(project, result?.second ?: "Screenshot failed", "Annotation Management")
+                }
+            }
+        }
+    }
 }
 
-/** 模板 / 框 / 点共用一个资源预览入口。 */
 class UnifiedResourcePreviewToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val panel = ResourcePreviewPanel(project)
@@ -967,8 +1015,8 @@ private class ResourcePreviewPanel(private val project: Project) : JPanel(Border
 }
 
 class ShowUnifiedAnnotationsAction : AnAction(), DumbAware {
-    override fun actionPerformed(e: AnActionEvent) { e.project?.let { ToolWindowManager.getInstance(it).getToolWindow("ok-script Annotation Management")?.show() } }
+    override fun actionPerformed(e: AnActionEvent) { e.project?.let { ToolWindowManager.getInstance(it).getToolWindow(UNIFIED_ANNOTATION_TOOL_WINDOW_ID)?.show() } }
 }
 class ShowUnifiedResourcesAction : AnAction(), DumbAware {
-    override fun actionPerformed(e: AnActionEvent) { e.project?.let { ToolWindowManager.getInstance(it).getToolWindow("ok-script Resource Preview")?.show() } }
+    override fun actionPerformed(e: AnActionEvent) { e.project?.let { ToolWindowManager.getInstance(it).getToolWindow(UNIFIED_RESOURCE_PREVIEW_TOOL_WINDOW_ID)?.show() } }
 }
