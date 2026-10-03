@@ -78,7 +78,7 @@ object CoordinateTuple {
         } else {
             listOf(rect.x, rect.y, rect.x2, rect.y2)
         }
-        return values.joinToString(separator) { String.format(Locale.ROOT, ".${decimals}f", it) }
+        return values.joinToString(separator) { String.format(Locale.ROOT, "%.${decimals}f", it) }
     }
 
     private fun inside(value: Double): Boolean = value >= -EPS && value <= 1.0 + EPS
