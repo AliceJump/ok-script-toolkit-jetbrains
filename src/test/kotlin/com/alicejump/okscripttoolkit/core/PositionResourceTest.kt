@@ -60,16 +60,21 @@ class PositionResourceTest {
     }
 
     @Test
-    fun `Python keyword and generated member paths are rejected`() {
+    fun `Python keyword generated and dunder member paths are rejected`() {
         val result = PositionResource.publish(
             listOf(
                 PositionResource.Item("screen.class", "a.png", PositionResource.Kind.POINT, 1, 1),
                 PositionResource.Item("screen._parent", "a.png", PositionResource.Kind.POINT, 2, 2),
+                PositionResource.Item("screen.__slots__", "a.png", PositionResource.Kind.POINT, 3, 3),
+                PositionResource.Item("screen.__class__", "a.png", PositionResource.Kind.POINT, 4, 4),
             ),
             listOf(PositionResource.Image("a.png", 10, 10)),
         )
         assertTrue("segment:screen.class" in result.errors)
         assertTrue("segment:screen._parent" in result.errors)
+        assertTrue("segment:screen.__slots__" in result.errors)
+        assertTrue("segment:screen.__class__" in result.errors)
+        assertFalse(PositionResource.serializePositionMapPython(result).contains("__slots__"))
     }
 
     @Test
