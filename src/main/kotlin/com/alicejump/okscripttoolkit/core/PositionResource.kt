@@ -197,7 +197,10 @@ class PositionPublisherService(private val project: Project) {
     data class Result(val errors: List<String> = emptyList(), val conflicts: List<Path> = emptyList(), val written: List<Path> = emptyList())
 
     fun collect(): PositionResource.PublishResult {
-        val boxes = project.service<BoxCatalogService>().readAuthoring()
+        val boxCatalog = project.service<BoxCatalogService>()
+        val boxErrors = boxCatalog.authoringErrors()
+        if (boxErrors.isNotEmpty()) return PositionResource.PublishResult(emptyList(), boxErrors.map { "box:$it" })
+        val boxes = boxCatalog.readAuthoring()
         val points = project.service<PointCatalogService>().read()
         if (points.errors.isNotEmpty()) return PositionResource.PublishResult(emptyList(), points.errors.map { "point:$it" })
         val imageMap = linkedMapOf<String, PositionResource.Image>()
