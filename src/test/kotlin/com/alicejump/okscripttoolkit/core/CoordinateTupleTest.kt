@@ -43,6 +43,19 @@ class CoordinateTupleTest {
     }
 
     @Test
+    fun `invalid tuples and tolerance boundaries are rejected or clamped`() {
+        assertNull(CoordinateTuple.interpret(listOf(0.1, 0.2, 0.3), CoordinateTupleFormat.XYWH))
+        assertNull(CoordinateTuple.interpret(listOf(Double.NaN, 0.0, 0.0, 0.0), CoordinateTupleFormat.XYWH))
+        assertNull(CoordinateTuple.interpret(listOf(Double.POSITIVE_INFINITY, 0.0, 0.0, 0.0), CoordinateTupleFormat.XYWH))
+        assertNull(CoordinateTuple.interpret(listOf(-0.1, 0.0, 0.1, 0.1), CoordinateTupleFormat.XYWH))
+        assertNull(CoordinateTuple.interpret(listOf(0.8, 0.8, 0.3, 0.3), CoordinateTupleFormat.XYWH))
+
+        val withinTolerance = CoordinateTuple.interpret(listOf(0.0, 0.0, 1.0 + 1e-7, 1.0), CoordinateTupleFormat.XYWH)
+        assertEquals(NormalizedAnnotationRect(0.0, 0.0, 1.0, 1.0), withinTolerance?.rect)
+        assertNull(CoordinateTuple.interpret(listOf(0.0, 0.0, 1.0 + 1e-5, 1.0), CoordinateTupleFormat.XYWH))
+    }
+
+    @Test
     fun `point mode can project a regular box to its center`() {
         val rect = CoordinateTuple.interpret(listOf(0.4, 0.4, 0.2, 0.1), CoordinateTupleFormat.XYWH)!!.rect
         assertEquals(NormalizedAnnotationRect(0.5, 0.45, 0.0, 0.0), rect.centerPoint())
