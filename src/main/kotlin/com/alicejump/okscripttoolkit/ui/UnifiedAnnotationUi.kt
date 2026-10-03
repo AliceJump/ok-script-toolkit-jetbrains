@@ -298,9 +298,9 @@ class UnifiedAnnotationDialog(
         }
 
         val resourcePaths = mutableListOf<Path>()
-        if (pointEdits.isNotEmpty()) resourcePaths += pointCatalog.authoringPath() ?: return "point:path"
-        if (templateEdits.isNotEmpty()) resourcePaths += templateData.annotationFile ?: return "template:path"
-        if (rectEdits.isNotEmpty()) resourcePaths += boxCatalog.authoringPath() ?: return "rect:path"
+        if (pointEdits.isNotEmpty()) resourcePaths.add(pointCatalog.authoringPath() ?: return "point:path")
+        if (templateEdits.isNotEmpty()) resourcePaths.add(templateData.annotationFile ?: return "template:path")
+        if (rectEdits.isNotEmpty()) resourcePaths.add(boxCatalog.authoringPath() ?: return "rect:path")
         val transaction = ResourceFileTransaction.capture(resourcePaths) ?: return "snapshot"
 
         fun rollback(error: String): String {
