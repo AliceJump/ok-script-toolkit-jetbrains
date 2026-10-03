@@ -1,0 +1,60 @@
+name: codex-source-patch
+
+on:
+  push:
+    branches:
+      - codex/unified-annotation-resources-parity
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/unified-annotation-resources-parity
+          fetch-depth: 0
+      - name: Apply exact source fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          ui = Path('src/main/kotlin/com/alicejump/okscripttoolkit/ui/UnifiedAnnotationUi.kt')
+          text = ui.read_text(encoding='utf-8')
+          old = 'val choice=Messages.showChooseDialog(project,"Export Position resources as:","Publish positions",arrayOf("JSON","Python data + parser"),"JSON",null)'
+          new = 'val choice=Messages.showChooseDialog(project,"Export Position resources as:","Publish positions",null,arrayOf("JSON","Python data + parser"),"JSON")'
+          if old not in text:
+              raise SystemExit('showChooseDialog source pattern not found')
+          ui.write_text(text.replace(old, new, 1), encoding='utf-8')
+
+          pos = Path('src/main/kotlin/com/alicejump/okscripttoolkit/core/PositionResource.kt')
+          text = pos.read_text(encoding='utf-8')
+          old = '''    private fun className(parts: List<String>): String {
+              if (parts == listOf("screen")) return "ScreenPosition"
+              return parts.joinToString("") { part -> part.split(Regex("[^A-Za-z0-9]+"))
+                  .filter { it.isNotEmpty() }
+                  .joinToString("") { token -> token.replaceFirstChar { c -> c.uppercase() } } } + "Position"
+          }'''
+          new = '''    private fun className(parts: List<String>): String {
+              if (parts == listOf("screen")) return "ScreenPosition"
+              // Preserve exact segment boundaries and spelling so different valid paths cannot collapse
+              // to the same generated Python class name (e.g. a_b.c vs a.b_c, foo vs Foo).
+              return "Position_" + parts.joinToString("__") { part -> "${part.length}_$part" }
+          }'''
+          if old not in text:
+              raise SystemExit('className source pattern not found')
+          pos.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+      - name: Commit source fixes and remove temporary workflow
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git rm .github/workflows/codex-source-patch.yml
+          git add src/main/kotlin/com/alicejump/okscripttoolkit/ui/UnifiedAnnotationUi.kt src/main/kotlin/com/alicejump/okscripttoolkit/core/PositionResource.kt
+          git commit -m "fix: align IntelliJ API and collision-safe position classes"
+          git push origin HEAD:codex/unified-annotation-resources-parity
