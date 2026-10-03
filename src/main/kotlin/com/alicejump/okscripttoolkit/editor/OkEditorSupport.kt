@@ -369,25 +369,27 @@ object OkEditorSupport {
             "<p><b>bbox:</b> <code>${feature.bbox.joinToString(", ")}</code></p></div>"
     }
 
-    private fun cropThumbnailBase64(feature: FeatureTemplate): String? = try {
-        val file = feature.imagePath.toFile()
-        if (!file.exists()) return null
-        val original: BufferedImage = ImageIO.read(file) ?: return null
-        val x = feature.bbox[0].coerceIn(0, original.width - 1)
-        val y = feature.bbox[1].coerceIn(0, original.height - 1)
-        val w = feature.bbox[2].coerceAtMost(original.width - x)
-        val h = feature.bbox[3].coerceAtMost(original.height - y)
-        if (w <= 0 || h <= 0) return null
-        val crop = original.getSubimage(x, y, w, h)
-        val targetH = 96
-        val targetW = (w * targetH.toDouble() / h).toInt().coerceIn(1, 240)
-        val thumb = BufferedImage(targetW, targetH, BufferedImage.TYPE_INT_ARGB)
-        thumb.createGraphics().useGraphics { it.drawImage(crop, 0, 0, targetW, targetH, null) }
-        val baos = ByteArrayOutputStream()
-        ImageIO.write(thumb, "png", baos)
-        Base64.getEncoder().encodeToString(baos.toByteArray())
-    } catch (_: Exception) {
-        null
+    private fun cropThumbnailBase64(feature: FeatureTemplate): String? {
+        return try {
+            val file = feature.imagePath.toFile()
+            if (!file.exists()) return null
+            val original: BufferedImage = ImageIO.read(file) ?: return null
+            val x = feature.bbox[0].coerceIn(0, original.width - 1)
+            val y = feature.bbox[1].coerceIn(0, original.height - 1)
+            val w = feature.bbox[2].coerceAtMost(original.width - x)
+            val h = feature.bbox[3].coerceAtMost(original.height - y)
+            if (w <= 0 || h <= 0) return null
+            val crop = original.getSubimage(x, y, w, h)
+            val targetH = 96
+            val targetW = (w * targetH.toDouble() / h).toInt().coerceIn(1, 240)
+            val thumb = BufferedImage(targetW, targetH, BufferedImage.TYPE_INT_ARGB)
+            thumb.createGraphics().useGraphics { it.drawImage(crop, 0, 0, targetW, targetH, null) }
+            val baos = ByteArrayOutputStream()
+            ImageIO.write(thumb, "png", baos)
+            Base64.getEncoder().encodeToString(baos.toByteArray())
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private inline fun <T : java.awt.Graphics> T.useGraphics(block: (T) -> Unit) {
