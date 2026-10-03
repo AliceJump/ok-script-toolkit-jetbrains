@@ -1,0 +1,23 @@
+name: Patch PR 22 resource add
+on:
+  push:
+    branches: [codex/unified-annotation-resources-parity]
+    paths: [.github/workflows/patch-pr22-resource-add.yml]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/unified-annotation-resources-parity
+          fetch-depth: 0
+      - run: python scripts/patch_pr22_resource_add.py
+      - run: |
+          git rm scripts/patch_pr22_resource_add.py .github/workflows/patch-pr22-resource-add.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "fix: add annotation resource paths explicitly"
+          git push origin HEAD:codex/unified-annotation-resources-parity
