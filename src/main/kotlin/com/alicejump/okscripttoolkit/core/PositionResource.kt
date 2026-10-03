@@ -93,16 +93,16 @@ if TYPE_CHECKING:
 
 
 class ScreenRatio:
-    \"\"\"A normalized screen point (x, y) or rectangle (left, top, right, bottom).\"\"\"
+    '''A normalized screen point (x, y) or rectangle (left, top, right, bottom).'''
 
     def __init__(self, *coordinates: float):
         if len(coordinates) not in (2, 4):
-            raise ValueError(\"ScreenRatio requires either 2 point coordinates or 4 rect coordinates\")
+            raise ValueError("ScreenRatio requires either 2 point coordinates or 4 rect coordinates")
         self.coordinates = tuple(coordinates)
         self.name: str | None = None
 
     def __set_name__(self, owner: type, field_name: str):
-        self.name = f\"{owner.__name__}.{field_name}\"
+        self.name = f"{owner.__name__}.{field_name}"
 
     def __get__(self, instance, owner):
         if instance is None:
@@ -116,10 +116,10 @@ class ScreenRatio:
     def is_rect(self) -> bool:
         return len(self.coordinates) == 4
 
-    def _to_box(self, parent) -> \"Box\":
+    def _to_box(self, parent) -> "Box":
         if not self.is_rect:
-            raise ValueError(\"Only a rect ScreenRatio can be converted to a Box\")
-        return parent.box_of_screen(*self.coordinates, name=self.name or \"ScreenRatio\", hcenter=True)
+            raise ValueError("Only a rect ScreenRatio can be converted to a Box")
+        return parent.box_of_screen(*self.coordinates, name=self.name or "ScreenRatio", hcenter=True)
 
 
 class BoundScreenRatio:
@@ -130,7 +130,7 @@ class BoundScreenRatio:
     def __iter__(self) -> Iterator[float]:
         return iter(self.ratio)
 
-    def to_box(self) -> \"Box\":
+    def to_box(self) -> "Box":
         return self.ratio._to_box(self.parent)
 """.trimIndent() + "\n"
 
@@ -181,13 +181,15 @@ class BoundScreenRatio:
     }
 
     private fun className(parts: List<String>): String {
-    if (parts == listOf("screen")) return "ScreenPosition"
-    // Preserve exact segment boundaries and spelling so distinct valid paths cannot collapse
-    // to the same generated Python class name (a_b.c vs a.b_c, foo vs Foo).
-    return "Position_" + parts.joinToString("__") { part -> "${part.length}_$part" }
-}
+        if (parts == listOf("screen")) return "ScreenPosition"
+        // Preserve exact segment boundaries and spelling so distinct valid paths cannot collapse
+        // to the same generated Python class name (a_b.c vs a.b_c, foo vs Foo).
+        return "Position_" + parts.joinToString("__") { part -> "${part.length}_$part" }
+    }
 
-private fun pyNumber(value: Double): String = if (value % 1.0 == 0.0) String.format(Locale.ROOT, "%.1f", value) else value.toString()
+    private fun pyNumber(value: Double): String =
+        if (value % 1.0 == 0.0) String.format(Locale.ROOT, "%.1f", value) else value.toString()
+
     private fun round(value: Double): Double = String.format(Locale.ROOT, "%.${DECIMALS}f", value).toDouble()
 }
 
@@ -220,11 +222,21 @@ class PositionPublisherService(private val project: Project) {
         return PositionResource.publish(items, imageMap.values.toList())
     }
 
+    private fun sceneDirectory(root: Path): Path? {
+        val normalizedRoot = root.toAbsolutePath().normalize()
+        val realRoot = runCatching { normalizedRoot.toRealPath() }.getOrNull() ?: return null
+        val scene = normalizedRoot.resolve("src").resolve("scene")
+        val existing = generateSequence(scene) { it.parent }.firstOrNull { Files.exists(it) } ?: return null
+        val realExisting = runCatching { existing.toRealPath() }.getOrNull() ?: return null
+        if (!realExisting.startsWith(realRoot)) return null
+        return scene
+    }
+
     fun publish(format: Format, overwriteHandwritten: Boolean = false): Result {
         val published = collect()
         if (published.errors.isNotEmpty()) return Result(errors = published.errors)
         val root = project.service<OkProjectDataService>().rootPath() ?: return Result(errors = listOf("root"))
-        val scene = root.resolve("src").resolve("scene")
+        val scene = sceneDirectory(root) ?: return Result(errors = listOf("outside"))
         return when (format) {
             Format.JSON -> {
                 val target = scene.resolve("positions.json")
@@ -234,11 +246,26 @@ class PositionPublisherService(private val project: Project) {
             Format.PYTHON -> {
                 val screen = scene.resolve("ScreenRatio.py")
                 val map = scene.resolve("PositionMap.py")
-                val conflicts = listOf(screen, map).filter { Files.isRegularFile(it) && !runCatching { Files.readString(it).startsWith(PositionResource.GENERATED_MARKER) }.getOrDefault(false) }
+                val conflicts = listOf(screen, map).filter {
+                    Files.isRegularFile(it) && !runCatching {
+                        Files.readString(it).startsWith(PositionResource.GENERATED_MARKER)
+                    }.getOrDefault(false)
+                }
                 if (conflicts.isNotEmpty() && !overwriteHandwritten) return Result(conflicts = conflicts)
-                val ok1 = writeAnnotationText(screen, PositionResource.serializeScreenRatioPython())
-                val ok2 = writeAnnotationText(map, PositionResource.serializePositionMapPython(published))
-                if (!ok1 || !ok2) Result(errors = listOf("write")) else Result(written = listOf(screen, map))
+
+                val screenSource = PositionResource.serializeScreenRatioPython()
+                val mapSource = PositionResource.serializePositionMapPython(published)
+                val previousScreen = if (Files.isRegularFile(screen)) runCatching { Files.readString(screen) }.getOrNull() else null
+                if (!writeAnnotationText(screen, screenSource)) return Result(errors = listOf("write:ScreenRatio.py"))
+                if (!writeAnnotationText(map, mapSource)) {
+                    val restored = if (previousScreen == null) {
+                        runCatching { Files.deleteIfExists(screen); true }.getOrDefault(false)
+                    } else {
+                        writeAnnotationText(screen, previousScreen)
+                    }
+                    return Result(errors = listOf(if (restored) "write:PositionMap.py" else "write:PositionMap.py:rollback"))
+                }
+                Result(written = listOf(screen, map))
             }
         }
     }
