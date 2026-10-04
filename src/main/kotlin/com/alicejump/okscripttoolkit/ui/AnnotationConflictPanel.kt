@@ -1,5 +1,6 @@
 package com.alicejump.okscripttoolkit.ui
 
+import com.alicejump.okscripttoolkit.AnnotationUiBundle
 import com.alicejump.okscripttoolkit.core.AnnotationConflict
 import com.alicejump.okscripttoolkit.core.AnnotationConflictChoice
 import com.alicejump.okscripttoolkit.core.MergeShape
@@ -25,7 +26,7 @@ import kotlin.math.min
 /** Side-by-side choices for structured annotation conflicts. No file writes happen here. */
 internal class AnnotationConflictPanel : JPanel(BorderLayout(0, 6)) {
     private val rows = JPanel()
-    private val applyButton = JButton("Apply choices")
+    private val applyButton = JButton(AnnotationUiBundle.message("conflict.apply"))
     private val choices = linkedMapOf<String, AnnotationConflictChoice>()
     private var conflicts: List<AnnotationConflict> = emptyList()
     private var onApply: ((Map<String, AnnotationConflictChoice>) -> Unit)? = null
@@ -33,7 +34,7 @@ internal class AnnotationConflictPanel : JPanel(BorderLayout(0, 6)) {
     init {
         isVisible = false
         border = BorderFactory.createCompoundBorder(
-            BorderFactory.createTitledBorder("External conflicts"),
+            BorderFactory.createTitledBorder(AnnotationUiBundle.message("conflict.title")),
             BorderFactory.createEmptyBorder(2, 4, 4, 4),
         )
         rows.layout = BoxLayout(rows, BoxLayout.Y_AXIS)
@@ -78,8 +79,8 @@ internal class AnnotationConflictPanel : JPanel(BorderLayout(0, 6)) {
             row.add(CandidatePreview(conflict))
 
             val group = ButtonGroup()
-            val local = JRadioButton("Current edit · ${summary(conflict.local)}")
-            val external = JRadioButton("External change · ${summary(conflict.external)}")
+            val local = JRadioButton("${AnnotationUiBundle.message("conflict.current")} · ${summary(conflict.local)}")
+            val external = JRadioButton("${AnnotationUiBundle.message("conflict.external")} · ${summary(conflict.external)}")
             group.add(local)
             group.add(external)
             local.addActionListener {
@@ -105,13 +106,13 @@ internal class AnnotationConflictPanel : JPanel(BorderLayout(0, 6)) {
 
     private fun conflictTitle(conflict: AnnotationConflict): String {
         val name = conflict.local?.name ?: conflict.external?.name ?: conflict.base?.name ?: conflict.key
-        val fields = conflict.fields.takeIf { it.isNotEmpty() }?.joinToString(", ") ?: "delete"
+        val fields = conflict.fields.takeIf { it.isNotEmpty() }?.joinToString(", ") ?: AnnotationUiBundle.message("conflict.deleted")
         return "$name  [$fields]"
     }
 
     private fun summary(shape: MergeShape?): String = shape?.let {
         "${it.name}  (${it.x}, ${it.y}, ${it.w}, ${it.h})"
-    } ?: "Deleted"
+    } ?: AnnotationUiBundle.message("conflict.deleted")
 
     /**
      * Tiny geometry preview using the same visual contract as the editor canvas:
@@ -128,7 +129,7 @@ internal class AnnotationConflictPanel : JPanel(BorderLayout(0, 6)) {
             preferredSize = Dimension(250, 86)
             minimumSize = Dimension(180, 70)
             maximumSize = Dimension(Int.MAX_VALUE, 96)
-            toolTipText = "Solid: current edit · Dashed: external change"
+            toolTipText = AnnotationUiBundle.message("conflict.tooltip")
         }
 
         override fun paintComponent(g: Graphics) {
