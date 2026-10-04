@@ -1,5 +1,6 @@
 package com.alicejump.okscripttoolkit.ui
 
+import com.alicejump.okscripttoolkit.core.AnnotationConflictChoice
 import com.alicejump.okscripttoolkit.core.AnnotationDataChanges
 import com.alicejump.okscripttoolkit.core.AnnotationMergeMode
 import com.alicejump.okscripttoolkit.core.AnnotationSessionSyncState
@@ -16,6 +17,7 @@ import com.alicejump.okscripttoolkit.core.ResourceFileTransaction
 import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
 import com.alicejump.okscripttoolkit.core.TemplateImage
 import com.alicejump.okscripttoolkit.core.reconcileAnnotationSession
+import com.alicejump.okscripttoolkit.core.resolveAnnotationSessionConflicts
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.intellij.ide.util.PropertiesComponent
@@ -151,6 +153,7 @@ class UnifiedAnnotationDialog(
     private val prefs = PropertiesComponent.getInstance()
 
     private val canvas = UnifiedCanvas()
+    private val conflictPanel = AnnotationConflictPanel()
     private val templateMode = JRadioButton("Template")
     private val rectMode = JRadioButton("Box")
     private val pointMode = JRadioButton("Point")
@@ -231,10 +234,11 @@ class UnifiedAnnotationDialog(
 
         rows.layout = BoxLayout(rows, BoxLayout.Y_AXIS)
         val listPanel = JPanel(BorderLayout(0, 4))
-        listPanel.preferredSize = Dimension(190, 560)
+        listPanel.preferredSize = Dimension(300, 560)
         listPanel.border = BorderFactory.createEmptyBorder(0, 8, 0, 0)
         listPanel.add(JBLabel("Annotations"), BorderLayout.NORTH)
         listPanel.add(JScrollPane(rows), BorderLayout.CENTER)
+        listPanel.add(conflictPanel, BorderLayout.SOUTH)
 
         canvas.preferredSize = Dimension(900, 560)
         val split = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, canvas, listPanel)
@@ -385,10 +389,46 @@ class UnifiedAnnotationDialog(
 
     private fun updateConflictStatus(externalChanged: Boolean = false) {
         val current = sessions[currentKey]
-        when {
-            current?.sync?.hasConflicts == true -> statusLabel.text = "External annotation changes conflict with current edits. Both versions are preserved; resolve them before saving."
-            externalChanged -> statusLabel.text = "External annotation changes were synchronized."
+        val conflicts = current?.sync?.pending?.result?.conflicts.orEmpty()
+        if (conflicts.isNotEmpty()) {
+            conflictPanel.showConflicts(conflicts, ::applyConflictChoices)
+            statusLabel.text = "External annotation changes conflict with current edits. Both versions are preserved; choose one version for every conflict."
+            return
         }
+        conflictPanel.clearConflicts()
+        if (externalChanged) statusLabel.text = "External annotation changes were synchronized."
+    }
+
+    private fun applyConflictChoices(choices: Map<String, AnnotationConflictChoice>) {
+        val current = sessions[currentKey] ?: return
+        val pending = current.sync.pending ?: return
+        val diskRevision = sourceRevision(kind)
+        if (diskRevision != pending.externalRevision) {
+            val error = reconcileKindFromDisk(kind)
+            statusLabel.text = if (error == null) {
+                "The annotation file changed again while conflicts were open; choices were refreshed from the latest version."
+            } else {
+                "The annotation file changed again and is currently invalid; previous choices were not applied."
+            }
+            updateConflictStatus()
+            return
+        }
+        val resolved = resolveAnnotationSessionConflicts(kind.mergeMode(), current.sync, choices, diskRevision)
+        if (resolved == null) {
+            statusLabel.text = "Conflict choices are incomplete or stale; nothing was changed."
+            updateConflictStatus()
+            return
+        }
+        current.sync = resolved
+        current.shapes = resolved.local.toUnifiedShapes().toMutableList()
+        current.dirty = true
+        current.nextId = (current.shapes.maxOfOrNull { it.id } ?: 0) + 1
+        clearHistoryFor(current.key)
+        canvas.applySession(current, keepViewport = true)
+        syncRows()
+        refreshHistoryButtons()
+        conflictPanel.clearConflicts()
+        statusLabel.text = "Annotation conflicts resolved. The merged result is still unsaved."
     }
 
     private fun ensureExternalMergedBeforeSave(): String? {
