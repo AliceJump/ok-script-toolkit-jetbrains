@@ -2,6 +2,8 @@ package com.alicejump.okscripttoolkit.core
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 
 class PositionPublishTargetsTest {
@@ -72,5 +74,13 @@ class PositionPublishTargetsTest {
 
         assertEquals(ConventionLayer.BUILTIN, convention.jsonResolved(null).layer)
         assertEquals(ConventionLayer.BUILTIN, convention.pythonDirectoryResolved(null).layer)
+    }
+
+    @Test
+    fun `existing custom json targets require explicit overwrite confirmation`() {
+        assertFalse(jsonTargetRequiresOverwriteConfirmation(PositionPublishDefaults.JSON_PATH, exists = true))
+        assertFalse(jsonTargetRequiresOverwriteConfirmation("generated/positions.json", exists = false))
+        assertTrue(jsonTargetRequiresOverwriteConfirmation("generated/positions.json", exists = true))
+        assertFalse(jsonTargetRequiresOverwriteConfirmation("./src\\scene/positions.json", exists = true))
     }
 }
