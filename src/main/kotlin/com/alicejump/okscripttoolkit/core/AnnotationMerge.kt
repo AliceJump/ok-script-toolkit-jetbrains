@@ -103,7 +103,7 @@ private fun mergeExisting(
     if (sameContent(base, local)) return ExistingMerge(external)
     if (sameContent(base, external)) return ExistingMerge(local)
 
-    var merged = local
+    var merged: MergeShape = local
     val conflicts = linkedSetOf<String>()
     for (field in MERGE_FIELDS) {
         val b = base.value(field)
