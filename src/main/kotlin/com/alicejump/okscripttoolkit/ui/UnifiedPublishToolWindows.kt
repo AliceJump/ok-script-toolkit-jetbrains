@@ -104,11 +104,11 @@ private object UnifiedPublishController {
         if (!selectionDialog.showAndGet()) return
         val selection = selectionDialog.selection()
 
-        val positionFormat = if (selection.hasPositions) choosePositionFormat(project) ?: return else null
+        val positionPlan = if (selection.hasPositions) PositionPublishFlow.configure(project) ?: return else null
         val templatePlan = if (selection.template) configureTemplate(project) ?: return else null
 
         val publishPositions = {
-            if (positionFormat != null) publishPositions(project, selection, positionFormat)
+            if (positionPlan != null) PositionPublishFlow.publish(project, selection.rect, selection.point, positionPlan)
             onComplete()
         }
 
