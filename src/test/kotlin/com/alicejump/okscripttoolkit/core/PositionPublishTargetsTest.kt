@@ -3,8 +3,13 @@ package com.alicejump.okscripttoolkit.core
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
+import java.nio.file.Files
+import java.nio.file.Path
 
 class PositionPublishTargetsTest {
     private val json = ObjectMapper()
@@ -82,5 +87,25 @@ class PositionPublishTargetsTest {
         assertFalse(jsonTargetRequiresOverwriteConfirmation("generated/positions.json", exists = false))
         assertTrue(jsonTargetRequiresOverwriteConfirmation("generated/positions.json", exists = true))
         assertFalse(jsonTargetRequiresOverwriteConfirmation("./src\\scene/positions.json", exists = true))
+    }
+
+    @Test
+    fun `path containment rejects output leaf symlink escaping project`(@TempDir root: Path) {
+        val scene = Files.createDirectories(root.resolve("src/scene"))
+        val outside = Files.createTempDirectory("position-publish-outside")
+        val outsideFile = Files.writeString(outside.resolve("outside.py"), "outside")
+        val symlink = scene.resolve("ScreenRatio.py")
+        try {
+            assumeTrue(runCatching { Files.createSymbolicLink(symlink, outsideFile) }.isSuccess)
+            assertNull(pathInsideRoot(root, symlink))
+            assertEquals(
+                scene.resolve("PositionMap.py").toAbsolutePath().normalize(),
+                pathInsideRoot(root, scene.resolve("PositionMap.py")),
+            )
+        } finally {
+            runCatching { Files.deleteIfExists(symlink) }
+            runCatching { Files.deleteIfExists(outsideFile) }
+            runCatching { Files.deleteIfExists(outside) }
+        }
     }
 }
