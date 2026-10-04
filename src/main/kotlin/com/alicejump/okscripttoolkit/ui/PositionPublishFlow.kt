@@ -110,7 +110,7 @@ object PositionPublishFlow {
         if (result.conflicts.isNotEmpty()) {
             val answer = Messages.showYesNoDialog(
                 project,
-                "These files are hand-written and would be replaced:\n${result.conflicts.joinToString("\n")}\n\nOverwrite them?",
+                "These existing files require explicit overwrite confirmation:\n${result.conflicts.joinToString("\n")}\n\nOverwrite them?",
                 "Publish",
                 Messages.getWarningIcon(),
             )
