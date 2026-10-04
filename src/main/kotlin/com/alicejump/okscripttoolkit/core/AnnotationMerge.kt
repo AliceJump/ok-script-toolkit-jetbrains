@@ -27,6 +27,8 @@ internal data class AnnotationMergeResult(
     val conflicts: List<AnnotationConflict>,
 )
 
+internal enum class AnnotationConflictChoice { LOCAL, EXTERNAL }
+
 private val MERGE_FIELDS = listOf("name", "x", "y", "w", "h")
 
 private fun MergeShape.value(field: String): Any = when (field) {
@@ -190,4 +192,51 @@ internal fun mergeAnnotations(
 
     external.indices.filter { it !in usedExternal }.forEach { merged += external[it] }
     return AnnotationMergeResult(merged, conflicts)
+}
+
+private fun conflictShapeIndex(
+    mode: AnnotationMergeMode,
+    shapes: List<MergeShape>,
+    conflict: AnnotationConflict,
+): Int {
+    val candidates = listOfNotNull(conflict.local, conflict.base, conflict.external)
+    if (mode == AnnotationMergeMode.TEMPLATE) {
+        candidates.forEach { candidate ->
+            shapes.indexOfFirst { it.id == candidate.id }.takeIf { it >= 0 }?.let { return it }
+        }
+    }
+    candidates.forEach { candidate ->
+        shapes.indexOfFirst { it.name.trim() == candidate.name.trim() }.takeIf { it >= 0 }?.let { return it }
+    }
+    return -1
+}
+
+/**
+ * Applies explicit conflict choices to a local-biased [AnnotationMergeResult].
+ * Returns null until every conflict has a choice, so callers cannot accidentally save a partial decision.
+ */
+internal fun resolveAnnotationConflicts(
+    mode: AnnotationMergeMode,
+    result: AnnotationMergeResult,
+    choices: Map<String, AnnotationConflictChoice>,
+): List<MergeShape>? {
+    if (result.conflicts.any { it.key !in choices }) return null
+    val resolved = result.merged.toMutableList()
+    for (conflict in result.conflicts) {
+        if (choices.getValue(conflict.key) == AnnotationConflictChoice.LOCAL) continue
+        val index = conflictShapeIndex(mode, resolved, conflict)
+        val external = conflict.external
+        if (external == null) {
+            if (index >= 0) resolved.removeAt(index)
+            continue
+        }
+        if (index < 0) {
+            resolved += external
+            continue
+        }
+        var shape = resolved[index]
+        for (field in conflict.fields) shape = shape.withValue(field, external.value(field))
+        resolved[index] = shape
+    }
+    return resolved
 }
