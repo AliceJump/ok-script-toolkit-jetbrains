@@ -10,7 +10,6 @@ object BoxResource {
     const val SEGMENT_SOURCE = "^[A-Za-z_][A-Za-z0-9_]*$"
     private val SEGMENT = Regex(SEGMENT_SOURCE)
 
-    data class PixelBox(val x: Int, val y: Int, val w: Int, val h: Int)
     data class AuthoringImage(val file: String, val width: Int, val height: Int)
     data class AuthoringBox(val path: String, val image: String, val bbox: IntArray) {
         override fun equals(other: Any?): Boolean {
@@ -40,14 +39,6 @@ object BoxResource {
         return null
     }
 
-    /** New rects cannot reuse an existing rect path. Rect/point cross-kind collisions are checked on publish. */
-    fun generateBoxPathProblem(value: String, occupied: Map<String, String>): String? {
-        val pathValue = value.trim()
-        pathError(pathValue)?.let { return it }
-        if (occupied.containsKey(pathValue)) return "duplicate"
-        return null
-    }
-
     fun imageFileName(value: String): String =
         value.replace('\\', '/').substringAfterLast('/').trim()
 
@@ -61,15 +52,6 @@ object BoxResource {
 
     fun bboxError(bbox: IntArray, size: AnnotationSwap.Size?): String? =
         AnnotationGeometry.bboxError(bbox, size)
-
-    fun unionPixelBoxes(boxes: List<PixelBox>): PixelBox? {
-        if (boxes.isEmpty()) return null
-        val left = boxes.minOf { it.x }
-        val top = boxes.minOf { it.y }
-        val right = boxes.maxOf { it.x + it.w }
-        val bottom = boxes.maxOf { it.y + it.h }
-        return PixelBox(left, top, right - left, bottom - top)
-    }
 
     fun applyVisibility(ids: List<String>, hidden: Set<String>, action: String, target: String? = null): Set<String> =
         when (action) {
