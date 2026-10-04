@@ -146,20 +146,24 @@ fun positionPublishTargetInputError(value: String?): String? {
 internal fun jsonTargetRequiresOverwriteConfirmation(relativeTarget: String, exists: Boolean): Boolean =
     exists && normalizeRelPath(relativeTarget) != PositionPublishDefaults.JSON_PATH
 
-private fun targetInsideRoot(root: Path, relative: String): Path? {
+/** Resolve a concrete output path only when its nearest existing path remains inside the real project root. */
+internal fun pathInsideRoot(root: Path, target: Path): Path? {
     val normalizedRoot = root.toAbsolutePath().normalize()
-    val target = normalizedRoot.resolve(relative).normalize()
-    if (target == normalizedRoot || !target.startsWith(normalizedRoot)) return null
+    val normalizedTarget = target.toAbsolutePath().normalize()
+    if (normalizedTarget == normalizedRoot || !normalizedTarget.startsWith(normalizedRoot)) return null
 
     val realRoot = runCatching { normalizedRoot.toRealPath() }.getOrNull() ?: return null
-    var existing = target
+    var existing = normalizedTarget
     while (!Files.exists(existing)) {
         existing = existing.parent ?: return null
     }
     val realExisting = runCatching { existing.toRealPath() }.getOrNull() ?: return null
     if (!realExisting.startsWith(realRoot)) return null
-    return target
+    return normalizedTarget
 }
+
+private fun targetInsideRoot(root: Path, relative: String): Path? =
+    pathInsideRoot(root, root.toAbsolutePath().normalize().resolve(relative))
 
 /**
  * Writes the already-shared Position runtime to the configured target while preserving handwritten
@@ -196,8 +200,10 @@ object ConfigurablePositionPublisher {
             PositionPublisherService.Format.PYTHON -> {
                 val directory = targetInsideRoot(root, relativeTarget)
                     ?: return PositionPublisherService.Result(errors = listOf("outside"))
-                val screen = directory.resolve("ScreenRatio.py")
-                val map = directory.resolve("PositionMap.py")
+                val screen = pathInsideRoot(root, directory.resolve("ScreenRatio.py"))
+                    ?: return PositionPublisherService.Result(errors = listOf("outside"))
+                val map = pathInsideRoot(root, directory.resolve("PositionMap.py"))
+                    ?: return PositionPublisherService.Result(errors = listOf("outside"))
                 val conflicts = listOf(screen, map).filter {
                     Files.isRegularFile(it) && !runCatching {
                         Files.readString(it).startsWith(PositionResource.GENERATED_MARKER)
