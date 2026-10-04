@@ -47,10 +47,10 @@ private fun MergeShape.withValue(field: String, value: Any): MergeShape = when (
     else -> error("unknown merge field: $field")
 }
 
-private fun sameContent(a: MergeShape?, b: MergeShape?): Boolean =
-    a == null || b == null
-        ? a == b
-        : MERGE_FIELDS.all { a.value(it) == b.value(it) }
+private fun sameContent(a: MergeShape?, b: MergeShape?): Boolean {
+    if (a == null || b == null) return a == b
+    return MERGE_FIELDS.all { a.value(it) == b.value(it) }
+}
 
 private fun geometryEqual(a: MergeShape, b: MergeShape): Boolean =
     a.x == b.x && a.y == b.y && a.w == b.w && a.h == b.h
