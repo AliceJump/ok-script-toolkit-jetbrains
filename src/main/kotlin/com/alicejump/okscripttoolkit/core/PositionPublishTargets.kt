@@ -139,6 +139,13 @@ fun positionPublishTargetInputError(value: String?): String? {
     return null
 }
 
+/**
+ * The built-in JSON target keeps the historical replacement behavior. A configurable JSON target
+ * is broader authority, so replacing an existing file requires an explicit confirmation first.
+ */
+internal fun jsonTargetRequiresOverwriteConfirmation(relativeTarget: String, exists: Boolean): Boolean =
+    exists && normalizeRelPath(relativeTarget) != PositionPublishDefaults.JSON_PATH
+
 private fun targetInsideRoot(root: Path, relative: String): Path? {
     val normalizedRoot = root.toAbsolutePath().normalize()
     val target = normalizedRoot.resolve(relative).normalize()
@@ -155,8 +162,8 @@ private fun targetInsideRoot(root: Path, relative: String): Path? {
 }
 
 /**
- * Writes the already-shared Position runtime to the configured target while preserving the existing
- * manual-Python protection and two-file rollback boundary.
+ * Writes the already-shared Position runtime to the configured target while preserving handwritten
+ * Python protection, explicit confirmation for existing custom JSON targets, and rollback behavior.
  */
 object ConfigurablePositionPublisher {
     fun publish(
@@ -176,6 +183,9 @@ object ConfigurablePositionPublisher {
             PositionPublisherService.Format.JSON -> {
                 val target = targetInsideRoot(root, relativeTarget)
                     ?: return PositionPublisherService.Result(errors = listOf("outside"))
+                if (jsonTargetRequiresOverwriteConfirmation(relativeTarget, Files.isRegularFile(target)) && !overwriteHandwritten) {
+                    return PositionPublisherService.Result(conflicts = listOf(target))
+                }
                 if (!writeAnnotationText(target, PositionResource.serializeJson(published))) {
                     PositionPublisherService.Result(errors = listOf("write"))
                 } else {
