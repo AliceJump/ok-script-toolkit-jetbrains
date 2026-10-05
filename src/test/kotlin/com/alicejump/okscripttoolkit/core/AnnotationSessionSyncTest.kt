@@ -127,4 +127,18 @@ class AnnotationSessionSyncTest {
         assertEquals(external, resolved.base)
         assertEquals("r2", resolved.revision)
     }
+
+    @Test
+    fun `next id never goes backwards after deleting the highest local id`() {
+        val current = listOf(shape(1, "screen.a", 10, 10))
+        val base = listOf(shape(1, "screen.a", 10, 10), shape(5, "screen.old", 50, 50))
+        assertEquals(6, nextAnnotationId(6, current, base))
+    }
+
+    @Test
+    fun `next id advances beyond ids learned from external base`() {
+        val current = listOf(shape(2, "screen.local", 20, 20))
+        val base = listOf(shape(9, "screen.external", 90, 90))
+        assertEquals(10, nextAnnotationId(3, current, base))
+    }
 }

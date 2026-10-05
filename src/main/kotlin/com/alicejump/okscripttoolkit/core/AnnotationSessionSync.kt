@@ -25,6 +25,16 @@ internal data class PendingAnnotationMerge(
     val result: AnnotationMergeResult,
 )
 
+/** Keep editor-only ids monotonic across deletes, merges and undo/redo snapshots. */
+internal fun nextAnnotationId(
+    previousNextId: Int,
+    shapes: List<MergeShape>,
+    base: List<MergeShape>,
+): Int {
+    val maxKnownId = (shapes.asSequence() + base.asSequence()).maxOfOrNull { it.id } ?: 0
+    return maxOf(previousNextId, maxKnownId + 1)
+}
+
 /**
  * Reconcile a valid external snapshot with an open session.
  *

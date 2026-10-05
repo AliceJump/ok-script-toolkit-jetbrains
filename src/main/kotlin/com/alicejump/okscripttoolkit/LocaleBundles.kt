@@ -12,6 +12,7 @@ internal object LocaleBundles {
         "zh_HK" to listOf("zh_HK", "zh_CN", ""),
     )
     private val caches = ConcurrentHashMap<String, ConcurrentHashMap<Locale, ResourceBundle>>()
+    private val noImplicitFallback = ResourceBundle.Control.getNoFallbackControl(ResourceBundle.Control.FORMAT_DEFAULT)
 
     fun bundle(baseName: String, locale: Locale = Locale.getDefault()): ResourceBundle {
         val cache = caches.computeIfAbsent(baseName) { ConcurrentHashMap() }
@@ -26,9 +27,19 @@ internal object LocaleBundles {
     private fun loadBundle(baseName: String, locale: Locale): ResourceBundle? {
         for (candidate in fallbackCandidates(locale)) {
             try {
-                return ResourceBundle.getBundle(baseName, candidate, LocaleBundles::class.java.classLoader)
+                val bundle = ResourceBundle.getBundle(
+                    baseName,
+                    candidate,
+                    LocaleBundles::class.java.classLoader,
+                    noImplicitFallback,
+                )
+                if (candidate == Locale.ROOT) {
+                    if (locale == Locale.ROOT && bundle.locale == Locale.ROOT) return bundle
+                    continue
+                }
+                if (bundle.locale == candidate) return bundle
             } catch (_: Exception) {
-                // No bundle for this candidate; continue through the explicit fallback chain.
+                // No exact bundle for this candidate; continue through the explicit fallback chain.
             }
         }
         return null
@@ -38,7 +49,9 @@ internal object LocaleBundles {
         val language = locale.language.lowercase()
         val country = locale.country.uppercase()
         val full = if (country.isEmpty()) language else "${language}_$country"
-        val chain = fallbacks[full] ?: fallbacks[language] ?: listOf(full.ifEmpty { "" })
+        val chain = fallbacks[full]
+            ?: fallbacks[language]
+            ?: listOf(full.ifEmpty { "" }, language, "").distinct()
         val candidates = mutableListOf<Locale>()
         for (tag in chain) {
             when (tag) {

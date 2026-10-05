@@ -17,6 +17,7 @@ import com.alicejump.okscripttoolkit.core.PositionPublisherService
 import com.alicejump.okscripttoolkit.core.ResourceFileTransaction
 import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
 import com.alicejump.okscripttoolkit.core.TemplateImage
+import com.alicejump.okscripttoolkit.core.nextAnnotationId
 import com.alicejump.okscripttoolkit.core.reconcileAnnotationSession
 import com.alicejump.okscripttoolkit.core.resolveAnnotationSessionConflicts
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
@@ -327,13 +328,15 @@ class UnifiedAnnotationDialog(
     }
 
     private fun session(key: SessionKey): ShapeSession = sessions.getOrPut(key) {
-        val items = readSessionShapes(key)
         val revision = sourceRevision(key.kind)
+        val sourceValid = reloadSource(key.kind)
+        val items = readSessionShapes(key)
+        val acceptedRevision = if (sourceValid) revision else null
         ShapeSession(
             key = key,
             shapes = items.toMutableList(),
-            nextId = (items.maxOfOrNull { it.id } ?: 0) + 1,
-            sync = AnnotationSessionSyncState(items.toMergeShapes(), items.toMergeShapes(), revision, dirty = false),
+            nextId = nextAnnotationId(1, items.toMergeShapes(), items.toMergeShapes()),
+            sync = AnnotationSessionSyncState(items.toMergeShapes(), items.toMergeShapes(), acceptedRevision, dirty = false),
         )
     }
 
@@ -357,8 +360,8 @@ class UnifiedAnnotationDialog(
     }
 
     private fun reconcileKindFromDisk(targetKind: AnnotationKind): String? {
-        if (!reloadSource(targetKind)) return "parse"
         val revision = sourceRevision(targetKind)
+        if (!reloadSource(targetKind)) return "parse"
         for (session in sessions.values.filter { it.key.kind == targetKind }) {
             val external = readSessionShapes(session.key)
             val state = if (session.sync.pending == null) {
@@ -368,7 +371,7 @@ class UnifiedAnnotationDialog(
             session.sync = next
             session.shapes = next.displayShapes.toUnifiedShapes().toMutableList()
             session.dirty = next.dirty
-            session.nextId = (session.shapes.maxOfOrNull { it.id } ?: 0) + 1
+            session.nextId = nextAnnotationId(session.nextId, session.shapes.toMergeShapes(), next.base)
             clearHistoryFor(session.key)
         }
         if (currentKey.kind == targetKind && sessions.containsKey(currentKey)) {
@@ -421,7 +424,7 @@ class UnifiedAnnotationDialog(
         current.sync = resolved
         current.shapes = resolved.local.toUnifiedShapes().toMutableList()
         current.dirty = true
-        current.nextId = (current.shapes.maxOfOrNull { it.id } ?: 0) + 1
+        current.nextId = nextAnnotationId(current.nextId, current.shapes.toMergeShapes(), resolved.base)
         clearHistoryFor(current.key)
         canvas.applySession(current, keepViewport = true)
         syncRows()
@@ -619,7 +622,7 @@ class UnifiedAnnotationDialog(
         s.shapes = snapshot.toMutableList()
         s.dirty = true
         s.sync = s.sync.copy(local = snapshot.toMergeShapes(), dirty = true, pending = null)
-        s.nextId = (snapshot.maxOfOrNull { it.id } ?: 0) + 1
+        s.nextId = nextAnnotationId(s.nextId, snapshot.toMergeShapes(), s.sync.base)
         if (tx.key == currentKey) canvas.applySession(s, keepViewport = true)
         refreshHistoryButtons()
         syncRows()
