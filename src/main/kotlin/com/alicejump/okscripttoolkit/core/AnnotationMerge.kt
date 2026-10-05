@@ -20,6 +20,7 @@ internal data class AnnotationConflict(
     val base: MergeShape? = null,
     val local: MergeShape? = null,
     val external: MergeShape? = null,
+    val mergedIndex: Int? = null,
 )
 
 internal data class AnnotationMergeResult(
@@ -162,8 +163,11 @@ internal fun mergeAnnotations(
             local.getOrNull(li),
             external.getOrNull(ei),
         )
-        result.shape?.let(merged::add)
-        result.conflict?.let(conflicts::add)
+        val mergedIndex = result.shape?.let {
+            merged += it
+            merged.lastIndex
+        }
+        result.conflict?.let { conflicts += it.copy(mergedIndex = mergedIndex) }
     }
 
     for (li in local.indices) {
@@ -181,34 +185,18 @@ internal fun mergeAnnotations(
         } else {
             merged += localItem
             conflicts += AnnotationConflict(
-                if (mode == AnnotationMergeMode.TEMPLATE) "template:new:${localItem.name}" else "${mode.name.lowercase()}:${localItem.name.trim()}",
+                if (mode == AnnotationMergeMode.TEMPLATE) "template:new:$li:${localItem.name}" else "${mode.name.lowercase()}:${localItem.name.trim()}",
                 AnnotationConflictKind.ADD_ADD,
                 MERGE_FIELDS.filterTo(linkedSetOf()) { localItem.value(it) != externalItem.value(it) },
                 local = localItem,
                 external = externalItem,
+                mergedIndex = merged.lastIndex,
             )
         }
     }
 
     external.indices.filter { it !in usedExternal }.forEach { merged += external[it] }
     return AnnotationMergeResult(merged, conflicts)
-}
-
-private fun conflictShapeIndex(
-    mode: AnnotationMergeMode,
-    shapes: List<MergeShape>,
-    conflict: AnnotationConflict,
-): Int {
-    val candidates = listOfNotNull(conflict.local, conflict.base, conflict.external)
-    if (mode == AnnotationMergeMode.TEMPLATE) {
-        candidates.forEach { candidate ->
-            shapes.indexOfFirst { it.id == candidate.id }.takeIf { it >= 0 }?.let { return it }
-        }
-    }
-    candidates.forEach { candidate ->
-        shapes.indexOfFirst { it.name.trim() == candidate.name.trim() }.takeIf { it >= 0 }?.let { return it }
-    }
-    return -1
 }
 
 /**
@@ -222,18 +210,23 @@ internal fun resolveAnnotationConflicts(
 ): List<MergeShape>? {
     if (result.conflicts.any { it.key !in choices }) return null
     val resolved = result.merged.toMutableList()
-    for (conflict in result.conflicts) {
+    val orderedConflicts = result.conflicts.sortedByDescending { it.mergedIndex ?: -1 }
+    for (conflict in orderedConflicts) {
         if (choices.getValue(conflict.key) == AnnotationConflictChoice.LOCAL) continue
-        val index = conflictShapeIndex(mode, resolved, conflict)
+        val index = conflict.mergedIndex
         val external = conflict.external
         if (external == null) {
-            if (index >= 0) resolved.removeAt(index)
+            if (index != null) {
+                if (index !in resolved.indices) return null
+                resolved.removeAt(index)
+            }
             continue
         }
-        if (index < 0) {
+        if (index == null) {
             resolved += external
             continue
         }
+        if (index !in resolved.indices) return null
         var shape = resolved[index]
         for (field in conflict.fields) shape = shape.withValue(field, external.value(field))
         resolved[index] = shape

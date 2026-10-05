@@ -31,6 +31,7 @@ class AnnotationMergeTest {
         assertEquals(30, result.conflicts.single().local?.x)
         assertEquals(40, result.conflicts.single().external?.x)
         assertEquals(30, result.merged.single().x)
+        assertEquals(0, result.conflicts.single().mergedIndex)
     }
 
     @Test
@@ -40,6 +41,7 @@ class AnnotationMergeTest {
         val result = mergeAnnotations(AnnotationMergeMode.POINT, base, emptyList(), external)
         assertEquals(AnnotationConflictKind.DELETE_MODIFY, result.conflicts.single().kind)
         assertNull(result.conflicts.single().local)
+        assertNull(result.conflicts.single().mergedIndex)
         assertEquals(11, result.conflicts.single().external?.x)
     }
 
@@ -60,6 +62,21 @@ class AnnotationMergeTest {
         val external = listOf(shape(99, "screen.same", 20, 10))
         val result = mergeAnnotations(AnnotationMergeMode.RECT, emptyList(), local, external)
         assertEquals(AnnotationConflictKind.ADD_ADD, result.conflicts.single().kind)
+    }
+
+    @Test
+    fun `template add conflicts have independent choice keys`() {
+        val local = listOf(
+            shape(1, "shared.category", 10, 10),
+            shape(2, "shared.category", 30, 10),
+        )
+        val external = listOf(
+            shape(101, "shared.category", 11, 10),
+            shape(102, "shared.category", 31, 10),
+        )
+        val result = mergeAnnotations(AnnotationMergeMode.TEMPLATE, emptyList(), local, external)
+        assertEquals(2, result.conflicts.size)
+        assertEquals(2, result.conflicts.map { it.key }.toSet().size)
     }
 
     @Test
@@ -124,6 +141,42 @@ class AnnotationMergeTest {
             result,
             mapOf(conflict.key to AnnotationConflictChoice.EXTERNAL),
         )!!
+        assertTrue(resolved.isEmpty())
+    }
+
+    @Test
+    fun `template external restore never targets unrelated local shape with colliding id`() {
+        val base = listOf(shape(1, "screen.a", 10, 10))
+        val local = listOf(shape(2, "screen.b", 50, 50))
+        val external = listOf(shape(2, "screen.a", 15, 10))
+        val result = mergeAnnotations(AnnotationMergeMode.TEMPLATE, base, local, external)
+        val conflict = result.conflicts.single()
+        assertEquals(AnnotationConflictKind.DELETE_MODIFY, conflict.kind)
+        assertNull(conflict.mergedIndex, "local deletion has no merged target slot")
+
+        val resolved = resolveAnnotationConflicts(
+            AnnotationMergeMode.TEMPLATE,
+            result,
+            mapOf(conflict.key to AnnotationConflictChoice.EXTERNAL),
+        )!!
+        assertEquals(2, resolved.size)
+        assertEquals(shape(2, "screen.b", 50, 50), resolved.single { it.name == "screen.b" })
+        assertEquals(15, resolved.single { it.name == "screen.a" }.x)
+    }
+
+    @Test
+    fun `multiple external deletions are applied without index drift`() {
+        val base = listOf(
+            shape(1, "screen.a", 10, 10),
+            shape(2, "screen.b", 20, 20),
+        )
+        val local = listOf(
+            shape(1, "screen.a", 11, 10),
+            shape(2, "screen.b", 21, 20),
+        )
+        val result = mergeAnnotations(AnnotationMergeMode.RECT, base, local, emptyList())
+        val choices = result.conflicts.associate { it.key to AnnotationConflictChoice.EXTERNAL }
+        val resolved = resolveAnnotationConflicts(AnnotationMergeMode.RECT, result, choices)!!
         assertTrue(resolved.isEmpty())
     }
 }
