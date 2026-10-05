@@ -1,9 +1,15 @@
 package com.alicejump.okscripttoolkit.ui
 
+import com.alicejump.okscripttoolkit.AnnotationUiBundle
+import com.alicejump.okscripttoolkit.core.AnnotationConflictChoice
+import com.alicejump.okscripttoolkit.core.AnnotationDataChanges
+import com.alicejump.okscripttoolkit.core.AnnotationMergeMode
+import com.alicejump.okscripttoolkit.core.AnnotationSessionSyncState
 import com.alicejump.okscripttoolkit.core.BoxCatalogService
 import com.alicejump.okscripttoolkit.core.CocoAnnotationEdit
 import com.alicejump.okscripttoolkit.core.CoordinateTuple
 import com.alicejump.okscripttoolkit.core.CoordinateTupleFormat
+import com.alicejump.okscripttoolkit.core.MergeShape
 import com.alicejump.okscripttoolkit.core.NormalizedAnnotationRect
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
 import com.alicejump.okscripttoolkit.core.PointCatalogService
@@ -11,6 +17,9 @@ import com.alicejump.okscripttoolkit.core.PositionPublisherService
 import com.alicejump.okscripttoolkit.core.ResourceFileTransaction
 import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
 import com.alicejump.okscripttoolkit.core.TemplateImage
+import com.alicejump.okscripttoolkit.core.nextAnnotationId
+import com.alicejump.okscripttoolkit.core.reconcileAnnotationSession
+import com.alicejump.okscripttoolkit.core.resolveAnnotationSessionConflicts
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.intellij.ide.util.PropertiesComponent
@@ -81,6 +90,8 @@ internal const val UNIFIED_RESOURCE_PREVIEW_TOOL_WINDOW_ID = "ok-script Resource
 internal val UNIFIED_ANNOTATION_PANEL_KEY =
     com.intellij.openapi.util.Key.create<AnnotationManagerPanel>("okScriptToolkit.unifiedAnnotationPanel")
 
+private fun ui(key: String, vararg params: Any): String = AnnotationUiBundle.message(key, *params)
+
 private enum class AnnotationKind { TEMPLATE, RECT, POINT }
 
 private data class UnifiedShape(
@@ -92,8 +103,24 @@ private data class UnifiedShape(
     val h: Int,
 )
 
+private fun UnifiedShape.toMergeShape() = MergeShape(id, name, x, y, w, h)
+private fun MergeShape.toUnifiedShape() = UnifiedShape(id, name, x, y, w, h)
+private fun List<UnifiedShape>.toMergeShapes() = map(UnifiedShape::toMergeShape)
+private fun List<MergeShape>.toUnifiedShapes() = map(MergeShape::toUnifiedShape)
+private fun AnnotationKind.mergeMode(): AnnotationMergeMode = when (this) {
+    AnnotationKind.TEMPLATE -> AnnotationMergeMode.TEMPLATE
+    AnnotationKind.RECT -> AnnotationMergeMode.RECT
+    AnnotationKind.POINT -> AnnotationMergeMode.POINT
+}
+
 private data class SessionKey(val file: String, val kind: AnnotationKind)
-private data class ShapeSession(val key: SessionKey, var shapes: MutableList<UnifiedShape>, var dirty: Boolean = false, var nextId: Int = 1)
+private data class ShapeSession(
+    val key: SessionKey,
+    var shapes: MutableList<UnifiedShape>,
+    var dirty: Boolean = false,
+    var nextId: Int = 1,
+    var sync: AnnotationSessionSyncState,
+)
 private data class EditTransaction(
     val id: Long,
     val key: SessionKey,
@@ -130,14 +157,15 @@ class UnifiedAnnotationDialog(
     private val prefs = PropertiesComponent.getInstance()
 
     private val canvas = UnifiedCanvas()
-    private val templateMode = JRadioButton("Template")
-    private val rectMode = JRadioButton("Box")
-    private val pointMode = JRadioButton("Point")
-    private val sharedUndo = JCheckBox("Shared undo history", prefs.getBoolean(PREF_SHARED_UNDO, true))
+    private val conflictPanel = AnnotationConflictPanel()
+    private val templateMode = JRadioButton(ui("mode.template"))
+    private val rectMode = JRadioButton(ui("mode.rect"))
+    private val pointMode = JRadioButton(ui("mode.point"))
+    private val sharedUndo = JCheckBox(ui("sharedUndo"), prefs.getBoolean(PREF_SHARED_UNDO, true))
     private val preferXywh = JCheckBox("XYWH", prefs.getBoolean(PREF_COORD_XYWH, false))
-    private val drawToggle = JToggleButton("Draw (R)")
-    private val coordToggle = JToggleButton("Coords (C)")
-    private val deleteButton = JButton("Delete")
+    private val drawToggle = JToggleButton(ui("tool.draw"))
+    private val coordToggle = JToggleButton(ui("tool.coords"))
+    private val deleteButton = JButton(ui("tool.delete"))
     private val undoButton = JButton("↩")
     private val redoButton = JButton("↪")
     private val prevButton = JButton("◀")
@@ -154,13 +182,18 @@ class UnifiedAnnotationDialog(
     private val kindUndo = AnnotationKind.entries.associateWith { ArrayDeque<EditTransaction>() }.toMutableMap()
     private val kindRedo = AnnotationKind.entries.associateWith { ArrayDeque<EditTransaction>() }.toMutableMap()
     private var nextTransactionId = 1L
+    private var annotationSubscription: AutoCloseable? = null
+    private var saving = false
 
     init {
-        title = "Annotation Management"
-        setOKButtonText("Save")
+        title = ui("manager.title")
+        setOKButtonText(ui("manager.save"))
         init()
         boxCatalog.readAuthoring()
         loadImage(currentIndex, preserveViewport = false)
+        annotationSubscription = AnnotationDataChanges.subscribe { changed ->
+            if (!saving) UIUtil.invokeLaterIfNeeded { if (!saving) handleExternalChange(changed) }
+        }
     }
 
     private val currentImage: TemplateImage get() = images[currentIndex]
@@ -178,7 +211,7 @@ class UnifiedAnnotationDialog(
             prefs.setValue(PREF_SHARED_UNDO, sharedUndo.isSelected, true)
             refreshHistoryButtons()
         }
-        preferXywh.toolTipText = "Coordinate box copy format and ambiguous bare-tuple paste preference"
+        preferXywh.toolTipText = ui("coord.preferenceTooltip")
         preferXywh.addActionListener {
             prefs.setValue(PREF_COORD_XYWH, preferXywh.isSelected, false)
             canvas.refreshCoordinateReadout()
@@ -205,10 +238,11 @@ class UnifiedAnnotationDialog(
 
         rows.layout = BoxLayout(rows, BoxLayout.Y_AXIS)
         val listPanel = JPanel(BorderLayout(0, 4))
-        listPanel.preferredSize = Dimension(190, 560)
+        listPanel.preferredSize = Dimension(300, 560)
         listPanel.border = BorderFactory.createEmptyBorder(0, 8, 0, 0)
-        listPanel.add(JBLabel("Annotations"), BorderLayout.NORTH)
+        listPanel.add(JBLabel(ui("list.title")), BorderLayout.NORTH)
         listPanel.add(JScrollPane(rows), BorderLayout.CENTER)
+        listPanel.add(conflictPanel, BorderLayout.SOUTH)
 
         canvas.preferredSize = Dimension(900, 560)
         val split = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, canvas, listPanel)
@@ -227,10 +261,11 @@ class UnifiedAnnotationDialog(
         if (next == kind) return
         canvas.finishTransientEdit()
         kind = next
-        drawToggle.text = if (kind == AnnotationKind.POINT) "Point (R)" else "Draw (R)"
+        drawToggle.text = if (kind == AnnotationKind.POINT) ui("tool.point") else ui("tool.draw")
         canvas.applySession(session(currentKey), keepViewport = true)
         syncRows()
         refreshHistoryButtons()
+        updateConflictStatus()
     }
 
     private fun navigate(delta: Int) {
@@ -252,29 +287,167 @@ class UnifiedAnnotationDialog(
         nextButton.isEnabled = currentIndex < images.lastIndex
         syncRows()
         refreshHistoryButtons()
+        updateConflictStatus()
+    }
+
+    private fun sourcePath(targetKind: AnnotationKind): Path? = when (targetKind) {
+        AnnotationKind.TEMPLATE -> templateData.annotationFile
+        AnnotationKind.RECT -> boxCatalog.authoringPath()
+        AnnotationKind.POINT -> pointCatalog.authoringPath()
+    }
+
+    private fun sourceRevision(targetKind: AnnotationKind): String? {
+        val source = sourcePath(targetKind) ?: return null
+        return try { Files.readString(source) } catch (_: java.nio.file.NoSuchFileException) { null } catch (_: Exception) { null }
+    }
+
+    private fun sameSource(left: Path?, right: Path): Boolean {
+        left ?: return false
+        val a = left.toAbsolutePath().normalize()
+        val b = right.toAbsolutePath().normalize()
+        return if (System.getProperty("os.name").startsWith("Windows", ignoreCase = true)) {
+            a.toString().equals(b.toString(), ignoreCase = true)
+        } else a == b
+    }
+
+    private fun readSessionShapes(key: SessionKey): List<UnifiedShape> = when (key.kind) {
+        AnnotationKind.TEMPLATE -> {
+            val image = templateData.getImageEntryForFile(key.file)
+            val names = templateData.categories().associate { it.id to it.name }
+            image?.let { templateData.getAnnotationsForImage(it.id) }.orEmpty().mapNotNull { ann ->
+                val name = names[ann.categoryId] ?: return@mapNotNull null
+                UnifiedShape(ann.id, name, ann.bbox[0], ann.bbox[1], ann.bbox[2], ann.bbox[3])
+            }
+        }
+        AnnotationKind.RECT -> boxCatalog.boxesForImage(key.file).mapIndexed { index, box ->
+            UnifiedShape(index + 1, box.path, box.bbox[0], box.bbox[1], box.bbox[2], box.bbox[3])
+        }
+        AnnotationKind.POINT -> pointCatalog.pointsForImage(key.file).mapIndexed { index, point ->
+            UnifiedShape(index + 1, point.path, point.x, point.y, 0, 0)
+        }
     }
 
     private fun session(key: SessionKey): ShapeSession = sessions.getOrPut(key) {
-        val items = when (key.kind) {
-            AnnotationKind.TEMPLATE -> {
-                val image = templateData.getImageEntryForFile(key.file)
-                val names = templateData.categories().associate { it.id to it.name }
-                image?.let { templateData.getAnnotationsForImage(it.id) }.orEmpty().mapNotNull { ann ->
-                    val name = names[ann.categoryId] ?: return@mapNotNull null
-                    UnifiedShape(ann.id, name, ann.bbox[0], ann.bbox[1], ann.bbox[2], ann.bbox[3])
-                }
+        val revision = sourceRevision(key.kind)
+        val sourceValid = reloadSource(key.kind)
+        val items = readSessionShapes(key)
+        val acceptedRevision = if (sourceValid) revision else null
+        ShapeSession(
+            key = key,
+            shapes = items.toMutableList(),
+            nextId = nextAnnotationId(1, items.toMergeShapes(), items.toMergeShapes()),
+            sync = AnnotationSessionSyncState(items.toMergeShapes(), items.toMergeShapes(), acceptedRevision, dirty = false),
+        )
+    }
+
+    private fun reloadSource(targetKind: AnnotationKind): Boolean = when (targetKind) {
+        AnnotationKind.TEMPLATE -> {
+            templateData.reload()
+            templateData.readErrors.isEmpty()
+        }
+        AnnotationKind.RECT -> {
+            boxCatalog.annotations.reload()
+            boxCatalog.annotations.readErrors.isEmpty()
+        }
+        AnnotationKind.POINT -> pointCatalog.read().errors.isEmpty()
+    }
+
+    private fun clearHistoryFor(key: SessionKey) {
+        globalUndo.removeAll { it.key == key }
+        globalRedo.removeAll { it.key == key }
+        kindUndo.getValue(key.kind).removeAll { it.key == key }
+        kindRedo.getValue(key.kind).removeAll { it.key == key }
+    }
+
+    private fun reconcileKindFromDisk(targetKind: AnnotationKind): String? {
+        val revision = sourceRevision(targetKind)
+        if (!reloadSource(targetKind)) return "parse"
+        for (session in sessions.values.filter { it.key.kind == targetKind }) {
+            val external = readSessionShapes(session.key)
+            val state = if (session.sync.pending == null) {
+                session.sync.copy(local = session.shapes.toMergeShapes(), dirty = session.dirty)
+            } else session.sync
+            val next = reconcileAnnotationSession(targetKind.mergeMode(), state, external.toMergeShapes(), revision)
+            session.sync = next
+            session.shapes = next.displayShapes.toUnifiedShapes().toMutableList()
+            session.dirty = next.dirty
+            session.nextId = nextAnnotationId(session.nextId, session.shapes.toMergeShapes(), next.base)
+            clearHistoryFor(session.key)
+        }
+        if (currentKey.kind == targetKind && sessions.containsKey(currentKey)) {
+            canvas.applySession(session(currentKey), keepViewport = true)
+            syncRows()
+            refreshHistoryButtons()
+            updateConflictStatus()
+        }
+        return null
+    }
+
+    private fun handleExternalChange(changed: Path) {
+        val changedKind = AnnotationKind.entries.firstOrNull { sameSource(sourcePath(it), changed) } ?: return
+        val error = reconcileKindFromDisk(changedKind)
+        if (error != null) {
+            if (kind == changedKind) statusLabel.text = ui("external.invalid")
+            return
+        }
+        if (kind == changedKind) updateConflictStatus(externalChanged = true)
+    }
+
+    private fun updateConflictStatus(externalChanged: Boolean = false) {
+        val current = sessions[currentKey]
+        val conflicts = current?.sync?.pending?.result?.conflicts.orEmpty()
+        if (conflicts.isNotEmpty()) {
+            conflictPanel.showConflicts(conflicts, ::applyConflictChoices)
+            statusLabel.text = ui("external.conflict")
+            return
+        }
+        conflictPanel.clearConflicts()
+        if (externalChanged) statusLabel.text = ui("external.synced")
+    }
+
+    private fun applyConflictChoices(choices: Map<String, AnnotationConflictChoice>) {
+        val current = sessions[currentKey] ?: return
+        val pending = current.sync.pending ?: return
+        val diskRevision = sourceRevision(kind)
+        if (diskRevision != pending.externalRevision) {
+            val error = reconcileKindFromDisk(kind)
+            statusLabel.text = if (error == null) ui("external.changedAgain") else ui("external.changedAgainInvalid")
+            updateConflictStatus()
+            return
+        }
+        val resolved = resolveAnnotationSessionConflicts(kind.mergeMode(), current.sync, choices, diskRevision)
+        if (resolved == null) {
+            statusLabel.text = ui("external.choiceStale")
+            updateConflictStatus()
+            return
+        }
+        current.sync = resolved
+        current.shapes = resolved.local.toUnifiedShapes().toMutableList()
+        current.dirty = true
+        current.nextId = nextAnnotationId(current.nextId, current.shapes.toMergeShapes(), resolved.base)
+        clearHistoryFor(current.key)
+        canvas.applySession(current, keepViewport = true)
+        syncRows()
+        refreshHistoryButtons()
+        conflictPanel.clearConflicts()
+        statusLabel.text = ui("external.resolved")
+    }
+
+    private fun ensureExternalMergedBeforeSave(): String? {
+        val dirtyKinds = sessions.values.filter { it.dirty }.mapTo(linkedSetOf()) { it.key.kind }
+        for (targetKind in dirtyKinds) {
+            val accepted = sessions.values.firstOrNull { it.key.kind == targetKind }?.let { session ->
+                session.sync.pending?.externalRevision ?: session.sync.revision
             }
-            AnnotationKind.RECT -> boxCatalog.boxesForImage(key.file).mapIndexed { index, box ->
-                UnifiedShape(index + 1, box.path, box.bbox[0], box.bbox[1], box.bbox[2], box.bbox[3])
-            }
-            AnnotationKind.POINT -> pointCatalog.pointsForImage(key.file).mapIndexed { index, point ->
-                UnifiedShape(index + 1, point.path, point.x, point.y, 0, 0)
+            if (sourceRevision(targetKind) != accepted) {
+                reconcileKindFromDisk(targetKind)?.let { return "$targetKind:$it" }
             }
         }
-        ShapeSession(key, items.toMutableList(), nextId = (items.maxOfOrNull { it.id } ?: 0) + 1)
+        return if (sessions.values.any { it.sync.hasConflicts }) "conflict" else null
     }
 
     private fun saveAll(): String? {
+        ensureExternalMergedBeforeSave()?.let { return it }
         val dirty = sessions.values.filter { it.dirty }
         if (dirty.isEmpty()) return null
 
@@ -322,12 +495,22 @@ class UnifiedAnnotationDialog(
 
     override fun doOKAction() {
         canvas.finishTransientEdit()
-        val error = saveAll()
+        saving = true
+        val error = try { saveAll() } finally { saving = false }
         if (error != null) {
-            Messages.showErrorDialog(project, "Failed to save annotation resources: $error", "Annotation Management")
+            val message = if (error == "conflict") ui("external.unresolvedSave") else ui("manager.saveFailed", error)
+            Messages.showErrorDialog(project, message, ui("manager.title"))
             return
         }
+        annotationSubscription?.close()
+        annotationSubscription = null
         super.doOKAction()
+    }
+
+    override fun doCancelAction() {
+        annotationSubscription?.close()
+        annotationSubscription = null
+        super.doCancelAction()
     }
 
     private fun occupiedNames(targetKind: AnnotationKind, currentFile: String): MutableSet<String> {
@@ -373,18 +556,25 @@ class UnifiedAnnotationDialog(
     }
 
     private fun promptName(initial: String = ""): String? {
+        if (sessions[currentKey]?.sync?.hasConflicts == true) return null
         var value = initial
         while (true) {
-            val answer = Messages.showInputDialog(project, "Name / position path", "Annotation", null, value, null) ?: return null
+            val answer = Messages.showInputDialog(project, ui("name.prompt"), ui("name.title"), null, value, null) ?: return null
             val name = answer.trim()
             if (validName(name)) return name
-            Messages.showErrorDialog(project, "Position paths need at least two valid Python identifier segments, e.g. screen.main_viewport", "Invalid name")
+            Messages.showErrorDialog(project, ui("name.invalid"), ui("name.invalidTitle"))
             value = name
         }
     }
 
     private fun recordEdit(key: SessionKey, before: List<UnifiedShape>, after: List<UnifiedShape>) {
         if (before == after) return
+        val session = sessions[key] ?: return
+        if (session.sync.hasConflicts) {
+            session.shapes = session.sync.displayShapes.toUnifiedShapes().toMutableList()
+            if (key == currentKey) canvas.applySession(session, keepViewport = true)
+            return
+        }
         val tx = EditTransaction(nextTransactionId++, key, before, after)
         globalUndo.addLast(tx)
         kindUndo.getValue(key.kind).addLast(tx)
@@ -392,7 +582,8 @@ class UnifiedAnnotationDialog(
         while (kindUndo.getValue(key.kind).size > MAX_HISTORY) kindUndo.getValue(key.kind).removeFirst()
         globalRedo.clear()
         kindRedo.getValue(key.kind).clear()
-        sessions[key]?.dirty = true
+        session.dirty = true
+        session.sync = session.sync.copy(local = after.toMergeShapes(), dirty = true, pending = null)
         refreshHistoryButtons()
     }
 
@@ -405,6 +596,7 @@ class UnifiedAnnotationDialog(
     }
 
     private fun undo() {
+        if (sessions[currentKey]?.sync?.hasConflicts == true) return
         val tx = if (sharedUndo.isSelected) popMatching(globalUndo, true, null)
         else popMatching(kindUndo.getValue(kind), true, kind) ?: return
         if (tx == null) return
@@ -415,6 +607,7 @@ class UnifiedAnnotationDialog(
     }
 
     private fun redo() {
+        if (sessions[currentKey]?.sync?.hasConflicts == true) return
         val tx = if (sharedUndo.isSelected) popMatching(globalRedo, false, null)
         else popMatching(kindRedo.getValue(kind), false, kind) ?: return
         if (tx == null) return
@@ -428,15 +621,17 @@ class UnifiedAnnotationDialog(
         val s = session(tx.key)
         s.shapes = snapshot.toMutableList()
         s.dirty = true
-        s.nextId = (snapshot.maxOfOrNull { it.id } ?: 0) + 1
+        s.sync = s.sync.copy(local = snapshot.toMergeShapes(), dirty = true, pending = null)
+        s.nextId = nextAnnotationId(s.nextId, snapshot.toMergeShapes(), s.sync.base)
         if (tx.key == currentKey) canvas.applySession(s, keepViewport = true)
         refreshHistoryButtons()
         syncRows()
     }
 
     private fun refreshHistoryButtons() {
-        undoButton.isEnabled = if (sharedUndo.isSelected) globalUndo.any { it.applied } else kindUndo.getValue(kind).any { it.applied }
-        redoButton.isEnabled = if (sharedUndo.isSelected) globalRedo.any { !it.applied } else kindRedo.getValue(kind).any { !it.applied }
+        val blocked = sessions[currentKey]?.sync?.hasConflicts == true
+        undoButton.isEnabled = !blocked && if (sharedUndo.isSelected) globalUndo.any { it.applied } else kindUndo.getValue(kind).any { it.applied }
+        redoButton.isEnabled = !blocked && if (sharedUndo.isSelected) globalRedo.any { !it.applied } else kindRedo.getValue(kind).any { !it.applied }
     }
 
     private fun syncRows() {
@@ -490,6 +685,23 @@ class UnifiedAnnotationDialog(
             installMouse()
         }
 
+        private fun editingBlocked(): Boolean = sessionRef?.sync?.hasConflicts == true
+
+        private fun clearTransientInteraction() {
+            drawStart = null
+            drawPreview = null
+            dragId = null
+            dragStart = null
+            dragOriginal = null
+            resizeId = null
+            resizeHandle = null
+            resizeStart = null
+            resizeOriginal = null
+            panning = false
+            panStart = null
+            panOffset = null
+        }
+
         fun setImage(buffered: BufferedImage?, s: ShapeSession, preserveViewport: Boolean) {
             image = buffered
             if (!preserveViewport) {
@@ -503,17 +715,24 @@ class UnifiedAnnotationDialog(
         fun applySession(s: ShapeSession, keepViewport: Boolean) {
             sessionRef = s
             selected.clear(); hovered = -1
-            tool = Tool.NONE; drawStart = null; drawPreview = null; coordRect = null
+            tool = Tool.NONE
+            clearTransientInteraction()
+            coordRect = null
             drawToggle.isSelected = false; coordToggle.isSelected = false
+            drawToggle.isEnabled = !s.sync.hasConflicts
+            coordToggle.isEnabled = !s.sync.hasConflicts
+            deleteButton.isEnabled = !s.sync.hasConflicts
+            cursor = Cursor.getDefaultCursor()
             if (!keepViewport) { recalcFit(); scale = fitScale; recalcOffset() }
             repaint()
         }
 
         fun selectedIds(): Set<Int> = selected.toSet()
         fun selectOnly(id: Int) { selected.clear(); selected += id; repaint() }
-        fun finishTransientEdit() { drawStart = null; drawPreview = null; dragId = null; resizeId = null }
+        fun finishTransientEdit() { clearTransientInteraction() }
 
         fun setTool(next: Tool) {
+            if (editingBlocked()) return
             tool = next
             drawStart = null; drawPreview = null
             if (next != Tool.COORD) { coordRect = null; statusLabel.text = " " }
@@ -531,6 +750,7 @@ class UnifiedAnnotationDialog(
             val g2 = g.create() as Graphics2D
             g2.drawImage(source, offsetX.roundToInt(), offsetY.roundToInt(), (source.width * scale).roundToInt(), (source.height * scale).roundToInt(), null)
             shapes().forEach { shape -> paintShape(g2, shape) }
+            paintConflictCandidates(g2)
             coordRect?.let { rect ->
                 val r = toScreen(rect)
                 g2.color = COORD; g2.stroke = BasicStroke(2f); g2.drawRect(r.x, r.y, r.width, r.height)
@@ -560,6 +780,30 @@ class UnifiedAnnotationDialog(
             }
         }
 
+        private fun paintConflictCandidates(g2: Graphics2D) {
+            val conflicts = sessionRef?.sync?.pending?.result?.conflicts.orEmpty()
+            for (conflict in conflicts) {
+                conflict.local?.let { paintConflictCandidate(g2, it, external = false) }
+                conflict.external?.let { paintConflictCandidate(g2, it, external = true) }
+            }
+        }
+
+        private fun paintConflictCandidate(g2: Graphics2D, shape: MergeShape, external: Boolean) {
+            g2.color = if (external) HOVER else SELECTED
+            g2.stroke = if (external) {
+                BasicStroke(2f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f, floatArrayOf(7f, 4f), 0f)
+            } else BasicStroke(2f)
+            if (kind == AnnotationKind.POINT || (shape.w == 0 && shape.h == 0)) {
+                val p = toScreenPoint(Point(shape.x, shape.y))
+                g2.drawOval(p.x - 5, p.y - 5, 10, 10)
+                g2.drawLine(p.x - 8, p.y, p.x + 8, p.y)
+                g2.drawLine(p.x, p.y - 8, p.x, p.y + 8)
+            } else {
+                val r = toScreen(Rectangle(shape.x, shape.y, shape.w, shape.h))
+                g2.drawRect(r.x, r.y, r.width, r.height)
+            }
+        }
+
         private fun installKeys() {
             fun bind(stroke: KeyStroke, name: String, action: () -> Unit) {
                 getInputMap(WHEN_FOCUSED).put(stroke, name)
@@ -581,6 +825,7 @@ class UnifiedAnnotationDialog(
             addMouseListener(object : MouseAdapter() {
                 override fun mousePressed(e: MouseEvent) {
                     requestFocusInWindow()
+                    if (editingBlocked()) return
                     if (SwingUtilities.isRightMouseButton(e)) return
                     if (tool == Tool.DRAW) {
                         if (kind == AnnotationKind.POINT) createPointAt(e.point) else { drawStart = e.point; drawPreview = e.point }
@@ -610,6 +855,7 @@ class UnifiedAnnotationDialog(
                 }
 
                 override fun mouseReleased(e: MouseEvent) {
+                    if (editingBlocked()) return
                     if (tool == Tool.DRAW && kind != AnnotationKind.POINT && drawStart != null) { finishRect(e.point); return }
                     if (tool == Tool.COORD && drawStart != null) { finishCoord(e.point); return }
                     finishDragOrResize()
@@ -617,11 +863,12 @@ class UnifiedAnnotationDialog(
                 }
 
                 override fun mouseClicked(e: MouseEvent) {
-                    if (e.clickCount == 2 && tool == Tool.NONE) hit(e.point)?.let(::editName)
+                    if (!editingBlocked() && e.clickCount == 2 && tool == Tool.NONE) hit(e.point)?.let(::editName)
                 }
             })
             addMouseMotionListener(object : MouseMotionAdapter() {
                 override fun mouseDragged(e: MouseEvent) {
+                    if (editingBlocked()) return
                     when {
                         drawStart != null && (tool == Tool.DRAW || tool == Tool.COORD) -> { drawPreview = e.point; repaint() }
                         resizeId != null -> resizeTo(e.point)
@@ -644,6 +891,7 @@ class UnifiedAnnotationDialog(
         }
 
         private fun createPointAt(screen: Point) {
+            if (editingBlocked()) return
             val source = image ?: return
             val p = toImage(screen)
             val x = p.x.coerceIn(0, source.width); val y = p.y.coerceIn(0, source.height)
@@ -653,6 +901,7 @@ class UnifiedAnnotationDialog(
         }
 
         private fun finishRect(screen: Point) {
+            if (editingBlocked()) return
             val source = image ?: return
             val start = drawStart ?: return
             drawStart = null; drawPreview = null
@@ -668,10 +917,11 @@ class UnifiedAnnotationDialog(
         }
 
         private fun addShape(rawName: String, x: Int, y: Int, w: Int, h: Int, autoRename: Boolean = false) {
+            if (editingBlocked()) return
             val s = sessionRef ?: return
             val name = if (autoRename) uniqueName(rawName) else rawName.trim()
             if (!autoRename && name in occupiedNames(kind, currentImage.file.name)) {
-                Messages.showErrorDialog(project, "That name already exists in the current resource type.", "Duplicate name")
+                Messages.showErrorDialog(project, ui("name.duplicate"), ui("name.duplicateTitle"))
                 return
             }
             val before = s.shapes.toList()
@@ -683,13 +933,14 @@ class UnifiedAnnotationDialog(
         }
 
         private fun editName(id: Int) {
+            if (editingBlocked()) return
             val s = sessionRef ?: return
             val index = s.shapes.indexOfFirst { it.id == id }
             if (index < 0) return
             val old = s.shapes[index]
             val proposed = promptName(old.name) ?: return
             if (proposed != old.name && proposed in occupiedNames(kind, currentImage.file.name)) {
-                Messages.showErrorDialog(project, "That name already exists in the current resource type.", "Duplicate name")
+                Messages.showErrorDialog(project, ui("name.duplicate"), ui("name.duplicateTitle"))
                 return
             }
             val before = s.shapes.toList()
@@ -698,6 +949,7 @@ class UnifiedAnnotationDialog(
         }
 
         fun deleteSelected() {
+            if (editingBlocked()) return
             val s = sessionRef ?: return
             if (selected.isEmpty()) return
             val before = s.shapes.toList()
@@ -733,14 +985,14 @@ class UnifiedAnnotationDialog(
         }
 
         private fun pasteClipboard() {
-            if (tool != Tool.NONE) return
+            if (editingBlocked() || tool != Tool.NONE) return
             val text = runCatching { CopyPasteManager.getInstance().getContents(DataFlavor.stringFlavor) as? String }.getOrNull()?.trim().orEmpty()
             if (text.isEmpty()) return
             val payload = parseClipboard(text)
-            if (payload == null) { statusLabel.text = "Clipboard is not a valid normalized coordinate tuple."; return }
+            if (payload == null) { statusLabel.text = ui("clipboard.invalid"); return }
             var rect = payload.second
             if (rect.isPoint && kind != AnnotationKind.POINT) {
-                statusLabel.text = "Zero-size coordinates can only be pasted in Point mode."
+                statusLabel.text = ui("clipboard.pointOnly")
                 return
             }
             if (kind == AnnotationKind.POINT && !rect.isPoint) rect = rect.centerPoint()
@@ -804,6 +1056,7 @@ class UnifiedAnnotationDialog(
         fun refreshCoordinateReadout() { if (coordRect != null) copyCoord() }
 
         private fun dragTo(p: Point) {
+            if (editingBlocked()) return
             val source = image ?: return
             val id = dragId ?: return
             val start = dragStart ?: return
@@ -818,7 +1071,7 @@ class UnifiedAnnotationDialog(
         }
 
         private fun resizeTo(p: Point) {
-            if (kind == AnnotationKind.POINT) return
+            if (editingBlocked() || kind == AnnotationKind.POINT) return
             val source = image ?: return
             val id = resizeId ?: return
             val start = resizeStart ?: return
@@ -836,6 +1089,7 @@ class UnifiedAnnotationDialog(
         }
 
         private fun finishDragOrResize() {
+            if (editingBlocked()) return
             val s = sessionRef ?: return
             val original = dragOriginal ?: resizeOriginal
             val id = dragId ?: resizeId
@@ -907,11 +1161,10 @@ internal class AnnotationManagerPanel(private val project: Project) : JPanel(Bor
 
     init {
         val toolbar = JPanel(FlowLayout(FlowLayout.LEFT,4,2))
-        val refresh = JButton("Refresh")
-        val import = JButton("Import")
-        val screenshot = JButton("Screenshot")
-        val open = JButton("Open")
-        toolbar.add(hardForegroundCheck); toolbar.add(refresh); toolbar.add(import); toolbar.add(screenshot); toolbar.add(open)
+        val refresh = JButton(ui("manager.refresh"))
+        val import = JButton(ui("manager.import"))
+        val screenshot = JButton(ui("manager.screenshot"))
+        toolbar.add(hardForegroundCheck); toolbar.add(refresh); toolbar.add(import); toolbar.add(screenshot)
         add(toolbar, BorderLayout.NORTH)
         list.selectionMode = ListSelectionModel.SINGLE_SELECTION
         list.cellRenderer = javax.swing.DefaultListCellRenderer()
@@ -919,8 +1172,11 @@ internal class AnnotationManagerPanel(private val project: Project) : JPanel(Bor
         refresh.addActionListener { reload() }
         import.addActionListener { importImages() }
         screenshot.addActionListener { screenshotNow() }
-        open.addActionListener { openSelected() }
         list.addMouseListener(object:MouseAdapter(){ override fun mouseClicked(e:MouseEvent){ if(e.clickCount==2)openSelected() } })
+        list.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "openSelected")
+        list.actionMap.put("openSelected", object : AbstractAction() {
+            override fun actionPerformed(e: ActionEvent?) = openSelected()
+        })
         reload()
     }
 
@@ -966,9 +1222,9 @@ internal class AnnotationManagerPanel(private val project: Project) : JPanel(Bor
         }.whenComplete { result, error ->
             SwingUtilities.invokeLater {
                 when {
-                    error != null -> Messages.showErrorDialog(project, error.message ?: "Screenshot failed", "Annotation Management")
+                    error != null -> Messages.showErrorDialog(project, ui("manager.screenshotFailed", error.message ?: ""), ui("manager.title"))
                     result?.second == null -> reload()
-                    result?.second != ScreenshotCapture.CANCELLED -> Messages.showErrorDialog(project, result?.second ?: "Screenshot failed", "Annotation Management")
+                    result?.second != ScreenshotCapture.CANCELLED -> Messages.showErrorDialog(project, ui("manager.screenshotFailed", result?.second ?: ""), ui("manager.title"))
                 }
             }
         }
@@ -983,10 +1239,10 @@ class UnifiedResourcePreviewToolWindowFactory : ToolWindowFactory, DumbAware {
 }
 
 private class ResourcePreviewPanel(private val project: Project) : JPanel(BorderLayout(0,4)) {
-    private val mode = javax.swing.JComboBox(arrayOf("Template","Box","Point"))
+    private val mode = javax.swing.JComboBox(arrayOf(ui("mode.template"),ui("mode.rect"),ui("mode.point")))
     private val list = JBList<String>()
-    private val copy = JButton("Copy")
-    private val publish = JButton("Publish positions")
+    private val copy = JButton(ui("preview.copy"))
+    private val publish = JButton(ui("preview.publish"))
 
     init {
         val top=JPanel(FlowLayout(FlowLayout.LEFT,4,2)); top.add(mode); top.add(copy); top.add(publish); add(top,BorderLayout.NORTH); add(JScrollPane(list),BorderLayout.CENTER)
@@ -1014,17 +1270,17 @@ private class ResourcePreviewPanel(private val project: Project) : JPanel(Border
 
     private fun publish() {
         val publisher=project.service<PositionPublisherService>()
-        val choice=Messages.showChooseDialog(project,"Export Position resources as:","Publish positions",null,arrayOf("JSON","Python data + parser"),"JSON")
+        val choice=Messages.showChooseDialog(project,ui("preview.exportPrompt"),ui("preview.publish"),null,arrayOf(ui("preview.json"),ui("preview.python")),ui("preview.json"))
         if(choice<0)return
         val format=if(choice==0)PositionPublisherService.Format.JSON else PositionPublisherService.Format.PYTHON
         var result=publisher.publish(format,false)
         if(result.conflicts.isNotEmpty()){
-            val answer=Messages.showYesNoDialog(project,"These files are hand-written and would be replaced:\n${result.conflicts.joinToString("\n")}\n\nOverwrite them?","Publish positions",null)
+            val answer=Messages.showYesNoDialog(project,ui("preview.overwrite",result.conflicts.joinToString("\n")),ui("preview.publish"),null)
             if(answer!=Messages.YES)return
             result=publisher.publish(format,true)
         }
-        if(result.errors.isNotEmpty()) Messages.showErrorDialog(project,result.errors.joinToString("\n"),"Publish positions")
-        else Messages.showInfoMessage(project,"Written:\n${result.written.joinToString("\n")}","Publish positions")
+        if(result.errors.isNotEmpty()) Messages.showErrorDialog(project,result.errors.joinToString("\n"),ui("preview.publish"))
+        else Messages.showInfoMessage(project,ui("preview.written",result.written.joinToString("\n")),ui("preview.publish"))
     }
 }
 
