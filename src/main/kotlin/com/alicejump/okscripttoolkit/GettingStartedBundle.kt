@@ -1,5 +1,6 @@
 package com.alicejump.okscripttoolkit
 
+import com.intellij.DynamicBundle
 import org.jetbrains.annotations.Nls
 import org.jetbrains.annotations.PropertyKey
 import java.text.MessageFormat
@@ -14,7 +15,7 @@ object GettingStartedBundle {
         @PropertyKey(resourceBundle = GETTING_STARTED_BUNDLE) key: String,
         vararg params: Any,
     ): String {
-        val value = LocaleBundles.bundle(GETTING_STARTED_BUNDLE).getString(key)
+        val value = LocaleBundles.bundle(GETTING_STARTED_BUNDLE, DynamicBundle.getLocale()).getString(key)
         return if (params.isEmpty()) value else MessageFormat.format(value, *params)
     }
 }
