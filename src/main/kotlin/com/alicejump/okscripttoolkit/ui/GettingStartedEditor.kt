@@ -3,6 +3,8 @@ package com.alicejump.okscripttoolkit.ui
 import com.alicejump.okscripttoolkit.GettingStartedBundle
 import com.alicejump.okscripttoolkit.core.ScreenshotCapture
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitConfigurable
+import com.alicejump.okscripttoolkit.tasklauncher.showTaskLauncherRunner
+import com.alicejump.okscripttoolkit.tasklauncher.showTaskLauncherTasks
 import com.intellij.ide.BrowserUtil
 import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.actionSystem.ActionUpdateThread
@@ -177,9 +179,9 @@ private class GettingStartedPanel(private val project: Project) : JPanel(BorderL
 
     private fun refreshProjectStatus() {
         val projectDir = ScreenshotCapture.detectProjectDir(project)
-        val detected = projectDir.isNotBlank()
+        val detected = projectDir.isNotBlank() && Files.isDirectory(Paths.get(projectDir))
         val conventionFile = if (detected) Paths.get(projectDir, "ok-script-toolkit.json") else null
-        val conventionFound = conventionFile?.let(Files::exists) == true
+        val conventionFound = conventionFile?.let(Files::isRegularFile) == true
         val text = when {
             detected && conventionFound -> gs("project.detectedWithConfig", projectDir)
             detected -> gs("project.detected", projectDir)
@@ -219,7 +221,13 @@ private class GettingStartedPanel(private val project: Project) : JPanel(BorderL
         add(heading, BorderLayout.NORTH)
         add(bodyText(gs("goal.$key.body")), BorderLayout.CENTER)
         add(JButton(gs("goal.$key.button")).apply {
-            addActionListener { ToolWindowManager.getInstance(project).getToolWindow(toolWindowId)?.show() }
+            addActionListener {
+                when (key) {
+                    "task" -> showTaskLauncherTasks(project)
+                    "run" -> showTaskLauncherRunner(project)
+                    else -> ToolWindowManager.getInstance(project).getToolWindow(toolWindowId)?.show()
+                }
+            }
         }, BorderLayout.SOUTH)
     }
 
