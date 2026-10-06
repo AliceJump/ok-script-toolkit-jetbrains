@@ -28,7 +28,6 @@ import com.intellij.ui.components.JBTextArea
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import java.awt.BorderLayout
-import java.awt.Dimension
 import java.awt.FlowLayout
 import java.awt.Font
 import java.awt.GridLayout
@@ -126,6 +125,15 @@ class GettingStartedProjectActivity : ProjectActivity {
 }
 
 private class GettingStartedPanel(private val project: Project) : JPanel(BorderLayout()) {
+    private val projectStatus = JPanel(BorderLayout(12, 8)).apply {
+        alignmentX = LEFT_ALIGNMENT
+        border = BorderFactory.createCompoundBorder(
+            BorderFactory.createLineBorder(JBColor.border()),
+            JBUI.Borders.empty(12),
+        )
+        isOpaque = false
+    }
+
     init {
         border = JBUI.Borders.empty(24)
         val content = JPanel().apply {
@@ -142,7 +150,8 @@ private class GettingStartedPanel(private val project: Project) : JPanel(BorderL
         content.add(Box.createVerticalStrut(6))
         content.add(subtitle)
         content.add(Box.createVerticalStrut(18))
-        content.add(projectStatusPanel())
+        refreshProjectStatus()
+        content.add(projectStatus)
         content.add(Box.createVerticalStrut(22))
 
         content.add(sectionTitle(gs("goals.title")))
@@ -166,38 +175,31 @@ private class GettingStartedPanel(private val project: Project) : JPanel(BorderL
         }, BorderLayout.CENTER)
     }
 
-    private fun projectStatusPanel(): JComponent {
+    private fun refreshProjectStatus() {
         val projectDir = ScreenshotCapture.detectProjectDir(project)
         val detected = projectDir.isNotBlank()
         val conventionFile = if (detected) Paths.get(projectDir, "ok-script-toolkit.json") else null
         val conventionFound = conventionFile?.let(Files::exists) == true
-
-        val panel = JPanel(BorderLayout(12, 8)).apply {
-            alignmentX = LEFT_ALIGNMENT
-            maximumSize = Dimension(Int.MAX_VALUE, 110)
-            border = BorderFactory.createCompoundBorder(
-                BorderFactory.createLineBorder(JBColor.border()),
-                JBUI.Borders.empty(12),
-            )
-            isOpaque = false
-        }
         val text = when {
             detected && conventionFound -> gs("project.detectedWithConfig", projectDir)
             detected -> gs("project.detected", projectDir)
             else -> gs("project.missing")
         }
-        panel.add(bodyText(text), BorderLayout.CENTER)
-        panel.add(JButton(gs("project.settings")).apply {
+
+        projectStatus.removeAll()
+        projectStatus.add(bodyText(text), BorderLayout.CENTER)
+        projectStatus.add(JButton(gs("project.settings")).apply {
             addActionListener {
                 ShowSettingsUtil.getInstance().showSettingsDialog(project, OkScriptToolkitConfigurable::class.java)
+                refreshProjectStatus()
             }
         }, BorderLayout.EAST)
-        return panel
+        projectStatus.revalidate()
+        projectStatus.repaint()
     }
 
-    private fun goalGrid(): JComponent = JPanel(GridLayout(2, 2, 12, 12)).apply {
+    private fun goalGrid(): JComponent = JPanel(GridLayout(0, 2, 12, 12)).apply {
         alignmentX = LEFT_ALIGNMENT
-        maximumSize = Dimension(Int.MAX_VALUE, 300)
         isOpaque = false
         add(goalCard("task", TASK_TOOL_WINDOW_ID))
         add(goalCard("visual", UNIFIED_ANNOTATION_TOOL_WINDOW_ID))
