@@ -35,6 +35,14 @@
             extensions="oktemplates"/>
         <fileEditorProvider implementation="com.alicejump.okscripttoolkit.ui.TemplateGalleryEditorProvider"/>
 
+        <fileType
+            name="ok-script Getting Started"
+            implementationClass="com.alicejump.okscripttoolkit.ui.GettingStartedFileType"
+            fieldName="INSTANCE"
+            extensions="okgettingstarted"/>
+        <fileEditorProvider implementation="com.alicejump.okscripttoolkit.ui.GettingStartedEditorProvider"/>
+        <postStartupActivity implementation="com.alicejump.okscripttoolkit.ui.GettingStartedProjectActivity"/>
+
         <codeInsight.declarativeInlayProvider
             language="Python"
             providerId="ok.script.toolkit.python"
@@ -81,6 +89,9 @@
     </extensions>
 
     <actions>
+        <action id="com.alicejump.okscripttoolkit.ShowGettingStarted" class="com.alicejump.okscripttoolkit.ui.ShowGettingStartedAction">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
         <action id="com.alicejump.okscripttoolkit.ShowUnifiedAnnotations" class="com.alicejump.okscripttoolkit.ui.ShowUnifiedAnnotationsAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
             <keyboard-shortcut keymap="$default" first-keystroke="control alt T"/>
