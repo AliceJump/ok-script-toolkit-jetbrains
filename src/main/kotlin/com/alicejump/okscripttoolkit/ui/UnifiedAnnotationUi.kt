@@ -92,7 +92,13 @@ internal val UNIFIED_ANNOTATION_PANEL_KEY =
 
 private fun ui(key: String, vararg params: Any): String = AnnotationUiBundle.message(key, *params)
 
-private enum class AnnotationKind { TEMPLATE, RECT, POINT }
+internal enum class AnnotationKind { TEMPLATE, RECT, POINT }
+
+internal fun AnnotationKind.nextAnnotationKind(): AnnotationKind = when (this) {
+    AnnotationKind.TEMPLATE -> AnnotationKind.RECT
+    AnnotationKind.RECT -> AnnotationKind.POINT
+    AnnotationKind.POINT -> AnnotationKind.TEMPLATE
+}
 
 private data class UnifiedShape(
     val id: Int,
@@ -266,6 +272,14 @@ class UnifiedAnnotationDialog(
         syncRows()
         refreshHistoryButtons()
         updateConflictStatus()
+    }
+
+    private fun cycleKind() {
+        when (kind.nextAnnotationKind()) {
+            AnnotationKind.TEMPLATE -> templateMode.doClick()
+            AnnotationKind.RECT -> rectMode.doClick()
+            AnnotationKind.POINT -> pointMode.doClick()
+        }
     }
 
     private fun navigate(delta: Int) {
@@ -809,9 +823,7 @@ class UnifiedAnnotationDialog(
                 getInputMap(WHEN_FOCUSED).put(stroke, name)
                 getActionMap().put(name, object : AbstractAction() { override fun actionPerformed(e: ActionEvent?) = action() })
             }
-            bind(KeyStroke.getKeyStroke(KeyEvent.VK_1, 0), "template") { templateMode.doClick() }
-            bind(KeyStroke.getKeyStroke(KeyEvent.VK_2, 0), "rect") { rectMode.doClick() }
-            bind(KeyStroke.getKeyStroke(KeyEvent.VK_3, 0), "point") { pointMode.doClick() }
+            bind(KeyStroke.getKeyStroke(KeyEvent.VK_M, 0), "cycleMode") { this@UnifiedAnnotationDialog.cycleKind() }
             bind(KeyStroke.getKeyStroke(KeyEvent.VK_R, 0), "draw") { setTool(if (tool == Tool.DRAW) Tool.NONE else Tool.DRAW) }
             bind(KeyStroke.getKeyStroke(KeyEvent.VK_C, 0), "coord") { setTool(if (tool == Tool.COORD) Tool.NONE else Tool.COORD) }
             bind(KeyStroke.getKeyStroke(KeyEvent.VK_Z, InputEvent.CTRL_DOWN_MASK), "undo") { this@UnifiedAnnotationDialog.undo() }
