@@ -137,6 +137,18 @@ private fun configureCardList(list: JBList<*>) {
     list.fixedCellHeight = ThumbGridPolicy.THUMB_HEIGHT + JBUI.scale(48)
 }
 
+internal class PreviewThumbGeneration {
+    private val value = AtomicInteger(0)
+
+    fun current(): Int = value.get()
+
+    fun invalidate() {
+        value.incrementAndGet()
+    }
+
+    fun isCurrent(generation: Int): Boolean = generation == value.get()
+}
+
 private abstract class ThumbDecorator(
     protected val project: Project,
     list: JBList<*>,
@@ -146,17 +158,20 @@ private abstract class ThumbDecorator(
     private val icons = ConcurrentHashMap<String, ImageIcon>()
     private val requested = ConcurrentHashMap.newKeySet<String>()
     private val finished = ConcurrentHashMap.newKeySet<String>()
+    private val thumbGeneration = PreviewThumbGeneration()
     @Volatile private var disposed = false
 
     protected fun iconFor(item: CardVisual): ImageIcon? {
         icons[item.key]?.let { return it }
         if (finished.contains(item.key)) return null
         if (requested.add(item.key)) {
+            val requestGeneration = thumbGeneration.current()
             TemplateThumbPipeline.loadThumbs(
                 project,
                 listOf(TemplateThumbPipeline.Request(item.key, item.imagePath, item.bbox)),
                 ThumbGridPolicy.THUMB_HEIGHT,
             ) { key, icon ->
+                if (!thumbGeneration.isCurrent(requestGeneration)) return@loadThumbs
                 requested.remove(key)
                 finished.add(key)
                 if (icon != null) icons[key] = icon
@@ -167,6 +182,7 @@ private abstract class ThumbDecorator(
     }
 
     protected fun invalidateThumbs() {
+        thumbGeneration.invalidate()
         icons.clear()
         requested.clear()
         finished.clear()
