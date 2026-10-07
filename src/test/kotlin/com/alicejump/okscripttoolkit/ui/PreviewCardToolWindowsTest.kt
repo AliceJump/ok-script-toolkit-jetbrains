@@ -2,6 +2,8 @@ package com.alicejump.okscripttoolkit.ui
 
 import org.junit.Test
 import kotlin.test.assertContentEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 
 class PreviewCardToolWindowsTest {
     @Test
@@ -15,5 +17,17 @@ class PreviewCardToolWindowsTest {
     fun `point preview clamps to small images and rejects invalid sizes`() {
         assertContentEquals(intArrayOf(0, 0, 40, 30), pointPreviewBbox(20, 15, 40, 30))
         assertContentEquals(intArrayOf(0, 0, 0, 0), pointPreviewBbox(0, 0, 0, 30))
+    }
+
+    @Test
+    fun `thumbnail generation rejects callbacks captured before invalidation`() {
+        val generation = PreviewThumbGeneration()
+        val before = generation.current()
+        assertTrue(generation.isCurrent(before))
+
+        generation.invalidate()
+
+        assertFalse(generation.isCurrent(before))
+        assertTrue(generation.isCurrent(generation.current()))
     }
 }
