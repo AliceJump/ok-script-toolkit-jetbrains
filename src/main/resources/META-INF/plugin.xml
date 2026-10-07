@@ -67,12 +67,12 @@
             id="ok-script Annotation Management"
             anchor="right"
             icon="/icons/assets.svg"
-            factoryClass="com.alicejump.okscripttoolkit.ui.PublishingAnnotationToolWindowFactory"/>
+            factoryClass="com.alicejump.okscripttoolkit.ui.CardPublishingAnnotationToolWindowFactory"/>
         <toolWindow
             id="ok-script Resource Preview"
             anchor="right"
             icon="/icons/templates.svg"
-            factoryClass="com.alicejump.okscripttoolkit.ui.PreviewOnlyResourceToolWindowFactory"/>
+            factoryClass="com.alicejump.okscripttoolkit.ui.CardResourcePreviewToolWindowFactory"/>
         <toolWindow
             id="ok-script Temp Shots"
             anchor="right"
