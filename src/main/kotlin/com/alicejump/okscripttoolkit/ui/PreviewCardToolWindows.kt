@@ -24,6 +24,7 @@ import java.awt.Container
 import java.awt.Dimension
 import java.awt.Font
 import java.awt.GridLayout
+import java.awt.event.ActionListener
 import java.beans.PropertyChangeListener
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
@@ -50,7 +51,7 @@ class CardPublishingAnnotationToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         PublishingAnnotationToolWindowFactory().createToolWindowContent(project, toolWindow)
         val content = toolWindow.contentManager.contents.lastOrNull() ?: return
-        val list = findFirst<JBList<*>>(content.component) ?: return
+        val list = findFirst(content.component) { it is JBList<*> } as? JBList<*> ?: return
         content.setDisposer(AnnotationCardDecorator(project, list))
     }
 }
@@ -59,16 +60,16 @@ class CardResourcePreviewToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         PreviewOnlyResourceToolWindowFactory().createToolWindowContent(project, toolWindow)
         val content = toolWindow.contentManager.contents.lastOrNull() ?: return
-        val list = findFirst<JBList<*>>(content.component) ?: return
-        val mode = findFirst<JComboBox<*>>(content.component) ?: return
+        val list = findFirst(content.component) { it is JBList<*> } as? JBList<*> ?: return
+        val mode = findFirst(content.component) { it is JComboBox<*> } as? JComboBox<*> ?: return
         content.setDisposer(ResourceCardDecorator(project, list, mode))
     }
 }
 
-private inline fun <reified T : Component> findFirst(root: Component): T? {
-    if (root is T) return root
+private fun findFirst(root: Component, predicate: (Component) -> Boolean): Component? {
+    if (predicate(root)) return root
     if (root !is Container) return null
-    for (child in root.components) findFirst<T>(child)?.let { return it }
+    for (child in root.components) findFirst(child, predicate)?.let { return it }
     return null
 }
 
@@ -181,7 +182,10 @@ private class AnnotationCardDecorator(project: Project, list: JBList<*>) : Thumb
     private val renderer = PreviewCardRenderer(::visual, ::iconFor)
     private var reinstalling = false
     private val rendererListener = PropertyChangeListener { event ->
-        if (event.propertyName == "cellRenderer" && event.newValue !== renderer && !reinstalling) installRenderer()
+        if (event.propertyName == "cellRenderer" && event.newValue !== renderer && !reinstalling) {
+            invalidateThumbs()
+            installRenderer()
+        }
     }
 
     init {
@@ -230,11 +234,12 @@ private class ResourceCardDecorator(
         visual = { value -> visuals[value as? String] },
         icon = ::iconFor,
     )
+    private val modeListener = ActionListener { refreshVisuals() }
 
     init {
         configureCardList(list)
         this.list.cellRenderer = renderer
-        mode.addActionListener { refreshVisuals() }
+        mode.addActionListener(modeListener)
         refreshVisuals()
     }
 
@@ -260,24 +265,22 @@ private class ResourceCardDecorator(
         return when (selected) {
             PreviewMode.TEMPLATE -> {
                 val categories = templateData.categories().associate { it.id to it.name }
-                buildMap {
-                    for (image in templateData.listImages()) {
-                        for (annotation in image.annotations) {
-                            val name = categories[annotation.categoryId] ?: continue
-                            putIfAbsent(
-                                name,
-                                CardVisual(
-                                    key = "template:$name:${image.file.absolutePath}",
-                                    name = name,
-                                    detail = "${annotation.bbox[2]}×${annotation.bbox[3]}",
-                                    tooltip = name,
-                                    imagePath = image.file.toPath(),
-                                    bbox = annotation.bbox.copyOf(),
-                                ),
-                            )
-                        }
+                val result = linkedMapOf<String, CardVisual>()
+                for (image in templateData.listImages()) {
+                    for (annotation in image.annotations) {
+                        val name = categories[annotation.categoryId] ?: continue
+                        if (name in result) continue
+                        result[name] = CardVisual(
+                            key = "template:$name:${image.file.absolutePath}",
+                            name = name,
+                            detail = "${annotation.bbox[2]}×${annotation.bbox[3]}",
+                            tooltip = name,
+                            imagePath = image.file.toPath(),
+                            bbox = annotation.bbox.copyOf(),
+                        )
                     }
                 }
+                result
             }
             PreviewMode.RECT -> {
                 val source = project.service<BoxCatalogService>().readAuthoring()
@@ -315,6 +318,7 @@ private class ResourceCardDecorator(
 
     override fun dispose() {
         generation.incrementAndGet()
+        mode.removeActionListener(modeListener)
         super.dispose()
     }
 }
