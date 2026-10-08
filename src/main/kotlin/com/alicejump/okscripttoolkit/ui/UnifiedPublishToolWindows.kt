@@ -74,20 +74,20 @@ internal fun publishAvailability(templateAnnotations: Int, rectAnnotations: Int,
     point = pointAnnotations > 0,
 )
 
-private class PublishSelectionDialog(project: Project, availability: PublishAvailability) : DialogWrapper(project) {
-    private val template = JCheckBox(publishingMessage("mode.template"), availability.template).apply {
-        isEnabled = availability.template
-    }
-    private val rect = JCheckBox(publishingMessage("mode.rect"), availability.rect).apply {
-        isEnabled = availability.rect
-    }
-    private val point = JCheckBox(publishingMessage("mode.point"), availability.point).apply {
-        isEnabled = availability.point
-    }
+private class PublishSelectionDialog(
+    project: Project,
+    private val availability: PublishAvailability,
+) : DialogWrapper(project) {
+    private val template = JCheckBox(publishingMessage("mode.template"), availability.template)
+    private val rect = JCheckBox(publishingMessage("mode.rect"), availability.rect)
+    private val point = JCheckBox(publishingMessage("mode.point"), availability.point)
     init { title = publishingMessage("publish.title"); init() }
     override fun createCenterPanel(): JComponent = JPanel().apply {
         layout = javax.swing.BoxLayout(this, javax.swing.BoxLayout.Y_AXIS)
-        add(JLabel(publishingMessage("publish.select"))); add(template); add(rect); add(point)
+        add(JLabel(publishingMessage("publish.select")))
+        if (availability.template) add(template)
+        if (availability.rect) add(rect)
+        if (availability.point) add(point)
     }
     override fun doOKAction() {
         if (!template.isSelected && !rect.isSelected && !point.isSelected) {
