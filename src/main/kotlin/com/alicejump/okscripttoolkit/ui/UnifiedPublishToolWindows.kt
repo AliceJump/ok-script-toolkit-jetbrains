@@ -32,12 +32,9 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
-import com.intellij.ui.components.JBList
 import com.intellij.ui.content.ContentFactory
 import java.awt.BorderLayout
 import java.awt.datatransfer.DataFlavor
-import java.awt.event.MouseAdapter
-import java.awt.event.MouseEvent
 import java.io.File
 import java.nio.file.Files
 import java.util.concurrent.CompletableFuture
@@ -49,8 +46,6 @@ import javax.swing.JComponent
 import javax.swing.JFileChooser
 import javax.swing.JLabel
 import javax.swing.JPanel
-import javax.swing.JScrollPane
-import javax.swing.ListSelectionModel
 import javax.swing.SwingUtilities
 import javax.swing.TransferHandler
 import javax.swing.filechooser.FileNameExtensionFilter
@@ -66,7 +61,9 @@ private data class PublishSelection(val template: Boolean, val rect: Boolean, va
     val hasPositions: Boolean get() = rect || point
 }
 
-internal data class PublishAvailability(val template: Boolean, val rect: Boolean, val point: Boolean)
+internal data class PublishAvailability(val template: Boolean, val rect: Boolean, val point: Boolean) {
+    val any: Boolean get() = template || rect || point
+}
 
 internal fun publishAvailability(templateAnnotations: Int, rectAnnotations: Int, pointAnnotations: Int) = PublishAvailability(
     template = templateAnnotations > 0,
@@ -100,6 +97,10 @@ private class PublishSelectionDialog(
 private object UnifiedPublishController {
     fun publish(project: Project, onComplete: () -> Unit) {
         val availability = availability(project)
+        if (!availability.any) {
+            notify(project, publishingMessage("publish.empty"), NotificationType.INFORMATION)
+            return
+        }
         val dialog = PublishSelectionDialog(project, availability)
         if (!dialog.showAndGet()) return
         val selection = dialog.selection()
@@ -163,7 +164,18 @@ class PublishingAnnotationToolWindowFactory : ToolWindowFactory, DumbAware {
 /** 工作原图、图片动作和刷新始终通过同一个面板快照调用。 */
 internal class PublishingAnnotationManagerPanel(private val project: Project) : JPanel(BorderLayout(0, 4)), Disposable {
     private val data = project.service<TemplateAssetDataService>()
-    private val list = JBList<TemplateImage>()
+    private val cards = ResourceThumbnailGrid<TemplateImage>(
+        visual = { image -> CardVisual(image.file.absolutePath, image.file.name, "", image.file.absolutePath,
+            image.file.toPath(), intArrayOf(0, 0, image.width, image.height)) },
+        actions = { image -> listOf(
+            ResourceCardAction("👁", assetMessage("templateAsset.open")) { viewSource(image) },
+            ResourceCardAction("⇄", assetMessage("templateAsset.swap")) { swapImage(image) },
+            ResourceCardAction("×", assetMessage("templateAsset.delete")) { deleteImage(image) },
+        ) },
+        onSingle = ::openImage,
+        load = { requests, callback -> com.alicejump.okscripttoolkit.core.TemplateThumbPipeline.loadThumbs(
+            project, requests, ResourceThumbnailGrid.THUMB_HEIGHT, onThumb = callback) },
+    )
     private val hardForeground = HardForegroundToggle.create(project)
     private val generation = AtomicInteger(0)
     private val swapThumbs = ConcurrentHashMap<String, javax.swing.ImageIcon?>()
@@ -179,13 +191,8 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
         })
         toolbar.add(hardForeground)
         fun button(label: String, action: () -> Unit) = toolbar.add(JButton(label).apply { addActionListener { action() } })
-        button(publishingMessage("manager.refresh"), ::reload)
         button(publishingMessage("manager.import"), ::importImages)
         button(publishingMessage("manager.screenshot"), ::screenshotNow)
-        button(publishingMessage("manager.edit"), ::openSelected)
-        button(assetMessage("templateAsset.open"), ::viewSource)
-        button(assetMessage("templateAsset.swap"), ::swapSelected)
-        button(assetMessage("templateAsset.delete"), ::deleteSelected)
         button(publishingMessage("publish.title")) { UnifiedPublishController.publish(project, ::reload) }
         search.textEditor.emptyText.text = publishingMessage("preview.search")
         search.addDocumentListener(object : javax.swing.event.DocumentListener {
@@ -193,31 +200,11 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
             override fun removeUpdate(event: javax.swing.event.DocumentEvent?) = applyFilter()
             override fun changedUpdate(event: javax.swing.event.DocumentEvent?) = applyFilter()
         })
-        add(JPanel(BorderLayout()).apply { add(toolbar, BorderLayout.NORTH); add(search, BorderLayout.SOUTH) }, BorderLayout.NORTH)
-        list.selectionMode = ListSelectionModel.SINGLE_SELECTION
-        list.cellRenderer = object : javax.swing.DefaultListCellRenderer() {
-            override fun getListCellRendererComponent(
-                l: javax.swing.JList<*>?,
-                value: Any?,
-                index: Int,
-                isSelected: Boolean,
-                cellHasFocus: Boolean,
-            ): java.awt.Component {
-                val component = super.getListCellRendererComponent(l, value, index, isSelected, cellHasFocus) as JLabel
-                component.text = (value as? TemplateImage)?.file?.name.orEmpty()
-                return component
-            }
-        }
-        add(JScrollPane(list), BorderLayout.CENTER)
-        list.addMouseListener(object : MouseAdapter() {
-            override fun mouseClicked(event: MouseEvent) {
-                if (event.clickCount == 2 && SwingUtilities.isLeftMouseButton(event)) {
-                    val index = list.locationToIndex(event.point)
-                    if (index >= 0 && list.getCellBounds(index, index)?.contains(event.point) == true) openSelected()
-                }
-            }
-        })
-        list.transferHandler = object : TransferHandler() {
+        toolbar.add(search)
+        toolbar.add(cards.count)
+        add(toolbar, BorderLayout.NORTH)
+        add(cards, BorderLayout.CENTER)
+        cards.installDropHandler(object : TransferHandler() {
             override fun canImport(support: TransferSupport): Boolean = support.isDataFlavorSupported(TempShotTransferable.FLAVOR)
                 || support.isDataFlavorSupported(DataFlavor.javaFileListFlavor)
             override fun importData(support: TransferSupport): Boolean {
@@ -228,7 +215,7 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
                 importFiles(files)
                 return true
             }
-        }
+        })
         project.service<OkDataChangeService>()
         project.messageBus.connect(this).subscribe(OkDataChangeService.TOPIC,
             com.alicejump.okscripttoolkit.core.OkDataChangeListener { reload() })
@@ -237,11 +224,6 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
 
     private fun root() = project.service<OkProjectDataService>().rootPath()
     private fun directory() = OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory()
-    private fun selected(): TemplateImage? {
-        val directory = root()?.resolve(directory())?.toAbsolutePath()?.normalize() ?: return null
-        return list.selectedValue?.takeIf { it.file.toPath().toAbsolutePath().normalize().parent == directory }
-    }
-
     fun reload() {
         if (disposed || project.isDisposed) return
         val sequence = generation.incrementAndGet()
@@ -268,35 +250,29 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
             readFailed = invalid
             images = loadedImages
             categoryNames = names
-            applyFilter()
+            applyFilter(invalidate = true)
         } }
     }
 
-    private fun applyFilter() {
-        val selected = selected()?.file
+    private fun applyFilter(invalidate: Boolean = false) {
         val query = search.text.trim()
         val filtered = images.filter { image ->
             image.file.name.contains(query, ignoreCase = true) || image.annotations.any {
                 categoryNames[it.categoryId]?.contains(query, ignoreCase = true) == true
             }
         }
-        list.setListData(filtered.toTypedArray())
-        filtered.firstOrNull { it.file == selected }?.let { list.setSelectedValue(it, true) }
+        cards.setItems(filtered, images.size, invalidate)
     }
 
-    private fun openSelected() {
-        val image = selected() ?: return
-        UnifiedAnnotationDialog(project, images, images.indexOf(image)).show()
-        reload()
+    private fun openImage(image: TemplateImage) {
+        openUnifiedAnnotationEditor(project, images, images.indexOf(image))
     }
 
-    private fun viewSource() {
-        val file = selected()?.file ?: return
-        LocalFileSystem.getInstance().refreshAndFindFileByIoFile(file)?.let { OpenFileDescriptor(project, it).navigate(true) }
+    private fun viewSource(image: TemplateImage) {
+        LocalFileSystem.getInstance().refreshAndFindFileByIoFile(image.file)?.let { OpenFileDescriptor(project, it).navigate(true) }
     }
 
-    private fun deleteSelected() {
-        val image = selected() ?: return
+    private fun deleteImage(image: TemplateImage) {
         if (Messages.showYesNoDialog(project, assetMessage("templateAsset.deleteConfirm", image.file.name),
                 assetMessage("templateAsset.delete"), Messages.getWarningIcon()) != Messages.YES) return
         data.reload()
@@ -314,8 +290,7 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
         reload()
     }
 
-    private fun swapSelected() {
-        val source = selected() ?: return
+    private fun swapImage(source: TemplateImage) {
         data.reload()
         val candidates = AnnotationSwap.swapCandidates(source, data.listImages())
         if (candidates.isEmpty()) { notify(project, assetMessage("templateAsset.swapNoTarget"), NotificationType.INFORMATION); return }
@@ -390,7 +365,7 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
         } }
     }
 
-    override fun dispose() { disposed = true; generation.incrementAndGet() }
+    override fun dispose() { disposed = true; generation.incrementAndGet(); cards.dispose() }
 }
 
 private fun notify(project: Project, message: String, type: NotificationType) {

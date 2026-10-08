@@ -1,5 +1,7 @@
 # VS Code and JetBrains: Architecture and Implementation Trade-offs
 
+> 2026-10-08 update: the current unified editor uses `UnifiedAnnotationPanel` in an editor tab, immediate saving and configurable canvas shortcuts. Older OK/Cancel and native-Keymap trade-offs below are historical. See the [interaction audit](https://github.com/AliceJump/ok-script-toolkit/blob/codex/filter-publishable-resources/docs/interaction-parity-audit.en.md).
+
 > Current features: [feature parity](https://github.com/AliceJump/ok-script-toolkit/blob/main/docs/feature-parity.en.md), verified 2026-10-01. This report retains historical trade-offs and line counts; it is not a current missing-feature list.
 
 <div align="center">

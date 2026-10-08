@@ -6,6 +6,8 @@ Verified on 2026-10-08. Main baseline `aea8b14`, child `main` `9eb4992`, both ve
 
 The full matrix, operation contracts, source entry points and verification status are maintained in [Feature Parity](https://github.com/AliceJump/ok-script-toolkit/blob/codex/complete-feature-parity/docs/feature-parity.en.md) on the companion main PR branch. They will be available on main after merge.
 
+Current interaction changes ship through [JetBrains PR #30](https://github.com/AliceJump/ok-script-toolkit-jetbrains/pull/30) and [parent PR #37](https://github.com/AliceJump/ok-script-toolkit/pull/37), version `1.24.0`. Annotation management and previews follow VS Code. The PR #28 baselines and validation counts below remain historical evidence, not current PR review status.
+
 ## Differences Closed
 
 - Runtime Template cards preserve actual images, bbox and aliases. Restore insertion, copying, source viewing, search and automatic refresh. Wide and side previews share all three modes.
@@ -15,7 +17,7 @@ The full matrix, operation contracts, source entry points and verification statu
 - Publication messages and preview titles use six external language resources, shortcuts match the main host, and unregistered old text windows/publishing paths are removed.
 - Standalone CI pins main `aea8b14`, including current Position Schema. Shared Python and Schema agree with main artifacts.
 
-VS Code saves annotation edits immediately; the child dialog writes on Save and discards current edits on Cancel. Native layouts may differ, while sources, expressions, write scope and publication semantics agree. Business projects load outputs; the plugin does not create business migrations or application acknowledgement protocols.
+Both hosts edit annotations in an editor tab and save authoring files after completed creation, editing, dragging, deletion, undo or redo. Saving does not publish resources. JetBrains exposes save errors and a retry action, preserving a plugin draft for recovery and external-change reconciliation when reopened. Business projects load outputs; the plugin does not create business migrations or application acknowledgement protocols.
 
 ## Verification and Delivery State
 

@@ -1,6 +1,8 @@
 package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.AnnotationUiBundle
+import com.alicejump.okscripttoolkit.core.AnnotationDraft
+import com.alicejump.okscripttoolkit.core.acceptAnnotationSave
 import com.alicejump.okscripttoolkit.core.AnnotationConflictChoice
 import com.alicejump.okscripttoolkit.core.AnnotationDataChanges
 import com.alicejump.okscripttoolkit.core.AnnotationMergeMode
@@ -26,7 +28,6 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.ui.JBColor
@@ -37,7 +38,6 @@ import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Cursor
 import java.awt.Dimension
-import java.awt.FlowLayout
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.Point
@@ -63,7 +63,6 @@ import javax.swing.JButton
 import javax.swing.JCheckBox
 import javax.swing.JComponent
 import javax.swing.JPanel
-import javax.swing.JRadioButton
 import javax.swing.JScrollPane
 import javax.swing.JSplitPane
 import javax.swing.JToggleButton
@@ -93,7 +92,7 @@ internal fun annotationCanvasFit(sourceWidth: Int, sourceHeight: Int, availableW
     if (sourceWidth <= 0 || sourceHeight <= 0 || availableWidth <= 0 || availableHeight <= 0) {
         return AnnotationCanvasFit(1.0, 1, 1)
     }
-    val scale = min(availableWidth.toDouble() / sourceWidth, availableHeight.toDouble() / sourceHeight).coerceAtLeast(0.01)
+    val scale = min(availableWidth.toDouble() / sourceWidth, availableHeight.toDouble() / sourceHeight)
     return AnnotationCanvasFit(
         scale = scale,
         width = max(1, (sourceWidth * scale).roundToInt()),
@@ -137,13 +136,13 @@ private data class EditTransaction(
 )
 
 /**
- * JetBrains 统一标注器。宿主仍采用 OK/Cancel 批量提交，但模板/框/点共享同一个画布和交互协议。
+ * 编辑器页签内的统一标注器；每次已完成操作立即保存，冲突与失败保留在当前会话。
  */
-class UnifiedAnnotationDialog(
+class UnifiedAnnotationPanel(
     private val project: Project,
-    private val images: List<TemplateImage>,
+    private var images: List<TemplateImage>,
     startIndex: Int,
-) : DialogWrapper(project) {
+) : JPanel(BorderLayout()), com.intellij.openapi.Disposable {
     companion object {
         private const val PREF_SHARED_UNDO = "okScriptToolkit.annotation.sharedUndo"
         private const val PREF_COORD_XYWH = "okScriptToolkit.annotation.coordPreferXywh"
@@ -162,24 +161,30 @@ class UnifiedAnnotationDialog(
     private val boxCatalog = project.service<BoxCatalogService>()
     private val pointCatalog = project.service<PointCatalogService>()
     private val prefs = PropertiesComponent.getInstance()
+    private val drafts = PropertiesComponent.getInstance(project)
 
     private val canvas = UnifiedCanvas()
     private val canvasHost = JPanel(java.awt.GridBagLayout())
     private val conflictPanel = AnnotationConflictPanel()
-    private val templateMode = JRadioButton(ui("mode.template"))
-    private val rectMode = JRadioButton(ui("mode.rect"))
-    private val pointMode = JRadioButton(ui("mode.point"))
+    private val templateMode = JToggleButton(ui("mode.template"))
+    private val rectMode = JToggleButton(ui("mode.rect"))
+    private val pointMode = JToggleButton(ui("mode.point"))
     private val sharedUndo = JCheckBox(ui("sharedUndo"), prefs.getBoolean(PREF_SHARED_UNDO, true))
     private val preferXywh = JCheckBox("XYWH", prefs.getBoolean(PREF_COORD_XYWH, false))
     private val drawToggle = JToggleButton(ui("tool.draw"))
     private val coordToggle = JToggleButton(ui("tool.coords"))
-    private val deleteButton = JButton(ui("tool.delete"))
+    private val deleteButton = JToggleButton(ui("tool.delete"))
+    private val numericButton = JButton(ui("tool.numeric"))
+    private val retryButton = JButton(ui("save.retry"))
+    private val hidden = AnnotationKind.entries.associateWith { mutableSetOf<String>() }
+    private var disposed = false
     private val undoButton = JButton("↩")
     private val redoButton = JButton("↪")
     private val prevButton = JButton("◀")
     private val nextButton = JButton("▶")
     private val navLabel = JBLabel()
     private val statusLabel = JBLabel(" ")
+    private val swatch = JPanel().apply { preferredSize = Dimension(16, 16); isOpaque = true }
     private val rows = JPanel()
 
     private var currentIndex = startIndex.coerceIn(0, (images.size - 1).coerceAtLeast(0))
@@ -194,21 +199,21 @@ class UnifiedAnnotationDialog(
     private var saving = false
 
     init {
-        title = ui("manager.title")
-        setOKButtonText(ui("manager.save"))
-        init()
+        add(createCenterPanel(), BorderLayout.CENTER)
+        canvas.installKeys()
         boxCatalog.readAuthoring()
         loadImage(currentIndex, preserveViewport = false)
+        if (sessions.values.any { it.dirty }) autoSave()
         annotationSubscription = AnnotationDataChanges.subscribe { changed ->
-            if (!saving) UIUtil.invokeLaterIfNeeded { if (!saving) handleExternalChange(changed) }
+            if (!saving && !disposed) UIUtil.invokeLaterIfNeeded { if (!saving && !disposed) handleExternalChange(changed) }
         }
     }
 
     private val currentImage: TemplateImage get() = images[currentIndex]
     private val currentKey: SessionKey get() = SessionKey(currentImage.file.name, kind)
 
-    override fun createCenterPanel(): JComponent {
-        val modes = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
+    private fun createCenterPanel(): JComponent {
+        val modes = JPanel(WrappingToolbarLayout())
         val group = ButtonGroup()
         listOf(templateMode, rectMode, pointMode).forEach { group.add(it); modes.add(it) }
         templateMode.isSelected = true
@@ -229,29 +234,45 @@ class UnifiedAnnotationDialog(
 
         drawToggle.addActionListener { canvas.setTool(if (drawToggle.isSelected) Tool.DRAW else Tool.NONE) }
         coordToggle.addActionListener { canvas.setTool(if (coordToggle.isSelected) Tool.COORD else Tool.NONE) }
-        deleteButton.addActionListener { canvas.deleteSelected() }
+        deleteButton.addActionListener { canvas.setTool(if (deleteButton.isSelected) Tool.DELETE else Tool.NONE) }
+        numericButton.addActionListener { canvas.editCoordinates() }
+        retryButton.isVisible = false
+        retryButton.addActionListener { autoSave() }
         undoButton.addActionListener { undo() }
         redoButton.addActionListener { redo() }
         prevButton.addActionListener { navigate(-1) }
         nextButton.addActionListener { navigate(1) }
         listOf(drawToggle, coordToggle, deleteButton, undoButton, redoButton, prevButton, nextButton).forEach { it.isFocusable = false }
 
-        val tools = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
-        tools.add(drawToggle); tools.add(coordToggle); tools.add(deleteButton); tools.add(undoButton); tools.add(redoButton)
-        tools.add(prevButton); tools.add(nextButton); tools.add(navLabel)
+        val tools = modes
+        tools.add(drawToggle); tools.add(coordToggle); tools.add(numericButton); tools.add(deleteButton); tools.add(undoButton); tools.add(redoButton)
+        tools.add(prevButton); tools.add(nextButton); tools.add(navLabel); tools.add(retryButton)
+        tools.add(JButton(ui("keys.title")).apply { addActionListener {
+            if (AnnotationKeybindingsDialog(project).showAndGet()) canvas.installKeys()
+        } })
 
         val north = JPanel(BorderLayout())
         north.add(modes, BorderLayout.NORTH)
-        north.add(tools, BorderLayout.SOUTH)
 
         rows.layout = BoxLayout(rows, BoxLayout.Y_AXIS)
         val listPanel = JPanel(BorderLayout(0, 4))
         listPanel.preferredSize = Dimension(300, 560)
         listPanel.border = BorderFactory.createEmptyBorder(0, 8, 0, 0)
-        listPanel.add(JBLabel(ui("list.title")), BorderLayout.NORTH)
-        listPanel.add(JScrollPane(rows), BorderLayout.CENTER)
-        listPanel.add(conflictPanel, BorderLayout.SOUTH)
+        listPanel.add(JPanel(WrappingToolbarLayout()).apply {
+            add(JBLabel(ui("list.title")))
+            fun visibility(key: String, action: () -> Unit) { add(JButton(ui(key)).apply { addActionListener { action(); syncRows(); canvas.repaint() } }) }
+            visibility("visibility.showAll") { hidden.getValue(kind).clear() }
+            visibility("visibility.hideAll") { hidden.getValue(kind).addAll(session(currentKey).shapes.map { it.name }); canvas.clearSelection() }
+            visibility("visibility.onlySelected") {
+                val selected = canvas.selectedIds()
+                hidden.getValue(kind).clear()
+                hidden.getValue(kind).addAll(session(currentKey).shapes.filter { it.id !in selected }.map { it.name })
+            }
+        }, BorderLayout.NORTH)
+        listPanel.add(JPanel(BorderLayout()).apply { add(conflictPanel, BorderLayout.NORTH); add(JScrollPane(rows), BorderLayout.CENTER) }, BorderLayout.CENTER)
 
+        canvasHost.minimumSize = Dimension(1, 1)
+        canvas.minimumSize = Dimension(1, 1)
         canvasHost.preferredSize = Dimension(900, 560)
         canvasHost.background = UIUtil.getPanelBackground()
         canvasHost.add(canvas)
@@ -268,7 +289,7 @@ class UnifiedAnnotationDialog(
         root.add(north, BorderLayout.NORTH)
         root.add(split, BorderLayout.CENTER)
         statusLabel.foreground = UIUtil.getContextHelpForeground()
-        root.add(statusLabel, BorderLayout.SOUTH)
+        root.add(JPanel(BorderLayout(6, 0)).apply { add(swatch, BorderLayout.WEST); add(statusLabel, BorderLayout.CENTER) }, BorderLayout.SOUTH)
         return root
     }
 
@@ -355,12 +376,21 @@ class UnifiedAnnotationDialog(
         val sourceValid = reloadSource(key.kind)
         val items = readSessionShapes(key)
         val acceptedRevision = if (sourceValid) revision else null
-        ShapeSession(
-            key = key,
-            shapes = items.toMutableList(),
-            nextId = nextAnnotationId(1, items.toMergeShapes(), items.toMergeShapes()),
-            sync = AnnotationSessionSyncState(items.toMergeShapes(), items.toMergeShapes(), acceptedRevision, dirty = false),
-        )
+        val disk = items.toMergeShapes()
+        val recovered = runCatching {
+            val raw = drafts.getValue(draftKey(key)) ?: return@runCatching null
+            val saved = AnnotationDraft.decode(raw) ?: return@runCatching null
+            if (sourceValid) reconcileAnnotationSession(key.kind.mergeMode(), saved, disk, acceptedRevision) else saved
+        }.getOrNull()
+        val sync = recovered ?: AnnotationSessionSyncState(disk, disk, acceptedRevision, dirty = false)
+        ShapeSession(key, sync.displayShapes.toUnifiedShapes().toMutableList(), sync.dirty,
+            nextAnnotationId(1, sync.displayShapes, sync.base), sync)
+    }
+
+    private fun draftKey(key: SessionKey) = "okScriptToolkit.annotation.draft:${sourcePath(key.kind)?.toAbsolutePath()?.normalize()}:${key.file}:${key.kind}"
+
+    private fun preserveDraft(session: ShapeSession) {
+        drafts.setValue(draftKey(session.key), AnnotationDraft.encode(session.sync))
     }
 
     private fun reloadSource(targetKind: AnnotationKind): Boolean = when (targetKind) {
@@ -385,7 +415,10 @@ class UnifiedAnnotationDialog(
     private fun reconcileKindFromDisk(targetKind: AnnotationKind): String? {
         val revision = sourceRevision(targetKind)
         if (!reloadSource(targetKind)) return "parse"
+        var changed = false
         for (session in sessions.values.filter { it.key.kind == targetKind }) {
+            if (session.sync.revision == revision && session.sync.pending == null) continue
+            changed = true
             val external = readSessionShapes(session.key)
             val state = if (session.sync.pending == null) {
                 session.sync.copy(local = session.shapes.toMergeShapes(), dirty = session.dirty)
@@ -395,9 +428,10 @@ class UnifiedAnnotationDialog(
             session.shapes = next.displayShapes.toUnifiedShapes().toMutableList()
             session.dirty = next.dirty
             session.nextId = nextAnnotationId(session.nextId, session.shapes.toMergeShapes(), next.base)
+            if (session.dirty) preserveDraft(session)
             clearHistoryFor(session.key)
         }
-        if (currentKey.kind == targetKind && sessions.containsKey(currentKey)) {
+        if (changed && currentKey.kind == targetKind && sessions.containsKey(currentKey)) {
             canvas.applySession(session(currentKey), keepViewport = true)
             syncRows()
             refreshHistoryButtons()
@@ -414,6 +448,7 @@ class UnifiedAnnotationDialog(
             return
         }
         if (kind == changedKind) updateConflictStatus(externalChanged = true)
+        if (sessions.values.any { it.dirty } && sessions.values.none { it.sync.hasConflicts }) autoSave()
     }
 
     private fun updateConflictStatus(externalChanged: Boolean = false) {
@@ -447,6 +482,7 @@ class UnifiedAnnotationDialog(
         current.sync = resolved
         current.shapes = resolved.local.toUnifiedShapes().toMutableList()
         current.dirty = true
+        preserveDraft(current)
         current.nextId = nextAnnotationId(current.nextId, current.shapes.toMergeShapes(), resolved.base)
         clearHistoryFor(current.key)
         canvas.applySession(current, keepViewport = true)
@@ -454,6 +490,7 @@ class UnifiedAnnotationDialog(
         refreshHistoryButtons()
         conflictPanel.clearConflicts()
         statusLabel.text = ui("external.resolved")
+        autoSave()
     }
 
     private fun ensureExternalMergedBeforeSave(): String? {
@@ -513,27 +550,45 @@ class UnifiedAnnotationDialog(
         if (rectEdits.isNotEmpty() && !boxCatalog.annotations.saveAnnotationEdits(rectEdits)) {
             return rollback("rect:${boxCatalog.annotations.lastError ?: "write"}")
         }
+        val savedKinds = dirty.mapTo(mutableSetOf()) { it.key.kind }
+        for (open in sessions.values.filter { it.key.kind in savedKinds }) {
+            val local = open.shapes.toMergeShapes()
+            open.sync = acceptAnnotationSave(local, sourceRevision(open.key.kind))
+            open.dirty = false
+            drafts.unsetValue(draftKey(open.key))
+        }
         return null
     }
 
-    override fun doOKAction() {
-        canvas.finishTransientEdit()
+    private fun autoSave() {
+        if (saving || disposed) return
         saving = true
-        val error = try { saveAll() } finally { saving = false }
-        if (error != null) {
-            val message = if (error == "conflict") ui("external.unresolvedSave") else ui("manager.saveFailed", error)
-            Messages.showErrorDialog(project, message, ui("manager.title"))
-            return
+        val error = try { saveAll() } catch (error: Exception) { error.message ?: error.javaClass.simpleName } finally { saving = false }
+        retryButton.isVisible = error != null
+        statusLabel.text = when {
+            error == "conflict" -> ui("external.unresolvedSave")
+            error != null -> ui("manager.saveFailed", error)
+            else -> ui("save.saved")
         }
-        annotationSubscription?.close()
-        annotationSubscription = null
-        super.doOKAction()
+        updateConflictStatus()
     }
 
-    override fun doCancelAction() {
+    val hasUnsavedChanges: Boolean get() = sessions.values.any { it.dirty }
+    val focusedComponent: JComponent get() = canvas
+
+    fun showImage(nextImages: List<TemplateImage>, index: Int) {
+        canvas.finishTransientEdit()
+        images = nextImages + images.filter { old -> sessions.values.any { it.dirty && it.key.file == old.file.name } && nextImages.none { it.file == old.file } }
+        hidden.values.forEach { it.clear() }
+        loadImage(index, preserveViewport = false)
+    }
+
+    override fun dispose() {
+        canvas.finishTransientEdit()
+        autoSave()
+        disposed = true
         annotationSubscription?.close()
         annotationSubscription = null
-        super.doCancelAction()
     }
 
     private fun occupiedNames(targetKind: AnnotationKind, currentFile: String): MutableSet<String> {
@@ -607,7 +662,9 @@ class UnifiedAnnotationDialog(
         kindRedo.getValue(key.kind).clear()
         session.dirty = true
         session.sync = session.sync.copy(local = after.toMergeShapes(), dirty = true, pending = null)
+        preserveDraft(session)
         refreshHistoryButtons()
+        autoSave()
     }
 
     private fun popMatching(stack: ArrayDeque<EditTransaction>, wantApplied: Boolean, targetKind: AnnotationKind?): EditTransaction? {
@@ -645,10 +702,12 @@ class UnifiedAnnotationDialog(
         s.shapes = snapshot.toMutableList()
         s.dirty = true
         s.sync = s.sync.copy(local = snapshot.toMergeShapes(), dirty = true, pending = null)
+        preserveDraft(s)
         s.nextId = nextAnnotationId(s.nextId, snapshot.toMergeShapes(), s.sync.base)
         if (tx.key == currentKey) canvas.applySession(s, keepViewport = true)
         refreshHistoryButtons()
         syncRows()
+        autoSave()
     }
 
     private fun refreshHistoryButtons() {
@@ -661,20 +720,34 @@ class UnifiedAnnotationDialog(
         rows.removeAll()
         val selected = canvas.selectedIds()
         for (shape in session(currentKey).shapes) {
-            val button = JButton(shape.name)
-            button.horizontalAlignment = javax.swing.SwingConstants.LEFT
-            button.isBorderPainted = shape.id in selected
-            button.addActionListener {
-                canvas.selectOnly(shape.id)
-                syncRows()
+            val row = JPanel(BorderLayout(4, 0))
+            val visible = JCheckBox().apply {
+                isSelected = shape.name !in hidden.getValue(kind)
+                toolTipText = ui("visibility.toggle")
+                addActionListener {
+                    if (isSelected) hidden.getValue(kind).remove(shape.name) else { hidden.getValue(kind).add(shape.name); canvas.deselect(shape.id) }
+                    canvas.repaint(); syncRows()
+                }
             }
-            button.maximumSize = Dimension(Int.MAX_VALUE, button.preferredSize.height)
-            rows.add(button)
+            val button = JButton(shape.name).apply {
+                horizontalAlignment = javax.swing.SwingConstants.LEFT
+                isBorderPainted = shape.id in selected
+                addActionListener { event ->
+                    canvas.selectFromList(shape.id, event.modifiers and (ActionEvent.CTRL_MASK or ActionEvent.SHIFT_MASK or ActionEvent.META_MASK) != 0)
+                    syncRows()
+                }
+                addMouseListener(object : MouseAdapter() {
+                    override fun mouseClicked(event: MouseEvent) { if (event.clickCount == 2) canvas.editCoordinates(shape.id) }
+                })
+            }
+            row.add(visible, BorderLayout.WEST); row.add(button, BorderLayout.CENTER)
+            row.maximumSize = Dimension(Int.MAX_VALUE, row.preferredSize.height)
+            rows.add(row)
         }
         rows.revalidate(); rows.repaint()
     }
 
-    private enum class Tool { NONE, DRAW, COORD }
+    private enum class Tool { NONE, DRAW, COORD, DELETE }
 
     private inner class UnifiedCanvas : JComponent() {
         private var image: BufferedImage? = null
@@ -696,6 +769,9 @@ class UnifiedAnnotationDialog(
         private var resizeStart: Point? = null
         private var resizeOriginal: UnifiedShape? = null
         private var coordRect: Rectangle? = null
+        private var coordOriginal: Rectangle? = null
+        private var coordStart: Point? = null
+        private var coordHandle: String? = null
         private var panning = false
         private var panStart: Point? = null
         private var panOffset: Pair<Double, Double>? = null
@@ -705,7 +781,6 @@ class UnifiedAnnotationDialog(
             isOpaque = true
             isDoubleBuffered = false
             background = UIUtil.getPanelBackground()
-            installKeys()
             installMouse()
         }
 
@@ -714,6 +789,7 @@ class UnifiedAnnotationDialog(
         private fun clearTransientInteraction() {
             drawStart = null
             drawPreview = null
+            coordOriginal = null; coordStart = null; coordHandle = null
             dragId = null
             dragStart = null
             dragOriginal = null
@@ -760,7 +836,7 @@ class UnifiedAnnotationDialog(
             tool = Tool.NONE
             clearTransientInteraction()
             coordRect = null
-            drawToggle.isSelected = false; coordToggle.isSelected = false
+            drawToggle.isSelected = false; coordToggle.isSelected = false; deleteButton.isSelected = false
             drawToggle.isEnabled = !s.sync.hasConflicts
             coordToggle.isEnabled = !s.sync.hasConflicts
             deleteButton.isEnabled = !s.sync.hasConflicts
@@ -770,16 +846,25 @@ class UnifiedAnnotationDialog(
         }
 
         fun selectedIds(): Set<Int> = selected.toSet()
-        fun selectOnly(id: Int) { selected.clear(); selected += id; repaint() }
-        fun finishTransientEdit() { clearTransientInteraction() }
+        fun clearSelection() { selected.clear() }
+        fun deselect(id: Int) { selected.remove(id) }
+        fun selectFromList(id: Int, multiple: Boolean) {
+            shapes().firstOrNull { it.id == id }?.let { hidden.getValue(kind).remove(it.name) }
+            if (!multiple) selected.clear()
+            if (!selected.add(id)) selected.remove(id)
+            requestFocusInWindow(); repaint()
+        }
+        fun finishTransientEdit() { finishDragOrResize(); clearTransientInteraction() }
 
         fun setTool(next: Tool) {
             if (editingBlocked()) return
+            finishDragOrResize()
             tool = next
             drawStart = null; drawPreview = null
             if (next != Tool.COORD) { coordRect = null; statusLabel.text = " " }
             drawToggle.isSelected = next == Tool.DRAW
             coordToggle.isSelected = next == Tool.COORD
+            deleteButton.isSelected = next == Tool.DELETE
             cursor = if (next == Tool.DRAW || next == Tool.COORD) Cursor.getPredefinedCursor(Cursor.CROSSHAIR_CURSOR) else Cursor.getDefaultCursor()
             repaint()
         }
@@ -792,13 +877,14 @@ class UnifiedAnnotationDialog(
             val g2 = g.create() as Graphics2D
             g2.clipRect(0, 0, width, height)
             g2.drawImage(source, offsetX.roundToInt(), offsetY.roundToInt(), (source.width * scale).roundToInt(), (source.height * scale).roundToInt(), null)
-            shapes().forEach { shape -> paintShape(g2, shape) }
+            shapes().filter { it.name !in hidden.getValue(kind) }.forEach { shape -> paintShape(g2, shape) }
             paintConflictCandidates(g2)
             coordRect?.let { rect ->
                 val r = toScreen(rect)
                 g2.color = COORD; g2.stroke = BasicStroke(2f); g2.drawRect(r.x, r.y, r.width, r.height)
+                handlePoints(r).values.forEach { p -> g2.fillRect(p.x - 3, p.y - 3, 6, 6) }
             }
-            if (drawStart != null && drawPreview != null && kind != AnnotationKind.POINT) {
+            if (drawStart != null && drawPreview != null && (kind != AnnotationKind.POINT || tool == Tool.COORD)) {
                 val a = toImage(drawStart!!); val b = toImage(drawPreview!!)
                 val rect = Rectangle(min(a.x,b.x), min(a.y,b.y), abs(a.x-b.x), abs(a.y-b.y))
                 val r = toScreen(rect); g2.color = JBColor.GREEN; g2.drawRect(r.x,r.y,r.width,r.height)
@@ -865,19 +951,63 @@ class UnifiedAnnotationDialog(
             }
         }
 
-        private fun installKeys() {
+        fun installKeys() {
+            val configured = AnnotationKeybindings.current()
+            drawToggle.toolTipText = configured.getValue("drawBbox")
+            coordToggle.toolTipText = configured.getValue("copyCoords")
+            deleteButton.toolTipText = configured.getValue("deleteMode")
+            undoButton.toolTipText = ui("keys.undo") + " (" + configured.getValue("undo") + ")"
+            redoButton.toolTipText = ui("keys.redo") + " (" + configured.getValue("redo") + ")"
+            prevButton.toolTipText = ui("keys.prevImage") + " (" + configured.getValue("prevImage") + ")"
+            nextButton.toolTipText = ui("keys.nextImage") + " (" + configured.getValue("nextImage") + ")"
+            getInputMap(WHEN_FOCUSED).clear()
+            getActionMap().clear()
             fun bind(stroke: KeyStroke, name: String, action: () -> Unit) {
                 getInputMap(WHEN_FOCUSED).put(stroke, name)
                 getActionMap().put(name, object : AbstractAction() { override fun actionPerformed(e: ActionEvent?) = action() })
             }
-            bind(KeyStroke.getKeyStroke(KeyEvent.VK_M, 0), "cycleMode") { this@UnifiedAnnotationDialog.cycleKind() }
-            bind(KeyStroke.getKeyStroke(KeyEvent.VK_R, 0), "draw") { setTool(if (tool == Tool.DRAW) Tool.NONE else Tool.DRAW) }
-            bind(KeyStroke.getKeyStroke(KeyEvent.VK_C, 0), "coord") { setTool(if (tool == Tool.COORD) Tool.NONE else Tool.COORD) }
-            bind(KeyStroke.getKeyStroke(KeyEvent.VK_Z, InputEvent.CTRL_DOWN_MASK), "undo") { this@UnifiedAnnotationDialog.undo() }
-            bind(KeyStroke.getKeyStroke(KeyEvent.VK_Y, InputEvent.CTRL_DOWN_MASK), "redo") { this@UnifiedAnnotationDialog.redo() }
-            bind(KeyStroke.getKeyStroke(KeyEvent.VK_C, InputEvent.CTRL_DOWN_MASK), "copy") { copySelected() }
-            bind(KeyStroke.getKeyStroke(KeyEvent.VK_V, InputEvent.CTRL_DOWN_MASK), "paste") { pasteClipboard() }
-            bind(KeyStroke.getKeyStroke(KeyEvent.VK_DELETE, 0), "delete") { deleteSelected() }
+            val actions = mapOf<String, () -> Unit>(
+                "cycleMode" to { this@UnifiedAnnotationPanel.cycleKind() },
+                "modeTemplate" to { templateMode.doClick() }, "modeRect" to { rectMode.doClick() }, "modePoint" to { pointMode.doClick() },
+                "drawBbox" to { setTool(if (tool == Tool.DRAW) Tool.NONE else Tool.DRAW) },
+                "copyCoords" to { setTool(if (tool == Tool.COORD) Tool.NONE else Tool.COORD) },
+                "deleteMode" to { setTool(if (tool == Tool.DELETE) Tool.NONE else Tool.DELETE) },
+                "undo" to { this@UnifiedAnnotationPanel.undo() }, "redo" to { this@UnifiedAnnotationPanel.redo() },
+                "copy" to { if (tool == Tool.NONE) copySelected() }, "paste" to { pasteClipboard() },
+                "deleteSelected" to { if (tool == Tool.NONE) deleteSelected() },
+                "prevImage" to { navigate(-1) }, "nextImage" to { navigate(1) },
+            )
+            for ((name, value) in AnnotationKeybindings.current()) {
+                val action = actions.getValue(name)
+                val stroke = AnnotationKeybindings.stroke(value) ?: continue
+                bind(stroke, name, action)
+                // VS Code accepts the platform's command modifier for ctrl bindings.
+                if (stroke.modifiers and InputEvent.CTRL_DOWN_MASK != 0)
+                    bind(KeyStroke.getKeyStroke(stroke.keyCode, (stroke.modifiers and InputEvent.CTRL_DOWN_MASK.inv() and InputEvent.CTRL_MASK.inv()) or InputEvent.META_DOWN_MASK), "$name.meta", action)
+            }
+            for ((key, direction) in mapOf(KeyEvent.VK_LEFT to Point(-1, 0), KeyEvent.VK_RIGHT to Point(1, 0), KeyEvent.VK_UP to Point(0, -1), KeyEvent.VK_DOWN to Point(0, 1))) {
+                for (shift in listOf(false, true)) {
+                    val stroke = KeyStroke.getKeyStroke(key, if (shift) InputEvent.SHIFT_DOWN_MASK else 0)
+                    val fallback = getInputMap(WHEN_FOCUSED).get(stroke)?.let { getActionMap().get(it) }
+                    bind(stroke, "nudge.$key.$shift") {
+                        if (selected.isNotEmpty() && tool == Tool.NONE) nudge(direction.x * if (shift) 10 else 1, direction.y * if (shift) 10 else 1)
+                        else fallback?.actionPerformed(ActionEvent(this, ActionEvent.ACTION_PERFORMED, "navigate"))
+                    }
+                }
+            }
+        }
+
+        private fun nudge(dx: Int, dy: Int) {
+            if (editingBlocked()) return
+            val source = image ?: return
+            val s = sessionRef ?: return
+            val before = s.shapes.toList()
+            s.shapes = s.shapes.map { shape ->
+                if (shape.id !in selected || shape.name in hidden.getValue(kind)) shape else shape.copy(
+                    x = (shape.x + dx).coerceIn(0, (source.width - shape.w).coerceAtLeast(0)),
+                    y = (shape.y + dy).coerceIn(0, (source.height - shape.h).coerceAtLeast(0)))
+            }.toMutableList()
+            recordEdit(s.key, before, s.shapes.toList()); repaint()
         }
 
         private fun installMouse() {
@@ -885,12 +1015,28 @@ class UnifiedAnnotationDialog(
                 override fun mousePressed(e: MouseEvent) {
                     requestFocusInWindow()
                     if (editingBlocked()) return
-                    if (SwingUtilities.isRightMouseButton(e)) return
+                    if (SwingUtilities.isRightMouseButton(e)) {
+                        hit(e.point)?.let { id ->
+                            selected.clear(); selected += id
+                            shapes().firstOrNull { it.id == id }?.let { CopyPasteManager.getInstance().setContents(StringSelection(it.name)); statusLabel.text = it.name }
+                            syncRows(); repaint()
+                        }
+                        return
+                    }
+                    if (!SwingUtilities.isLeftMouseButton(e)) return
+                    if (tool == Tool.DELETE) { hit(e.point)?.let { selected.clear(); selected += it; deleteSelected() }; return }
                     if (tool == Tool.DRAW) {
                         if (kind == AnnotationKind.POINT) createPointAt(e.point) else { drawStart = e.point; drawPreview = e.point }
                         return
                     }
-                    if (tool == Tool.COORD) { drawStart = e.point; drawPreview = e.point; return }
+                    if (tool == Tool.COORD) {
+                        val rect = coordRect
+                        val handle = rect?.let { handleAt(toScreen(it), e.point) }
+                        if (rect != null && (handle != null || toScreen(rect).contains(e.point))) {
+                            coordOriginal = Rectangle(rect); coordStart = e.point; coordHandle = handle
+                        } else { drawStart = e.point; drawPreview = e.point }
+                        return
+                    }
                     val resize = if (selected.size == 1 && kind != AnnotationKind.POINT) findHandle(e.point) else null
                     if (resize != null) {
                         val shape = shapes().first { it.id == selected.first() }
@@ -916,13 +1062,17 @@ class UnifiedAnnotationDialog(
                 override fun mouseReleased(e: MouseEvent) {
                     if (editingBlocked()) return
                     if (tool == Tool.DRAW && kind != AnnotationKind.POINT && drawStart != null) { finishRect(e.point); return }
-                    if (tool == Tool.COORD && drawStart != null) { finishCoord(e.point); return }
+                    if (tool == Tool.COORD) {
+                        if (drawStart != null) finishCoord(e.point)
+                        else if (coordOriginal != null) { copyCoord(); coordOriginal = null; coordStart = null; coordHandle = null }
+                        return
+                    }
                     finishDragOrResize()
                     panning = false; panStart = null; panOffset = null
                 }
 
                 override fun mouseClicked(e: MouseEvent) {
-                    if (!editingBlocked() && e.clickCount == 2 && tool == Tool.NONE) hit(e.point)?.let(::editName)
+                    if (!editingBlocked() && e.clickCount == 2 && tool == Tool.NONE) hit(e.point)?.let { editCoordinates(it) }
                 }
             })
             addMouseMotionListener(object : MouseMotionAdapter() {
@@ -930,6 +1080,7 @@ class UnifiedAnnotationDialog(
                     if (editingBlocked()) return
                     when {
                         drawStart != null && (tool == Tool.DRAW || tool == Tool.COORD) -> { drawPreview = e.point; repaint() }
+                        coordOriginal != null -> dragCoord(e.point)
                         resizeId != null -> resizeTo(e.point)
                         dragId != null -> dragTo(e.point)
                         panning && panStart != null && panOffset != null -> {
@@ -937,7 +1088,21 @@ class UnifiedAnnotationDialog(
                         }
                     }
                 }
-                override fun mouseMoved(e: MouseEvent) { hovered = hit(e.point) ?: -1; repaint() }
+                override fun mouseMoved(e: MouseEvent) {
+                    hovered = hit(e.point) ?: -1
+                    if (tool != Tool.COORD && !retryButton.isVisible && !editingBlocked()) {
+                        val source = image
+                        val point = toImage(e.point)
+                        if (source != null && point.x in 0 until source.width && point.y in 0 until source.height) {
+                            val color = Color(source.getRGB(point.x, point.y))
+                            swatch.background = color
+                            statusLabel.text = ui("pixel.readout", color.red, color.green, color.blue, point.x, point.y,
+                                String.format(java.util.Locale.ROOT, "%.3f", point.x.toDouble() / source.width),
+                                String.format(java.util.Locale.ROOT, "%.3f", point.y.toDouble() / source.height))
+                        }
+                    }
+                    repaint()
+                }
             })
             addMouseWheelListener { e: MouseWheelEvent ->
                 image ?: return@addMouseWheelListener
@@ -954,8 +1119,8 @@ class UnifiedAnnotationDialog(
             val source = image ?: return
             val p = toImage(screen)
             val x = p.x.coerceIn(0, source.width); val y = p.y.coerceIn(0, source.height)
-            val name = promptName() ?: return
-            addShape(name, x, y, 0, 0)
+            val value = requestCoordinates(UnifiedShape(0, "", x, y, 0, 0)) ?: return
+            addShape(value.name, value.x, value.y, value.w, value.h)
             setTool(Tool.NONE)
         }
 
@@ -970,8 +1135,8 @@ class UnifiedAnnotationDialog(
             val x2 = max(a.x,b.x).coerceIn(0, source.width)
             val y2 = max(a.y,b.y).coerceIn(0, source.height)
             if (x2 - x < MIN_RECT || y2 - y < MIN_RECT) { repaint(); return }
-            val name = promptName() ?: return
-            addShape(name, x, y, x2-x, y2-y)
+            val value = requestCoordinates(UnifiedShape(0, "", x, y, x2-x, y2-y)) ?: return
+            addShape(value.name, value.x, value.y, value.w, value.h)
             setTool(Tool.NONE)
         }
 
@@ -991,20 +1156,31 @@ class UnifiedAnnotationDialog(
             syncRows(); repaint()
         }
 
-        private fun editName(id: Int) {
+        fun editCoordinates(id: Int? = selected.singleOrNull()) {
             if (editingBlocked()) return
+            val source = image ?: return
             val s = sessionRef ?: return
-            val index = s.shapes.indexOfFirst { it.id == id }
-            if (index < 0) return
-            val old = s.shapes[index]
-            val proposed = promptName(old.name) ?: return
-            if (proposed != old.name && proposed in occupiedNames(kind, currentImage.file.name)) {
-                Messages.showErrorDialog(project, ui("name.duplicate"), ui("name.duplicateTitle"))
-                return
-            }
+            val old = s.shapes.firstOrNull { it.id == id }
+            val initial = old ?: UnifiedShape(0, "", 0, 0, if (kind == AnnotationKind.POINT) 0 else min(100, source.width), if (kind == AnnotationKind.POINT) 0 else min(100, source.height))
+            val value = requestCoordinates(initial, old?.name) ?: return
+            if (old == null) { addShape(value.name, value.x, value.y, value.w, value.h); return }
             val before = s.shapes.toList()
-            s.shapes[index] = old.copy(name = proposed)
+            val index = s.shapes.indexOfFirst { it.id == old.id }
+            s.shapes[index] = old.copy(name = value.name, x = value.x, y = value.y, w = value.w, h = value.h)
             recordEdit(s.key, before, s.shapes.toList()); syncRows(); repaint()
+        }
+
+        private fun requestCoordinates(initial: UnifiedShape, previousName: String? = null): AnnotationCoordinates? {
+            val source = image ?: return null
+            val dialog = AnnotationCoordinatesDialog(project, initial.name, initial.x, initial.y, initial.w, initial.h,
+                source.width, source.height, kind == AnnotationKind.POINT) { name ->
+                when {
+                    !validName(name) -> ui("name.invalid")
+                    name != previousName && name in occupiedNames(kind, currentImage.file.name) -> ui("name.duplicate")
+                    else -> null
+                }
+            }
+            return if (dialog.showAndGet()) dialog.value() else null
         }
 
         fun deleteSelected() {
@@ -1142,8 +1318,12 @@ class UnifiedAnnotationDialog(
             if (h in listOf("right","tr","br")) w=o.w+dx
             if (h in listOf("top","tl","tr")) { y=o.y+dy; height=o.h-dy }
             if (h in listOf("bottom","bl","br")) height=o.h+dy
-            w=max(5.0,w); height=max(5.0,height); x=x.coerceIn(0.0,source.width-w); y=y.coerceIn(0.0,source.height-height)
-            val updated=o.copy(x=x.roundToInt(),y=y.roundToInt(),w=w.roundToInt().coerceAtMost(source.width-x.roundToInt()),h=height.roundToInt().coerceAtMost(source.height-y.roundToInt()))
+            val minW = min(MIN_RECT, source.width).toDouble()
+            val minH = min(MIN_RECT, source.height).toDouble()
+            w = w.coerceIn(minW, source.width.toDouble()); height = height.coerceIn(minH, source.height.toDouble())
+            x = x.coerceIn(0.0, source.width - w); y = y.coerceIn(0.0, source.height - height)
+            val updated = o.copy(x = x.roundToInt(), y = y.roundToInt(),
+                w = w.roundToInt().coerceAtMost(source.width - x.roundToInt()), h = height.roundToInt().coerceAtMost(source.height - y.roundToInt()))
             val s=sessionRef?:return; val index=s.shapes.indexOfFirst{it.id==id}; if(index>=0)s.shapes[index]=updated; repaint()
         }
 
@@ -1165,6 +1345,7 @@ class UnifiedAnnotationDialog(
 
         private fun hit(p: Point): Int? {
             for (shape in shapes().asReversed()) {
+                if (shape.name in hidden.getValue(kind)) continue
                 if (kind == AnnotationKind.POINT) {
                     val sp = toScreenPoint(Point(shape.x,shape.y)); if (abs(p.x-sp.x)<=POINT_RADIUS+3 && abs(p.y-sp.y)<=POINT_RADIUS+3) return shape.id
                 } else if (toScreen(Rectangle(shape.x,shape.y,shape.w,shape.h)).contains(p)) return shape.id
@@ -1176,9 +1357,33 @@ class UnifiedAnnotationDialog(
             val id = selected.singleOrNull() ?: return null
             val shape = shapes().firstOrNull { it.id == id } ?: return null
             val r = toScreen(Rectangle(shape.x,shape.y,shape.w,shape.h))
-            val left=abs(p.x-r.x)<=HANDLE_MARGIN; val right=abs(p.x-(r.x+r.width))<=HANDLE_MARGIN
-            val top=abs(p.y-r.y)<=HANDLE_MARGIN; val bottom=abs(p.y-(r.y+r.height))<=HANDLE_MARGIN
-            return when { top&&left->"tl";top&&right->"tr";bottom&&left->"bl";bottom&&right->"br";top->"top";bottom->"bottom";left->"left";right->"right";else->null }
+            return handleAt(r, p)
+        }
+
+        private fun handleAt(rect: Rectangle, p: Point): String? = handlePoints(rect).entries.firstOrNull {
+            abs(p.x - it.value.x) <= HANDLE_MARGIN && abs(p.y - it.value.y) <= HANDLE_MARGIN
+        }?.key
+
+        private fun dragCoord(screen: Point) {
+            val source = image ?: return
+            val original = coordOriginal ?: return
+            val start = coordStart ?: return
+            val dx = ((screen.x - start.x) / scale).roundToInt()
+            val dy = ((screen.y - start.y) / scale).roundToInt()
+            val handle = coordHandle
+            if (handle == null) {
+                coordRect = Rectangle((original.x + dx).coerceIn(0, source.width - original.width),
+                    (original.y + dy).coerceIn(0, source.height - original.height), original.width, original.height)
+            } else {
+                var left = original.x; var top = original.y
+                var right = left + original.width; var bottom = top + original.height
+                if (handle in listOf("left", "tl", "bl")) left = (left + dx).coerceIn(0, right - 1)
+                if (handle in listOf("right", "tr", "br")) right = (right + dx).coerceIn(left + 1, source.width)
+                if (handle in listOf("top", "tl", "tr")) top = (top + dy).coerceIn(0, bottom - 1)
+                if (handle in listOf("bottom", "bl", "br")) bottom = (bottom + dy).coerceIn(top + 1, source.height)
+                coordRect = Rectangle(left, top, right - left, bottom - top)
+            }
+            repaint()
         }
 
         private fun handlePoints(r: Rectangle): Map<String,Point> = mapOf(
@@ -1195,7 +1400,6 @@ class UnifiedAnnotationDialog(
             val fitSize = Dimension(fit.width, fit.height)
             if (preferredSize != fitSize) {
                 preferredSize = fitSize
-                minimumSize = fitSize
                 revalidate()
                 canvasHost.revalidate()
             }

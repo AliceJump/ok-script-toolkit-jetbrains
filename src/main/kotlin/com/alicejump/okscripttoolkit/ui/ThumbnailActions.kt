@@ -22,10 +22,10 @@ internal class ThumbnailActions(preview: JComponent, vararg buttons: JButton) : 
     private val actions = JPanel(FlowLayout(FlowLayout.RIGHT, JBUI.scale(2), 0)).apply {
         isOpaque = false
         for (button in buttons) {
-            val label = button.text ?: button.toolTipText
+            val label = button.toolTipText ?: button.text
             button.toolTipText = label
             button.accessibleContext.accessibleName = label
-            button.text = null
+            if (button.icon != null) button.text = null
             button.margin = JBUI.insets(2)
             button.preferredSize = JBUI.size(24, 24)
             button.cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
@@ -58,8 +58,8 @@ internal class ThumbnailActions(preview: JComponent, vararg buttons: JButton) : 
 }
 
 /** A double click copies without first inserting; direct buttons cancel pending clicks. */
-internal open class ThumbnailClicks(card: JComponent, onSingle: () -> Unit, private val onDouble: () -> Unit) : MouseAdapter() {
-    private val timer = Timer(thumbnailClickDelay(Toolkit.getDefaultToolkit().getDesktopProperty("awt.multiClickInterval"))) {
+internal open class ThumbnailClicks(card: JComponent, onSingle: () -> Unit, private val onDouble: () -> Unit, private val clickDelay: Int? = null) : MouseAdapter() {
+    private val timer = Timer(clickDelay ?: thumbnailClickDelay(Toolkit.getDefaultToolkit().getDesktopProperty("awt.multiClickInterval"))) {
         if (card.isShowing) onSingle()
     }.apply { isRepeats = false }
 
@@ -67,7 +67,7 @@ internal open class ThumbnailClicks(card: JComponent, onSingle: () -> Unit, priv
 
     override fun mouseClicked(e: MouseEvent) {
         if (!SwingUtilities.isLeftMouseButton(e)) return
-        timer.initialDelay = thumbnailClickDelay(Toolkit.getDefaultToolkit().getDesktopProperty("awt.multiClickInterval"))
+        timer.initialDelay = clickDelay ?: thumbnailClickDelay(Toolkit.getDefaultToolkit().getDesktopProperty("awt.multiClickInterval"))
         timer.stop()
         if (e.clickCount >= 2) onDouble() else timer.restart()
     }

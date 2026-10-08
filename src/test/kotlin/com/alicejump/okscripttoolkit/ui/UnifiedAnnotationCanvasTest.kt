@@ -5,6 +5,11 @@ import kotlin.test.assertEquals
 
 class UnifiedAnnotationCanvasTest {
     @Test
+    fun `extremely large image still fits a small host`() {
+        assertEquals(AnnotationCanvasFit(0.004, 400, 400), annotationCanvasFit(100000, 100000, 500, 400))
+    }
+
+    @Test
     fun `canvas fit preserves image aspect ratio inside host`() {
         assertEquals(
             AnnotationCanvasFit(scale = 2.25, width = 900, height = 488),

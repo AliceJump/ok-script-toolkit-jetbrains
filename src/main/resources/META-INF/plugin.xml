@@ -35,6 +35,11 @@
             extensions="oktemplates"/>
         <fileEditorProvider implementation="com.alicejump.okscripttoolkit.ui.TemplateGalleryEditorProvider"/>
 
+        <fileType name="ok-script Annotation Editor"
+                  implementationClass="com.alicejump.okscripttoolkit.ui.AnnotationEditorFileType"
+                  fieldName="INSTANCE" extensions="okannotations"/>
+        <fileEditorProvider implementation="com.alicejump.okscripttoolkit.ui.AnnotationEditorProvider"/>
+
         <fileType
             name="ok-script Getting Started"
             implementationClass="com.alicejump.okscripttoolkit.ui.GettingStartedFileType"

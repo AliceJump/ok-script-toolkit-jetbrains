@@ -18,7 +18,7 @@ class AnnotationBundleCoverageTest {
         for (file in files) assertEquals(base, read(file).stringPropertyNames(), file.name)
         val source = TestRepoLayout.locate("src/main/kotlin")
         var references = 0
-        val markers = Regex("(?:AnnotationUiBundle\\.message|publishingMessage)\\(\\s*\"([^\"]+)\"")
+        val markers = Regex("(?:AnnotationUiBundle\\.message|publishingMessage|ui)\\(\\s*\"([^\"]+)\"")
         for (file in source.walkTopDown().filter { it.isFile && it.extension == "kt" }) {
             val text = file.readText()
             for (match in markers.findAll(text)) {
@@ -32,6 +32,9 @@ class AnnotationBundleCoverageTest {
             }
         }
         assertTrue(references > 20)
+        com.alicejump.okscripttoolkit.ui.AnnotationKeybindings.defaults.keys.forEach {
+            assertTrue("keys.$it" in base, "快捷键标签缺少翻译：$it")
+        }
         for (locale in listOf(Locale.ROOT, Locale.SIMPLIFIED_CHINESE, Locale.TRADITIONAL_CHINESE, Locale.JAPANESE, Locale.KOREAN, Locale.of("es"))) {
             val bundle = LocaleBundles.bundle("messages.OkScriptToolkitAnnotationBundle", locale)
             val formatted = java.text.MessageFormat.format(bundle.getString("position.overwrite"), "example.py")

@@ -50,20 +50,4 @@ class PreviewCardToolWindowsTest {
         assertTrue(generation.isCurrent(generation.current()))
     }
 
-    @Test
-    fun `card cells divide the visible viewport across the responsive column count`() {
-        assertEquals(299, cardCellWidthFor(299), "单列应直接吃满 299px 可视宽度")
-        assertEquals(150, cardCellWidthFor(300), "300px 刚进入两列时应各占一半")
-        assertEquals(142, cardCellWidthFor(428), "428px 三列应平均分配为 142px，并只留下除法余数")
-        assertEquals(120, cardCellWidthFor(0), "尚未挂到 viewport 时保留安全的最小卡片宽")
-
-        for (width in 1..2400) {
-            val columns = ThumbGridPolicy.columnsFor(width)
-            val cellWidth = cardCellWidthFor(width)
-            val used = cellWidth * columns
-            assertTrue(used <= width, "卡片总宽不得超过可视区域：width=$width columns=$columns used=$used")
-            assertTrue(width - used < columns,
-                "等分后只允许留下整数除法余数：width=$width columns=$columns used=$used")
-        }
-    }
 }
