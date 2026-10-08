@@ -66,10 +66,24 @@ private data class PublishSelection(val template: Boolean, val rect: Boolean, va
     val hasPositions: Boolean get() = rect || point
 }
 
-private class PublishSelectionDialog(project: Project) : DialogWrapper(project) {
-    private val template = JCheckBox(publishingMessage("mode.template"), true)
-    private val rect = JCheckBox(publishingMessage("mode.rect"), true)
-    private val point = JCheckBox(publishingMessage("mode.point"), true)
+internal data class PublishAvailability(val template: Boolean, val rect: Boolean, val point: Boolean)
+
+internal fun publishAvailability(templateAnnotations: Int, rectAnnotations: Int, pointAnnotations: Int) = PublishAvailability(
+    template = templateAnnotations > 0,
+    rect = rectAnnotations > 0,
+    point = pointAnnotations > 0,
+)
+
+private class PublishSelectionDialog(project: Project, availability: PublishAvailability) : DialogWrapper(project) {
+    private val template = JCheckBox(publishingMessage("mode.template"), availability.template).apply {
+        isEnabled = availability.template
+    }
+    private val rect = JCheckBox(publishingMessage("mode.rect"), availability.rect).apply {
+        isEnabled = availability.rect
+    }
+    private val point = JCheckBox(publishingMessage("mode.point"), availability.point).apply {
+        isEnabled = availability.point
+    }
     init { title = publishingMessage("publish.title"); init() }
     override fun createCenterPanel(): JComponent = JPanel().apply {
         layout = javax.swing.BoxLayout(this, javax.swing.BoxLayout.Y_AXIS)
@@ -85,7 +99,8 @@ private class PublishSelectionDialog(project: Project) : DialogWrapper(project) 
 
 private object UnifiedPublishController {
     fun publish(project: Project, onComplete: () -> Unit) {
-        val dialog = PublishSelectionDialog(project)
+        val availability = availability(project)
+        val dialog = PublishSelectionDialog(project, availability)
         if (!dialog.showAndGet()) return
         val selection = dialog.selection()
         publishSelectedResources(selection.template, selection.hasPositions,
@@ -93,6 +108,25 @@ private object UnifiedPublishController {
             { PositionPublishFlow.configure(project, selection.rect, selection.point) },
             { PositionPublishFlow.publish(project, selection.rect, selection.point, it) },
             { publishTemplate(project, it, onComplete) }, onComplete)
+    }
+
+    private fun availability(project: Project): PublishAvailability {
+        val root = project.service<OkProjectDataService>().rootPath()
+        val templateData = project.service<TemplateAssetDataService>()
+        val templateAnnotations = if (root == null) {
+            0
+        } else {
+            templateData.load(root.toString(), OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory())
+            if (templateData.readErrors.isEmpty()) templateData.listImages().sumOf { it.annotations.size } else 0
+        }
+
+        val boxes = project.service<BoxCatalogService>()
+        val rectAnnotations = if (boxes.authoringErrors().isEmpty()) boxes.readAuthoring().boxes.size else 0
+
+        val points = project.service<PointCatalogService>().read()
+        val pointAnnotations = if (points.errors.isEmpty()) points.file.points.size else 0
+
+        return publishAvailability(templateAnnotations, rectAnnotations, pointAnnotations)
     }
 
     private fun publishTemplate(project: Project, template: TemplatePublishPlan, onComplete: () -> Unit) {
@@ -161,6 +195,19 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
         })
         add(JPanel(BorderLayout()).apply { add(toolbar, BorderLayout.NORTH); add(search, BorderLayout.SOUTH) }, BorderLayout.NORTH)
         list.selectionMode = ListSelectionModel.SINGLE_SELECTION
+        list.cellRenderer = object : javax.swing.DefaultListCellRenderer() {
+            override fun getListCellRendererComponent(
+                l: javax.swing.JList<*>?,
+                value: Any?,
+                index: Int,
+                isSelected: Boolean,
+                cellHasFocus: Boolean,
+            ): java.awt.Component {
+                val component = super.getListCellRendererComponent(l, value, index, isSelected, cellHasFocus) as JLabel
+                component.text = (value as? TemplateImage)?.file?.name.orEmpty()
+                return component
+            }
+        }
         add(JScrollPane(list), BorderLayout.CENTER)
         list.addMouseListener(object : MouseAdapter() {
             override fun mouseClicked(event: MouseEvent) {
@@ -222,8 +269,6 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
             images = loadedImages
             categoryNames = names
             applyFilter()
-            // 新 renderer 通知卡片包装器使缩略图失效，保持列表与动作使用同一份模型。
-            list.cellRenderer = javax.swing.DefaultListCellRenderer()
         } }
     }
 
