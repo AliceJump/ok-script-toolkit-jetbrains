@@ -131,10 +131,11 @@ fun positionPublishTargetInputError(value: String?): String? {
     val raw = value?.trim().orEmpty()
     if (raw.isEmpty()) return null // Empty explicitly means reset personal override.
     if (raw.startsWith('/') || raw.startsWith('\\') || Regex("^[A-Za-z]:").containsMatchIn(raw)) {
-        return "Position output path must be relative to the project root."
+        return "relative"
     }
-    if (raw.replace('\\', '/').split('/').contains("..")) {
-        return "Position output path must stay within the project root."
+    val segments = raw.replace('\\', '/').split('/')
+    if (segments.contains("..") || segments.all { it.isEmpty() || it == "." }) {
+        return "outside"
     }
     return null
 }

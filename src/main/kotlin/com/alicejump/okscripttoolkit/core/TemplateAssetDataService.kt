@@ -324,7 +324,7 @@ class TemplateAssetDataService(private val project: Project) : CocoAnnotationDat
         // （旧写法只有 basename 一条路，想叫 FeatureList 就必须把文件命名成 FeatureList.py。）
         //
         // ⚠️ 个人覆盖会改掉写进源码的类名，而项目的代码按名字 import。那道闸不在这一层：
-        // 覆盖前的确认在 `ui/TemplateAssetToolWindowFactory`（UI 层）做，见 [LabelEnumGuard]。
+        // 覆盖前的确认在 `ui/TemplatePublishFlow`（UI 层）做，见 [LabelEnumGuard]。
         val rawClassName = OkScriptToolkitSettings.getInstance(project).labelEnumName(filePath).value
         // 类名同样进源码：非法标识符直接退回一个安全的默认名，而不是生成坏文件。
         // 走 `writableClassName` 而**不是**内联一个正则 —— 面板的写入前校验要用**同一个**函数

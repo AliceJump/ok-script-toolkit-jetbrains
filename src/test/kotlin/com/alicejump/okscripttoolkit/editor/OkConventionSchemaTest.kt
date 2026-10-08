@@ -13,7 +13,7 @@ import org.junit.jupiter.api.Assumptions.assumeTrue
  * jsonValidation 也指向它），子仓只经 copyConventionSchema 同步进 JAR。这里盯两件事：
  * 1. 资源在 classpath 上且内容是合法 JSON、含全部顶层约定字段 —— 打包链路断掉时第一时间红；
  * 2. 与父仓那份**逐字节一致** —— 两边各改各的会造成两端校验口径漂移
- *    （父仓 CI 使用相邻源码，子仓独立 CI 显式检出 v1.14.0 并传入源文件路径）。
+ *    （父仓 CI 使用相邻源码，子仓独立 CI 固定共享核心提交并传入源文件路径）。
  */
 class OkConventionSchemaTest {
 
@@ -35,8 +35,12 @@ class OkConventionSchemaTest {
         assertEquals("object", parsed.get("type").asText(), "schema 根必须是 object")
 
         val properties = parsed.get("properties")
-        for (key in listOf("labelEnum", "executor", "templates", "i18n", "characters", "effects")) {
+        for (key in listOf("labelEnum", "executor", "templates", "position", "i18n", "characters", "effects")) {
             assertTrue(properties.has(key), "schema 必须覆盖约定字段 $key（VS Code 侧同名文件对齐）")
+        }
+        val position = properties.get("position").get("properties")
+        for (key in listOf("jsonPath", "pythonDirectory")) {
+            assertTrue(position.has(key), "schema 必须覆盖 Position 发布路径 $key")
         }
     }
 

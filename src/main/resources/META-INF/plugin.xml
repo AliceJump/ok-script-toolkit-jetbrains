@@ -67,12 +67,12 @@
             id="ok-script Annotation Management"
             anchor="right"
             icon="/icons/assets.svg"
-            factoryClass="com.alicejump.okscripttoolkit.ui.PublishingAnnotationToolWindowFactory"/>
+            factoryClass="com.alicejump.okscripttoolkit.ui.CardPublishingAnnotationToolWindowFactory"/>
         <toolWindow
             id="ok-script Resource Preview"
             anchor="right"
             icon="/icons/templates.svg"
-            factoryClass="com.alicejump.okscripttoolkit.ui.PreviewOnlyResourceToolWindowFactory"/>
+            factoryClass="com.alicejump.okscripttoolkit.ui.CardResourcePreviewToolWindowFactory"/>
         <toolWindow
             id="ok-script Temp Shots"
             anchor="right"
@@ -94,11 +94,11 @@
         </action>
         <action id="com.alicejump.okscripttoolkit.ShowUnifiedAnnotations" class="com.alicejump.okscripttoolkit.ui.ShowUnifiedAnnotationsAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
-            <keyboard-shortcut keymap="$default" first-keystroke="control alt T"/>
-            <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt T"/>
         </action>
         <action id="com.alicejump.okscripttoolkit.ShowUnifiedResources" class="com.alicejump.okscripttoolkit.ui.ShowUnifiedResourcesAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <keyboard-shortcut keymap="$default" first-keystroke="control alt T"/>
+            <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt T"/>
         </action>
         <action id="com.alicejump.okscripttoolkit.OpenTemplateGalleryEditor" class="com.alicejump.okscripttoolkit.ui.OpenTemplateGalleryEditorAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
