@@ -12,6 +12,7 @@ import java.awt.Component
 import java.awt.Container
 import java.awt.Cursor
 import java.awt.Dimension
+import java.awt.Graphics
 import java.awt.LayoutManager
 import java.awt.Rectangle
 import java.awt.event.MouseAdapter
@@ -108,7 +109,7 @@ internal class ResourceThumbnailGrid<T>(
 
     private fun createCard(item: T): JComponent {
         val meta = visual(item)
-        val image = JBLabel(icons[meta.key], SwingConstants.CENTER).apply {
+        val image = ResourceThumbnailLabel(icons[meta.key]).apply {
             preferredSize = JBUI.size(118, THUMB_HEIGHT)
             text = if (icon != null) null else if (meta.key in completed) AnnotationUiBundle.message("preview.thumbnailFailed") else "…"
         }
@@ -125,6 +126,7 @@ internal class ResourceThumbnailGrid<T>(
         val info = JPanel(BorderLayout(0, JBUI.scale(2))).apply {
             isOpaque = false
             border = JBUI.Borders.empty(5, 7, 6, 7)
+            meta.categories?.let { add(JBLabel(it.ifBlank { " " }).apply { toolTipText = it }, BorderLayout.CENTER) }
             add(name, BorderLayout.NORTH); add(detail, BorderLayout.SOUTH)
         }
         val card = JPanel(BorderLayout()).apply {
@@ -132,13 +134,14 @@ internal class ResourceThumbnailGrid<T>(
             toolTipText = meta.tooltip
             cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
             add(preview, BorderLayout.CENTER); add(info, BorderLayout.SOUTH)
+            preferredSize = Dimension(JBUI.scale(118), JBUI.scale(THUMB_HEIGHT) + info.preferredSize.height + 2)
         }
         val click = if (onDouble == null) object : MouseAdapter() {
             override fun mouseClicked(event: MouseEvent) {
                 if (SwingUtilities.isLeftMouseButton(event) && event.clickCount == 1) onSingle(item)
             }
         } else ThumbnailClicks(card, { onSingle(item) }, { onDouble.invoke(item) }, clickDelay = 500)
-        listOf(card, preview, image, info, name, detail).forEach {
+        (listOf(card, preview, image, info, name, detail) + info.components.filterIsInstance<JBLabel>()).distinct().forEach {
             it.addMouseListener(click)
             it.transferHandler = transferHandler
         }
@@ -165,22 +168,39 @@ internal class ResourceThumbnailGrid<T>(
     }
 }
 
+/** 缩略图按可见卡片宽高完整显示，窄列也不裁掉宽图两侧。 */
+internal class ResourceThumbnailLabel(icon: ImageIcon?) : JBLabel(icon, SwingConstants.CENTER) {
+    override fun paintComponent(graphics: Graphics) {
+        val thumbnail = icon as? ImageIcon
+        if (thumbnail == null || thumbnail.iconWidth <= 0 || thumbnail.iconHeight <= 0) {
+            super.paintComponent(graphics)
+            return
+        }
+        val ratio = minOf(1.0, width.toDouble() / thumbnail.iconWidth, height.toDouble() / thumbnail.iconHeight)
+        val shownWidth = max(1, (thumbnail.iconWidth * ratio).toInt())
+        val shownHeight = max(1, (thumbnail.iconHeight * ratio).toInt())
+        graphics.drawImage(thumbnail.image, (width - shownWidth) / 2, (height - shownHeight) / 2, shownWidth, shownHeight, null)
+    }
+}
+
 /** 列数由可用宽度决定，最后一行不会因为元素较少而把卡片拉宽。 */
 internal class ResourceGridLayout : LayoutManager {
     private fun columns(parent: Container) = max(1, (parent.width - parent.insets.left - parent.insets.right + JBUI.scale(6)) / JBUI.scale(124))
+    private fun cardHeight(parent: Container) = max(JBUI.scale(142), parent.components.maxOfOrNull { it.preferredSize.height } ?: 0)
     override fun addLayoutComponent(name: String?, component: Component?) = Unit
     override fun removeLayoutComponent(component: Component?) = Unit
     override fun minimumLayoutSize(parent: Container) = JBUI.size(118, 1)
     override fun preferredLayoutSize(parent: Container): Dimension {
         val rows = (parent.componentCount + columns(parent) - 1) / columns(parent)
-        return Dimension(max(JBUI.scale(118), parent.width), parent.insets.top + parent.insets.bottom + rows * JBUI.scale(148))
+        return Dimension(max(JBUI.scale(118), parent.width), parent.insets.top + parent.insets.bottom + rows * (cardHeight(parent) + JBUI.scale(6)))
     }
     override fun layoutContainer(parent: Container) {
         val n = columns(parent)
         val gap = JBUI.scale(6)
+        val height = cardHeight(parent)
         val width = max(1, (parent.width - parent.insets.left - parent.insets.right - (n - 1) * gap) / n)
         parent.components.forEachIndexed { index, card ->
-            card.setBounds(parent.insets.left + index % n * (width + gap), parent.insets.top + index / n * JBUI.scale(148), width, JBUI.scale(142))
+            card.setBounds(parent.insets.left + index % n * (width + gap), parent.insets.top + index / n * (height + gap), width, height)
         }
     }
 }

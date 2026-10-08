@@ -165,8 +165,12 @@ class PublishingAnnotationToolWindowFactory : ToolWindowFactory, DumbAware {
 internal class PublishingAnnotationManagerPanel(private val project: Project) : JPanel(BorderLayout(0, 4)), Disposable {
     private val data = project.service<TemplateAssetDataService>()
     private val cards = ResourceThumbnailGrid<TemplateImage>(
-        visual = { image -> CardVisual(image.file.absolutePath, image.file.name, "", image.file.absolutePath,
-            image.file.toPath(), intArrayOf(0, 0, image.width, image.height)) },
+        visual = { image ->
+            val names = image.annotations.mapNotNull { categoryNames[it.categoryId] }.distinct().joinToString(", ")
+            CardVisual(image.file.absolutePath, image.file.name, "${image.width}×${image.height}",
+                "${image.file.absolutePath}\n${image.width}×${image.height}\n$names", image.file.toPath(),
+                intArrayOf(0, 0, image.width, image.height), names)
+        },
         actions = { image -> listOf(
             ResourceCardAction("👁", assetMessage("templateAsset.open")) { viewSource(image) },
             ResourceCardAction("⇄", assetMessage("templateAsset.swap")) { swapImage(image) },

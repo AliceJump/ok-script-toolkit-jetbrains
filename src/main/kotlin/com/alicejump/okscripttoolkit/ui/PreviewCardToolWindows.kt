@@ -52,7 +52,7 @@ class CardResourcePreviewToolWindowFactory : ToolWindowFactory, DumbAware {
     }
 }
 
-internal data class CardVisual(val key: String, val name: String, val detail: String, val tooltip: String, val imagePath: Path, val bbox: IntArray)
+internal data class CardVisual(val key: String, val name: String, val detail: String, val tooltip: String, val imagePath: Path, val bbox: IntArray, val categories: String? = null)
 
 internal class PreviewThumbGeneration {
     private val value = AtomicInteger(0)
@@ -159,7 +159,7 @@ internal class UnifiedResourcePreview(private val project: Project) : Disposable
                 val sizes = source.file.images.associateBy { it.file.lowercase() }
                 source.file.points.mapNotNull { point ->
                     val image = sizes[point.image.lowercase()] ?: return@mapNotNull null
-                    CardVisual("point:${point.path}:${point.image}", point.path, "${image.width}×${image.height}",
+                    CardVisual("point:${point.path}:${point.image}", point.path, AnnotationUiBundle.message("mode.point"),
                         "self.pos.${point.path}", directory.resolve(point.image), pointPreviewBbox(point.x, point.y, image.width, image.height))
                 }
             }
@@ -177,10 +177,7 @@ internal class UnifiedResourcePreview(private val project: Project) : Disposable
             return
         }
         WriteCommandAction.runWriteCommandAction(project) {
-            for (caret in editor.caretModel.allCarets.sortedByDescending { it.offset }) {
-                editor.document.insertString(caret.offset, text)
-                caret.moveToOffset(caret.offset + text.length)
-            }
+            insertResourceReference(editor, text)
         }
     }
 

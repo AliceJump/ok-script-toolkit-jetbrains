@@ -19,6 +19,24 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class ResourceInteractionTest {
+    @Test
+    fun `narrow card shows both edges of a wide thumbnail`() {
+        SwingUtilities.invokeAndWait {
+            val source = BufferedImage(240, 96, BufferedImage.TYPE_INT_RGB)
+            source.createGraphics().also { graphics ->
+                graphics.color = java.awt.Color.RED; graphics.fillRect(0, 0, 120, 96)
+                graphics.color = java.awt.Color.BLUE; graphics.fillRect(120, 0, 120, 96)
+                graphics.dispose()
+            }
+            val label = ResourceThumbnailLabel(ImageIcon(source))
+            label.setSize(118, 96)
+            val screen = BufferedImage(118, 96, BufferedImage.TYPE_INT_RGB)
+            screen.createGraphics().also { label.paint(it); it.dispose() }
+            assertEquals(java.awt.Color.RED.rgb, screen.getRGB(1, 48))
+            assertEquals(java.awt.Color.BLUE.rgb, screen.getRGB(116, 48))
+        }
+    }
+
     private fun descendants(container: Container): List<java.awt.Component> = container.components.flatMap {
         listOf(it) + if (it is Container) descendants(it) else emptyList()
     }
