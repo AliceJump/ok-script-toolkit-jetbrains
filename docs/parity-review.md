@@ -2,9 +2,11 @@
 
 [简体中文](parity-review.md) | [English](parity-review.en.md)
 
-复核日期：2026-10-08。主仓基线 `aea8b14`、子仓 `main` `9eb4992`，均为 `1.23.0`。本轮从 [PR #28](https://github.com/AliceJump/ok-script-toolkit-jetbrains/pull/28) 的 `0e846f0` 继续补齐差异，同时调整主仓。
+历史功能补齐记录：2026-10-08。主仓基线 `aea8b14`、子仓 `main` `9eb4992`，均为 `1.23.0`。本轮从 [PR #28](https://github.com/AliceJump/ok-script-toolkit-jetbrains/pull/28) 的 `0e846f0` 继续补齐差异，同时调整主仓。
 
 完整功能矩阵、操作契约、源码入口和验证状态统一维护在配套主仓 PR 分支的 [功能与文档对齐表](https://github.com/AliceJump/ok-script-toolkit/blob/codex/complete-feature-parity/docs/feature-parity.md)，合并后可从主仓 `main` 查看。
+
+当前交互改动由 [JetBrains PR #30](https://github.com/AliceJump/ok-script-toolkit-jetbrains/pull/30) 与 [主仓 PR #37](https://github.com/AliceJump/ok-script-toolkit/pull/37) 交付，版本 `1.24.0`。标注管理与资源预览按 VS Code 对齐。下面的 PR #28 基线及验证数字保留为历史记录，不代表当前 PR 的审阅状态。
 
 ## 已补齐的差异
 
@@ -15,12 +17,12 @@
 - 发布文案和资源预览标题使用外部六语言资源，快捷键与主仓一致；清理未注册的旧文本窗口及发布路径。
 - 独立 CI 固定主仓 `aea8b14`，包含当前 Position Schema；共享 Python 和 Schema 与主仓产物一致。
 
-VS Code 标注改动即保存；子仓对话框点击保存时写回，取消放弃当前编辑。宿主原生布局可不同，资源来源、表达式、写入范围和发布含义一致。业务项目负责加载发布文件；插件不建立业务迁移或应用回执机制。
+两端标注均在编辑器页签内操作，完成创建、编辑、拖动、删除、撤销或重做后立即保存工作文件；保存不等于发布。JetBrains 保存失败时显示错误与重试入口，并保留插件草稿供重新打开后恢复及合并外部修改。业务项目负责加载发布文件；插件不建立业务迁移或应用回执机制。
 
 ## 验证与交付状态
 
 `gradlew test buildPlugin verifyPluginStructure verifyPluginConfiguration` 通过，487 个测试，零失败、错误、跳过。主仓完整测试和 VSIX 打包通过。两端产物的 13 个 Python 脚本与 Schema 逐字节相同，语言资源齐全，不含 Agent、测试或开发说明文件。
 
-本轮改动通过 PR 交付，合并前不计入已发布版本。历史 `0e846f0` CI 成功；旧审阅覆盖为 `a9fd35f`，此前主动复审被限流，不代表新提交已审阅。主仓 PR 的 gitlink 指向本轮子仓提交；先合并子仓 PR #28，再确认或更新 gitlink 到子仓 `main` 可达的提交，并验证主仓 CI 后合并主仓。
+本轮改动通过 PR 交付，合并前不计入已发布版本。历史 `0e846f0` CI 成功；旧审阅覆盖为 `a9fd35f`，此前主动复审被限流，不代表新提交已审阅。主仓 PR 的 gitlink 指向本轮子仓提交；先合并子仓 PR #30，再确认或更新 gitlink 到子仓 `main` 可达的提交，并验证主仓 CI 后合并主仓。
 
 没有执行真实 IDE、游戏截图、业务项目运行验收或完整 Plugin Verifier API 兼容性检查。历史 [设计对齐参考](design-parity.md) 的旧任务清单不作为当前验收依据。

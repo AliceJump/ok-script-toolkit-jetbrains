@@ -1,5 +1,7 @@
 # VS Code 与 JetBrains：架构与实现取舍
 
+> 2026-10-08 更新：当前统一标注器是 `UnifiedAnnotationPanel` 编辑器页签，改动即存，画布快捷键可配置；下面旧对话框的 OK/Cancel 取舍和原生 Keymap 论述仅为历史。最新交互核对见 [双端差异表](https://github.com/AliceJump/ok-script-toolkit/blob/2936386acad0318334be388deabfb0d68ffe1eb1/docs/interaction-parity-audit.md)。
+
 > 当前功能见 [功能对齐表](https://github.com/AliceJump/ok-script-toolkit/blob/main/docs/feature-parity.md)（2026-10-01）。本文保留历史取舍和行数，不作为当前功能缺失清单。
 
 <div align="center">
