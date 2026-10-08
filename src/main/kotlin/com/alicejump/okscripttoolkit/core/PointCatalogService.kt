@@ -3,6 +3,7 @@ package com.alicejump.okscripttoolkit.core
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.databind.node.ObjectNode
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
@@ -75,13 +76,17 @@ class PointCatalogService(private val project: Project) {
 
     @Synchronized
     fun removeImage(fileName: String): Boolean {
-        val current = read()
-        if (current.errors.isNotEmpty()) return false
-        val before = current.file.points.size
-        current.file.points.removeAll { sameImage(it.image, fileName) }
-        current.file.images.removeAll { sameImage(it.file, fileName) }
-        if (before == current.file.points.size && Files.notExists(authoringPath() ?: return true)) return true
-        return write(current.file) == null
+        val path = authoringPath() ?: return false
+        if (Files.notExists(path)) return true
+        val text = runCatching { Files.readString(path) }.getOrNull() ?: return false
+        val raw = runCatching { mapper.readTree(text) }.getOrNull() ?: return false
+        if (parseCoco(raw).errors.isNotEmpty()) return false
+        val filtered = removePointImageReferences(raw, fileName)
+        if (filtered == raw) return true
+        if (runCatching { Files.readString(path) }.getOrNull() != text) return false
+        if (!writeAnnotationText(path, filtered.toPrettyString() + "\n")) return false
+        AnnotationDataChanges.notify(path)
+        return true
     }
 
     private fun parseCoco(root: JsonNode): ReadResult {
@@ -190,4 +195,15 @@ class PointCatalogService(private val project: Project) {
         fun sameImage(a: String, b: String): Boolean = a.substringAfterLast('/').substringAfterLast('\\')
             .equals(b.substringAfterLast('/').substringAfterLast('\\'), ignoreCase = true)
     }
+}
+
+/** 仅移除目标图片与其 Point 标注，不重建其他登记、坐标或扩展字段。 */
+internal fun removePointImageReferences(raw: JsonNode, fileName: String): ObjectNode {
+    val removedIds = raw.path("images").filter { PointCatalogService.sameImage(it.path("file_name").asText(), fileName) }
+        .mapTo(mutableSetOf()) { it.path("id").asInt() }
+    val filtered = raw.deepCopy<ObjectNode>()
+    if (removedIds.isEmpty()) return filtered
+    filtered.set<JsonNode>("images", filtered.arrayNode().addAll(raw.path("images").filter { it.path("id").asInt() !in removedIds }))
+    filtered.set<JsonNode>("annotations", filtered.arrayNode().addAll(raw.path("annotations").filter { it.path("image_id").asInt() !in removedIds }))
+    return filtered
 }
