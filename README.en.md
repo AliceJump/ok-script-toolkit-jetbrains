@@ -79,9 +79,8 @@ To build the plugin from source instead, see [Build](#build).
 </p>
 -->
 
-- **Template gallery** — bbox-cropped thumbnails with insert/copy actions, and a
-  red-box annotated preview of the source image.
-- **Template asset manager** — import and delete images with automatic COCO sync. The card context menu's "**Swap annotations…**" swaps that image's whole annotation set with another image in the same list (the fix for "annotated the wrong image / images are in the wrong order"). The target is picked from thumbnails (template names are mostly numeric, so names alone are not enough); when the two images differ in size, box coordinates are **scaled proportionally** and the confirmation dialog spells out both sizes.
+- **Resource preview** — visible Template / Rect / Point mode buttons; single-click insert and double-click copy, with persistent bottom-right insert/copy/source buttons. Side and wide previews share a responsive grid, search, counts and loading states.
+- **Annotation management** — import, capture, search and publish; single-click source cards open the editor, while bottom-right buttons view sources, swap Template annotations or delete images. Swap targets use thumbnails with proportional scaling confirmation; deletion clears all three authoring sources.
 - **Task launcher** — schema-driven parameter forms (grouped by `configGroups`),
   per-task overrides with auto-save and live push into the running executor, and a
   single long-lived executor process: one connection, then the framework's own
@@ -124,9 +123,7 @@ To build the plugin from source instead, see [Build](#build).
 </p>
 -->
 
-- **Annotation editor** — drawing, deletion, and a coords mode (`C`) that
-  box-selects and copies normalized `x,y,tox,toy` without creating an annotation
-  box; the same adjustable-box behaviour applies.
+- **Annotation editor** — one editor tab for Template / Rect / Point, saving completed edits immediately. Numeric editing, visibility, multi-selection, delete mode, undo/redo, clipboard, arrow nudging and image navigation use configurable shortcuts. Coords mode (`C`) copies normalized coordinates with movement and eight resize handles. Failed saves expose retry and preserve a recoverable draft.
 - **Character manager** — opened as a full editor tab rather than a tool window,
   so it gets the same room as the VS Code `ViewColumn.One` webview. It is carried
   by a non-physical `CharacterManagerFile` plus a `FileEditorProvider` with

@@ -21,8 +21,8 @@ internal class PythonEditorTarget(private val project: Project, parent: Disposab
         )
     }
 
-    fun editor(): Editor? = recent?.takeIf { !it.isDisposed } ?: current()
+    fun editor(): Editor? = recent?.takeIf { !it.isDisposed && it.component.isShowing } ?: current()
 
     private fun current(): Editor? = FileEditorManager.getInstance(project).selectedTextEditor
-        ?.takeIf { !it.isDisposed && it.virtualFile?.extension?.equals("py", true) == true }
+        ?.takeIf { !it.isDisposed && it.component.isShowing && it.virtualFile?.extension?.equals("py", true) == true }
 }
