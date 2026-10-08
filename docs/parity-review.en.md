@@ -11,7 +11,7 @@ The full matrix, operation contracts, source entry points and verification statu
 - Runtime Template cards preserve actual images, bbox and aliases. Restore insertion, copying, source viewing, search and automatic refresh. Wide and side previews share all three modes.
 - Unified management connects source viewing, Template swaps, deletion, temporary screenshot drops, search and external-change refresh. Narrow toolbars wrap without clipping actions; stale asynchronous callbacks cannot replace current models.
 - Publication restores enum path/class settings, framework path fallback and reference checks. Configuration precedes writes; Position failure or rejected overwrite stops Template writes. Position path provenance and override reset match the main host.
-- Image names reserve records in all three authoring files. Screenshot sending uses the actual project root. Deleting a source cleans Template / Rect / Point references and restores changed files on failure.
+- Image names reserve records in all three authoring files. Screenshot sending uses the actual project root. Deleting a source cleans Template / Rect / Point references and restores changed files on failure. Template read errors stop deletion before Rect / Point cleanup, avoiding unnecessary writes and notifications.
 - Publication messages and preview titles use six external language resources, shortcuts match the main host, and unregistered old text windows/publishing paths are removed.
 - Standalone CI pins main `aea8b14`, including current Position Schema. Shared Python and Schema agree with main artifacts.
 

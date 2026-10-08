@@ -255,6 +255,10 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
         if (Messages.showYesNoDialog(project, assetMessage("templateAsset.deleteConfirm", image.file.name),
                 assetMessage("templateAsset.delete"), Messages.getWarningIcon()) != Messages.YES) return
         data.reload()
+        if (data.readErrors.isNotEmpty()) {
+            notify(project, assetMessage("templateAsset.sourceInvalid"), NotificationType.ERROR)
+            return
+        }
         val boxes = project.service<BoxCatalogService>()
         val points = project.service<PointCatalogService>()
         val sources = listOfNotNull(boxes.authoringPath(), points.authoringPath())
