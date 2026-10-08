@@ -34,6 +34,7 @@ import com.intellij.ui.components.JBLabel
 import com.intellij.util.ui.UIUtil
 import java.awt.BasicStroke
 import java.awt.BorderLayout
+import java.awt.Color
 import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
@@ -84,6 +85,20 @@ internal fun AnnotationKind.nextAnnotationKind(): AnnotationKind = when (this) {
     AnnotationKind.TEMPLATE -> AnnotationKind.RECT
     AnnotationKind.RECT -> AnnotationKind.POINT
     AnnotationKind.POINT -> AnnotationKind.TEMPLATE
+}
+
+internal data class AnnotationCanvasFit(val scale: Double, val width: Int, val height: Int)
+
+internal fun annotationCanvasFit(sourceWidth: Int, sourceHeight: Int, availableWidth: Int, availableHeight: Int): AnnotationCanvasFit {
+    if (sourceWidth <= 0 || sourceHeight <= 0 || availableWidth <= 0 || availableHeight <= 0) {
+        return AnnotationCanvasFit(1.0, 1, 1)
+    }
+    val scale = min(availableWidth.toDouble() / sourceWidth, availableHeight.toDouble() / sourceHeight).coerceAtLeast(0.01)
+    return AnnotationCanvasFit(
+        scale = scale,
+        width = max(1, (sourceWidth * scale).roundToInt()),
+        height = max(1, (sourceHeight * scale).roundToInt()),
+    )
 }
 
 private data class UnifiedShape(
@@ -149,6 +164,7 @@ class UnifiedAnnotationDialog(
     private val prefs = PropertiesComponent.getInstance()
 
     private val canvas = UnifiedCanvas()
+    private val canvasHost = JPanel(java.awt.GridBagLayout())
     private val conflictPanel = AnnotationConflictPanel()
     private val templateMode = JRadioButton(ui("mode.template"))
     private val rectMode = JRadioButton(ui("mode.rect"))
@@ -236,8 +252,15 @@ class UnifiedAnnotationDialog(
         listPanel.add(JScrollPane(rows), BorderLayout.CENTER)
         listPanel.add(conflictPanel, BorderLayout.SOUTH)
 
-        canvas.preferredSize = Dimension(900, 560)
-        val split = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, canvas, listPanel)
+        canvasHost.preferredSize = Dimension(900, 560)
+        canvasHost.background = UIUtil.getPanelBackground()
+        canvasHost.add(canvas)
+        canvasHost.addComponentListener(object : java.awt.event.ComponentAdapter() {
+            override fun componentResized(e: java.awt.event.ComponentEvent?) {
+                canvas.refitToHost()
+            }
+        })
+        val split = JSplitPane(JSplitPane.HORIZONTAL_SPLIT, canvasHost, listPanel)
         split.resizeWeight = 1.0
         split.dividerLocation = 900
 
@@ -680,6 +703,7 @@ class UnifiedAnnotationDialog(
         init {
             isFocusable = true
             isOpaque = true
+            isDoubleBuffered = false
             background = UIUtil.getPanelBackground()
             installKeys()
             installMouse()
@@ -707,9 +731,27 @@ class UnifiedAnnotationDialog(
             if (!preserveViewport) {
                 recalcFit()
                 scale = fitScale
+                offsetX = 0.0
+                offsetY = 0.0
+            } else {
+                recalcFit()
                 recalcOffset()
             }
             applySession(s, keepViewport = true)
+        }
+
+        fun refitToHost() {
+            image ?: return
+            val oldFit = fitScale
+            val zoomRatio = if (oldFit > 0.0) scale / oldFit else 1.0
+            recalcFit()
+            scale = (fitScale * zoomRatio).coerceIn(fitScale, fitScale * 50.0)
+            recalcOffset()
+            repaint()
+            SwingUtilities.invokeLater {
+                recalcOffset()
+                repaint()
+            }
         }
 
         fun applySession(s: ShapeSession, keepViewport: Boolean) {
@@ -748,6 +790,7 @@ class UnifiedAnnotationDialog(
             super.paintComponent(g)
             val source = image ?: return
             val g2 = g.create() as Graphics2D
+            g2.clipRect(0, 0, width, height)
             g2.drawImage(source, offsetX.roundToInt(), offsetY.roundToInt(), (source.width * scale).roundToInt(), (source.height * scale).roundToInt(), null)
             shapes().forEach { shape -> paintShape(g2, shape) }
             paintConflictCandidates(g2)
@@ -773,11 +816,29 @@ class UnifiedAnnotationDialog(
                 g2.drawOval(p.x - 4, p.y - 4, 8, 8)
                 g2.drawLine(p.x - POINT_RADIUS, p.y, p.x + POINT_RADIUS, p.y)
                 g2.drawLine(p.x, p.y - POINT_RADIUS, p.x, p.y + POINT_RADIUS)
+                paintShapeLabel(g2, shape.name, p.x + POINT_RADIUS + 4, p.y, color, preferAbove = true)
             } else {
                 val r = toScreen(Rectangle(shape.x, shape.y, shape.w, shape.h))
                 g2.drawRect(r.x, r.y, r.width, r.height)
+                paintShapeLabel(g2, shape.name, r.x, r.y, color, preferAbove = true)
                 if (isSelected && selected.size == 1) handlePoints(r).values.forEach { p -> g2.fillRect(p.x - 3, p.y - 3, 6, 6) }
             }
+        }
+
+        private fun paintShapeLabel(g2: Graphics2D, text: String, anchorX: Int, anchorY: Int, color: Color, preferAbove: Boolean) {
+            if (text.isBlank() || width <= 0 || height <= 0) return
+            val metrics = g2.fontMetrics
+            val labelWidth = metrics.stringWidth(text) + 8
+            val labelHeight = metrics.height + 4
+            val x = anchorX.coerceIn(0, (width - labelWidth).coerceAtLeast(0))
+            val rawY = if (preferAbove && anchorY >= labelHeight + 2) anchorY - labelHeight else anchorY + 2
+            val y = rawY.coerceIn(0, (height - labelHeight).coerceAtLeast(0))
+            val previous = g2.color
+            g2.color = color
+            g2.fillRoundRect(x, y, labelWidth, labelHeight, 6, 6)
+            g2.color = Color.WHITE
+            g2.drawString(text, x + 4, y + metrics.ascent + 2)
+            g2.color = previous
         }
 
         private fun paintConflictCandidates(g2: Graphics2D) {
@@ -1126,9 +1187,18 @@ class UnifiedAnnotationDialog(
         )
 
         private fun recalcFit() {
-            val source=image?:return
-            val w=if(width>0)width else 900; val h=if(height>0)height else 560
-            fitScale=min(w.toDouble()/source.width,h.toDouble()/source.height).coerceAtLeast(0.01)
+            val source = image ?: return
+            val hostWidth = canvasHost.width.takeIf { it > 0 } ?: canvasHost.preferredSize.width.coerceAtLeast(1)
+            val hostHeight = canvasHost.height.takeIf { it > 0 } ?: canvasHost.preferredSize.height.coerceAtLeast(1)
+            val fit = annotationCanvasFit(source.width, source.height, hostWidth, hostHeight)
+            fitScale = fit.scale
+            val fitSize = Dimension(fit.width, fit.height)
+            if (preferredSize != fitSize) {
+                preferredSize = fitSize
+                minimumSize = fitSize
+                revalidate()
+                canvasHost.revalidate()
+            }
         }
         private fun recalcOffset() {
             val source=image?:return
