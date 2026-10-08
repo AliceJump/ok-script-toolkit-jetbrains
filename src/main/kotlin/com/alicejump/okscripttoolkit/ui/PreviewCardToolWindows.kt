@@ -37,6 +37,9 @@ import java.awt.Font
 import java.awt.GridLayout
 import java.awt.datatransfer.StringSelection
 import java.awt.event.ActionListener
+import java.awt.event.ComponentAdapter
+import java.awt.event.ComponentEvent
+import java.awt.event.HierarchyListener
 import java.beans.PropertyChangeListener
 import java.nio.file.Path
 import java.util.concurrent.CompletableFuture
@@ -49,6 +52,7 @@ import javax.swing.JButton
 import javax.swing.JList
 import javax.swing.JPanel
 import javax.swing.JScrollPane
+import javax.swing.JViewport
 import javax.swing.ListSelectionModel
 import javax.swing.ListCellRenderer
 import javax.swing.SwingConstants
@@ -184,11 +188,52 @@ private class PreviewCardRenderer(
 private fun shortName(value: String): String =
     if (value.length > 24) value.take(12) + "…" + value.takeLast(11) else value
 
+internal fun cardCellWidthFor(viewWidth: Int): Int {
+    if (viewWidth <= 0) return ThumbGridPolicy.CELL_WIDTH
+    return (viewWidth / ThumbGridPolicy.columnsFor(viewWidth)).coerceAtLeast(1)
+}
+
+private class ResponsiveCardGridBinding(private val list: JBList<*>) {
+    private var viewport: JViewport? = null
+    private val viewportListener = object : ComponentAdapter() {
+        override fun componentResized(event: ComponentEvent?) {
+            applyViewportWidth()
+        }
+    }
+    private val hierarchyListener = HierarchyListener { bindViewport() }
+
+    init {
+        list.addHierarchyListener(hierarchyListener)
+        SwingUtilities.invokeLater { bindViewport() }
+    }
+
+    private fun bindViewport() {
+        val next = SwingUtilities.getAncestorOfClass(JViewport::class.java, list) as? JViewport
+        if (next !== viewport) {
+            viewport?.removeComponentListener(viewportListener)
+            viewport = next
+            viewport?.addComponentListener(viewportListener)
+        }
+        applyViewportWidth()
+    }
+
+    private fun applyViewportWidth() {
+        val width = viewport?.extentSize?.width ?: 0
+        if (width <= 0) return
+        val nextWidth = cardCellWidthFor(width)
+        if (list.fixedCellWidth == nextWidth) return
+        list.fixedCellWidth = nextWidth
+        list.revalidate()
+        list.repaint()
+    }
+}
+
 private fun configureCardList(list: JBList<*>) {
     list.layoutOrientation = JList.HORIZONTAL_WRAP
     list.visibleRowCount = -1
     list.fixedCellWidth = ThumbGridPolicy.CELL_WIDTH + JBUI.scale(18)
     list.fixedCellHeight = ThumbGridPolicy.THUMB_HEIGHT + JBUI.scale(48)
+    ResponsiveCardGridBinding(list)
 }
 
 internal class PreviewThumbGeneration {
