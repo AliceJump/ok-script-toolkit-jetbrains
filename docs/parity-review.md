@@ -23,6 +23,6 @@
 
 `gradlew test buildPlugin verifyPluginStructure verifyPluginConfiguration` 通过，487 个测试，零失败、错误、跳过。主仓完整测试和 VSIX 打包通过。两端产物的 13 个 Python 脚本与 Schema 逐字节相同，语言资源齐全，不含 Agent、测试或开发说明文件。
 
-本轮改动通过 PR 交付，合并前不计入已发布版本。历史 `0e846f0` CI 成功；旧审阅覆盖为 `a9fd35f`，此前主动复审被限流，不代表新提交已审阅。主仓 PR 的 gitlink 指向本轮子仓提交；先合并子仓 PR #28，再确认或更新 gitlink 到子仓 `main` 可达的提交，并验证主仓 CI 后合并主仓。
+本轮改动通过 PR 交付，合并前不计入已发布版本。历史 `0e846f0` CI 成功；旧审阅覆盖为 `a9fd35f`，此前主动复审被限流，不代表新提交已审阅。主仓 PR 的 gitlink 指向本轮子仓提交；先合并子仓 PR #30，再确认或更新 gitlink 到子仓 `main` 可达的提交，并验证主仓 CI 后合并主仓。
 
 没有执行真实 IDE、游戏截图、业务项目运行验收或完整 Plugin Verifier API 兼容性检查。历史 [设计对齐参考](design-parity.md) 的旧任务清单不作为当前验收依据。

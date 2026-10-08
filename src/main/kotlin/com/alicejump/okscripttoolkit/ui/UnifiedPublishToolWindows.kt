@@ -61,7 +61,7 @@ private data class PublishSelection(val template: Boolean, val rect: Boolean, va
     val hasPositions: Boolean get() = rect || point
 }
 
-internal data class PublishAvailability(val template: Boolean, val rect: Boolean, val point: Boolean) {
+internal data class PublishAvailability(val template: Boolean, val rect: Boolean, val point: Boolean, val invalid: Boolean = false) {
     val any: Boolean get() = template || rect || point
 }
 
@@ -98,7 +98,8 @@ private object UnifiedPublishController {
     fun publish(project: Project, onComplete: () -> Unit) {
         val availability = availability(project)
         if (!availability.any) {
-            notify(project, publishingMessage("publish.empty"), NotificationType.INFORMATION)
+            if (availability.invalid) notify(project, assetMessage("templateAsset.sourceInvalid"), NotificationType.ERROR)
+            else notify(project, publishingMessage("publish.empty"), NotificationType.INFORMATION)
             return
         }
         val dialog = PublishSelectionDialog(project, availability)
@@ -127,7 +128,9 @@ private object UnifiedPublishController {
         val points = project.service<PointCatalogService>().read()
         val pointAnnotations = if (points.errors.isEmpty()) points.file.points.size else 0
 
-        return publishAvailability(templateAnnotations, rectAnnotations, pointAnnotations)
+        return publishAvailability(templateAnnotations, rectAnnotations, pointAnnotations).copy(
+            invalid = (root != null && templateData.readErrors.isNotEmpty()) || boxes.authoringErrors().isNotEmpty() || points.errors.isNotEmpty(),
+        )
     }
 
     private fun publishTemplate(project: Project, template: TemplatePublishPlan, onComplete: () -> Unit) {

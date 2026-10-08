@@ -23,6 +23,6 @@ Both hosts edit annotations in an editor tab and save authoring files after comp
 
 `gradlew test buildPlugin verifyPluginStructure verifyPluginConfiguration` passed: 487 tests, zero failures, errors or skips. Main full tests and VSIX packaging passed. Both artifacts contain 13 byte-identical Python scripts and Schema, complete language resources, and no Agent files, tests or developer documentation.
 
-Changes are delivered through PRs and are not released before merge. Historical CI passed at `0e846f0`; old review coverage was `a9fd35f`, with a previous manual re-review rate-limited. That does not establish review coverage for new commits. The main PR gitlink pins this round's child commit. Merge child PR #28 first, then confirm or update the gitlink to a commit reachable from child `main` and verify main CI before merging the main PR.
+Changes are delivered through PRs and are not released before merge. Historical CI passed at `0e846f0`; old review coverage was `a9fd35f`, with a previous manual re-review rate-limited. That does not establish review coverage for new commits. The main PR gitlink pins this round's child commit. Merge child PR #30 first, then confirm or update the gitlink to a commit reachable from child `main` and verify main CI before merging the main PR.
 
 No actual IDE, game screenshot or business-project runtime acceptance, or full Plugin Verifier API compatibility check was performed. Historical [Design Parity](design-parity.en.md) task lists are not current acceptance evidence.
