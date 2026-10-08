@@ -191,8 +191,14 @@ internal class UnifiedResourcePreview(private val project: Project) : Disposable
             val (path, bbox) = if (templateMode) project.service<OkProjectDataService>().findOkTemplateCocoEntry(item.name)
                 ?: (item.imagePath to item.bbox) else item.imagePath to item.bbox
             AnnotatedSourcePreview.fileFor(project, path, bbox) ?: path
-        }.whenComplete { path, _ -> SwingUtilities.invokeLater {
+        }.whenComplete { path, error -> SwingUtilities.invokeLater {
             if (disposed || project.isDisposed) return@invokeLater
+            if (error != null) {
+                NotificationGroupManager.getInstance().getNotificationGroup("okScriptToolkit")
+                    .createNotification(AnnotationUiBundle.message("preview.openFailed", (error.cause ?: error).message.orEmpty()), NotificationType.ERROR)
+                    .notify(project)
+                return@invokeLater
+            }
             val file = path?.let { LocalFileSystem.getInstance().refreshAndFindFileByNioFile(it) } ?: return@invokeLater
             OpenFileDescriptor(project, file).navigate(true)
         } }
