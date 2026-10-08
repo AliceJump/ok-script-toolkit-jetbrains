@@ -50,7 +50,7 @@ class TemplateGalleryEditorProvider : FileEditorProvider, DumbAware {
 }
 
 class TemplateGalleryEditor(project: Project, private val file: TemplateGalleryFile) : FileEditor {
-    private val panel = TemplateGalleryPanel(project)
+    private val panel = UnifiedResourcePreview(project)
 
     override fun getComponent(): JComponent = panel.component
     override fun getPreferredFocusedComponent(): JComponent = panel.component

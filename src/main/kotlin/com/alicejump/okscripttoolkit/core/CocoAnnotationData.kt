@@ -475,6 +475,7 @@ open class CocoAnnotationData(
 
     @Synchronized
     fun deleteImage(file: File): Boolean {
+        if (readErrors.isNotEmpty()) return false
         val updated = copyCoco()
         val hadEntry = updated.findImageByFileName(file.name)?.also { updated.removeImage(it.id) } != null
         val cocoExists = cocoFile?.let { Files.isRegularFile(it) } == true
@@ -542,7 +543,7 @@ open class CocoAnnotationData(
 
     private fun reservedImageNames(directory: Path): Set<String> {
         val names = mutableSetOf<String>()
-        for (source in setOf(fileName, "coco_annotations.json", "boxes.json")) {
+        for (source in setOf(fileName, "coco_annotations.json", "boxes.json", "points.json")) {
             runCatching {
                 val root = JSON.readTree(Files.readString(directory.resolve(source)))
                 for (image in root.path("images")) {

@@ -26,6 +26,8 @@ class CocoAnnotationDataTest {
         for ((fileName, loadBoxes) in listOf(
             "coco_annotations.json" to true,
             "boxes.json" to false,
+            "points.json" to false,
+            "points.json" to true,
         )) {
             val root = TestTmp.create("ok-coco-import-both")
             val directory = root.resolve("ok_templates").apply { mkdirs() }
@@ -61,6 +63,8 @@ class CocoAnnotationDataTest {
             assertEquals(1, templates.reload().annotations.size)
             assertTrue(templates.readErrors.isNotEmpty())
             assertFalse(templates.save())
+            assertFalse(templates.deleteImage(root.resolve("ok_templates/a.png")))
+            assertTrue(root.resolve("ok_templates/a.png").isFile)
             assertFalse(templates.saveAnnotationEdits(listOf(CocoAnnotationEdit("a.png", 100 to 80, emptyList()))))
             assertEquals(text, file.readText())
         }

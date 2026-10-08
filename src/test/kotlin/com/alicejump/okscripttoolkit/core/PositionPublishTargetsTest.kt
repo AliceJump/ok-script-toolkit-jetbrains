@@ -15,6 +15,19 @@ class PositionPublishTargetsTest {
     private val json = ObjectMapper()
 
     @Test
+    fun `typed targets reject absolute traversal and root but allow preference reset`() {
+        for (input in listOf("", "   ", "./generated\\scene", "generated/positions.json")) {
+            assertNull(positionPublishTargetInputError(input), input)
+        }
+        for (input in listOf("/outside", "C:\\outside", "\\\\server\\share")) {
+            assertEquals("relative", positionPublishTargetInputError(input), input)
+        }
+        for (input in listOf(".", "./", "../outside", "generated/../positions.json")) {
+            assertEquals("outside", positionPublishTargetInputError(input), input)
+        }
+    }
+
+    @Test
     fun `project position convention parses both targets`() {
         val convention = PositionPublishConvention.parse(
             json.readTree(

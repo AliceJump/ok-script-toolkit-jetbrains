@@ -469,15 +469,16 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
     /** 与卡片上的「发送到标注管理」菜单等价：把临时截图复制进模板目录（**不写 COCO**） */
     private fun handleSendToAssets(shot: TempShot) {
         val settings = OkScriptToolkitSettings.getInstance(project)
-        val projectDir = project.basePath ?: return
+        val projectDir = project.service<com.alicejump.okscripttoolkit.core.OkProjectDataService>().rootPath()?.toString() ?: return
         val targetDir = com.alicejump.okscripttoolkit.core.TemplateAssetDataService
             .templateDir(projectDir, settings.okTemplatesDirectory()).toFile()
         val data = project.service<com.alicejump.okscripttoolkit.core.TemplateAssetDataService>()
         CompletableFuture.supplyAsync {
             data.importImages(listOf(shot.file), targetDir)
-        }.thenAccept { imported ->
+        }.whenComplete { imported, error ->
             SwingUtilities.invokeLater {
-                if (imported <= 0) {
+                if (project.isDisposed) return@invokeLater
+                if (error != null || imported == null || imported <= 0) {
                     notify("tempShots.sendFailed", NotificationType.ERROR, shot.name)
                 } else {
                     notify("tempShots.sent", NotificationType.INFORMATION, shot.name)

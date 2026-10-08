@@ -11,16 +11,13 @@ import com.alicejump.okscripttoolkit.core.CoordinateTuple
 import com.alicejump.okscripttoolkit.core.CoordinateTupleFormat
 import com.alicejump.okscripttoolkit.core.MergeShape
 import com.alicejump.okscripttoolkit.core.NormalizedAnnotationRect
-import com.alicejump.okscripttoolkit.core.OkProjectDataService
 import com.alicejump.okscripttoolkit.core.PointCatalogService
-import com.alicejump.okscripttoolkit.core.PositionPublisherService
 import com.alicejump.okscripttoolkit.core.ResourceFileTransaction
 import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
 import com.alicejump.okscripttoolkit.core.TemplateImage
 import com.alicejump.okscripttoolkit.core.nextAnnotationId
 import com.alicejump.okscripttoolkit.core.reconcileAnnotationSession
 import com.alicejump.okscripttoolkit.core.resolveAnnotationSessionConflicts
-import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.intellij.ide.util.PropertiesComponent
 import com.intellij.openapi.actionSystem.AnAction
@@ -31,13 +28,9 @@ import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.DialogWrapper
 import com.intellij.openapi.ui.Messages
-import com.intellij.openapi.wm.ToolWindow
-import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.ui.JBColor
 import com.intellij.ui.components.JBLabel
-import com.intellij.ui.components.JBList
-import com.intellij.ui.content.ContentFactory
 import com.intellij.util.ui.UIUtil
 import java.awt.BasicStroke
 import java.awt.BorderLayout
@@ -60,9 +53,6 @@ import java.awt.event.MouseWheelEvent
 import java.awt.image.BufferedImage
 import java.nio.file.Files
 import java.nio.file.Path
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
-import java.util.concurrent.CompletableFuture
 import javax.imageio.ImageIO
 import javax.swing.AbstractAction
 import javax.swing.BorderFactory
@@ -71,14 +61,12 @@ import javax.swing.ButtonGroup
 import javax.swing.JButton
 import javax.swing.JCheckBox
 import javax.swing.JComponent
-import javax.swing.JFileChooser
 import javax.swing.JPanel
 import javax.swing.JRadioButton
 import javax.swing.JScrollPane
 import javax.swing.JSplitPane
 import javax.swing.JToggleButton
 import javax.swing.KeyStroke
-import javax.swing.ListSelectionModel
 import javax.swing.SwingUtilities
 import kotlin.math.abs
 import kotlin.math.max
@@ -87,8 +75,6 @@ import kotlin.math.roundToInt
 
 internal const val UNIFIED_ANNOTATION_TOOL_WINDOW_ID = "ok-script Annotation Management"
 internal const val UNIFIED_RESOURCE_PREVIEW_TOOL_WINDOW_ID = "ok-script Resource Preview"
-internal val UNIFIED_ANNOTATION_PANEL_KEY =
-    com.intellij.openapi.util.Key.create<AnnotationManagerPanel>("okScriptToolkit.unifiedAnnotationPanel")
 
 private fun ui(key: String, vararg params: Any): String = AnnotationUiBundle.message(key, *params)
 
@@ -1153,146 +1139,6 @@ class UnifiedAnnotationDialog(
         private fun toImage(p:Point)=Point(((p.x-offsetX)/scale).roundToInt(),((p.y-offsetY)/scale).roundToInt())
         private fun toScreenPoint(p:Point)=Point((p.x*scale+offsetX).roundToInt(),(p.y*scale+offsetY).roundToInt())
         private fun toScreen(r:Rectangle)=Rectangle((r.x*scale+offsetX).roundToInt(),(r.y*scale+offsetY).roundToInt(),(r.width*scale).roundToInt(),(r.height*scale).roundToInt())
-    }
-}
-
-class UnifiedAnnotationToolWindowFactory : ToolWindowFactory, DumbAware {
-    override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        val panel = AnnotationManagerPanel(project)
-        val content = ContentFactory.getInstance().createContent(panel, "", false)
-        content.putUserData(UNIFIED_ANNOTATION_PANEL_KEY, panel)
-        toolWindow.contentManager.addContent(content)
-    }
-}
-
-internal class AnnotationManagerPanel(private val project: Project) : JPanel(BorderLayout(0, 4)) {
-    private val data = project.service<TemplateAssetDataService>()
-    private val list = JBList<TemplateImage>()
-    private val hardForegroundCheck = HardForegroundToggle.create(project)
-    private var images: List<TemplateImage> = emptyList()
-
-    init {
-        val toolbar = JPanel(FlowLayout(FlowLayout.LEFT,4,2))
-        val refresh = JButton(ui("manager.refresh"))
-        val import = JButton(ui("manager.import"))
-        val screenshot = JButton(ui("manager.screenshot"))
-        toolbar.add(hardForegroundCheck); toolbar.add(refresh); toolbar.add(import); toolbar.add(screenshot)
-        add(toolbar, BorderLayout.NORTH)
-        list.selectionMode = ListSelectionModel.SINGLE_SELECTION
-        list.cellRenderer = javax.swing.DefaultListCellRenderer()
-        add(JScrollPane(list), BorderLayout.CENTER)
-        refresh.addActionListener { reload() }
-        import.addActionListener { importImages() }
-        screenshot.addActionListener { screenshotNow() }
-        list.addMouseListener(object:MouseAdapter(){ override fun mouseClicked(e:MouseEvent){ if(e.clickCount==2)openSelected() } })
-        list.getInputMap(JComponent.WHEN_FOCUSED).put(KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, 0), "openSelected")
-        list.actionMap.put("openSelected", object : AbstractAction() {
-            override fun actionPerformed(e: ActionEvent?) = openSelected()
-        })
-        reload()
-    }
-
-    private fun reload() {
-        val root=project.service<OkProjectDataService>().rootPath()?:return
-        val dir=OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory()
-        data.load(root.toString(),dir)
-        images=data.listImages()
-        list.setListData(images.toTypedArray())
-        list.cellRenderer=object:javax.swing.DefaultListCellRenderer(){
-            override fun getListCellRendererComponent(l:javax.swing.JList<*>?,value:Any?,index:Int,isSelected:Boolean,cellHasFocus:Boolean):java.awt.Component{
-                val c=super.getListCellRendererComponent(l,value,index,isSelected,cellHasFocus) as javax.swing.JLabel
-                val image=value as? TemplateImage; c.text=image?.file?.name ?: ""; return c
-            }
-        }
-    }
-
-    private fun openSelected() {
-        val index=list.selectedIndex
-        if(index<0||index>=images.size)return
-        UnifiedAnnotationDialog(project,images,index).show()
-        reload()
-    }
-
-    private fun importImages() {
-        val root=project.service<OkProjectDataService>().rootPath()?:return
-        val chooser=JFileChooser().apply { isMultiSelectionEnabled=true; fileSelectionMode=JFileChooser.FILES_ONLY }
-        if(chooser.showOpenDialog(this)!=JFileChooser.APPROVE_OPTION)return
-        val target=root.resolve(OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory()).toFile()
-        data.importImages(chooser.selectedFiles.toList(),target)
-        reload()
-    }
-
-    fun screenshotNow() {
-        val root = project.service<OkProjectDataService>().rootPath() ?: return
-        val outputDir = root.resolve(OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory())
-        val methodOverride = HardForegroundToggle.methodOverride(hardForegroundCheck)
-        CompletableFuture.supplyAsync {
-            Files.createDirectories(outputDir)
-            val stamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"))
-            val output = outputDir.resolve("screenshot_$stamp.png")
-            output to ScreenshotCapture(project).captureInteractive(output, methodOverride) { }
-        }.whenComplete { result, error ->
-            SwingUtilities.invokeLater {
-                when {
-                    error != null -> Messages.showErrorDialog(project, ui("manager.screenshotFailed", error.message ?: ""), ui("manager.title"))
-                    result?.second == null -> reload()
-                    result?.second != ScreenshotCapture.CANCELLED -> Messages.showErrorDialog(project, ui("manager.screenshotFailed", result?.second ?: ""), ui("manager.title"))
-                }
-            }
-        }
-    }
-}
-
-class UnifiedResourcePreviewToolWindowFactory : ToolWindowFactory, DumbAware {
-    override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        val panel = ResourcePreviewPanel(project)
-        toolWindow.contentManager.addContent(ContentFactory.getInstance().createContent(panel,"",false))
-    }
-}
-
-private class ResourcePreviewPanel(private val project: Project) : JPanel(BorderLayout(0,4)) {
-    private val mode = javax.swing.JComboBox(arrayOf(ui("mode.template"),ui("mode.rect"),ui("mode.point")))
-    private val list = JBList<String>()
-    private val copy = JButton(ui("preview.copy"))
-    private val publish = JButton(ui("preview.publish"))
-
-    init {
-        val top=JPanel(FlowLayout(FlowLayout.LEFT,4,2)); top.add(mode); top.add(copy); top.add(publish); add(top,BorderLayout.NORTH); add(JScrollPane(list),BorderLayout.CENTER)
-        mode.addActionListener { reload() }; copy.addActionListener { copySelected() }; publish.addActionListener { publish() }
-        list.addMouseListener(object:MouseAdapter(){override fun mouseClicked(e:MouseEvent){if(e.clickCount==2)copySelected()}})
-        reload()
-    }
-
-    private fun reload() {
-        val root=project.service<OkProjectDataService>().rootPath()
-        root?.let { project.service<TemplateAssetDataService>().load(it.toString(),OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory()) }
-        val values=when(mode.selectedIndex){
-            0->project.service<TemplateAssetDataService>().categories().map{it.name}.distinct().sorted()
-            1->project.service<BoxCatalogService>().readAuthoring().boxes.map{it.path}.distinct().sorted()
-            else->project.service<PointCatalogService>().read().file.points.map{it.path}.distinct().sorted()
-        }
-        list.setListData(values.toTypedArray()); publish.isVisible=mode.selectedIndex!=0
-    }
-
-    private fun copySelected() {
-        val value=list.selectedValue?:return
-        val text=when(mode.selectedIndex){0->"fL.$value";1->"self.pos.$value.to_box()";else->"self.pos.$value"}
-        CopyPasteManager.getInstance().setContents(StringSelection(text))
-    }
-
-    private fun publish() {
-        val publisher=project.service<PositionPublisherService>()
-        val choice=Messages.showChooseDialog(project,ui("preview.exportPrompt"),ui("preview.publish"),null,arrayOf(ui("preview.json"),ui("preview.python")),ui("preview.json"))
-        if(choice<0)return
-        val format=if(choice==0)PositionPublisherService.Format.JSON else PositionPublisherService.Format.PYTHON
-        var result=publisher.publish(format,false)
-        if(result.conflicts.isNotEmpty()){
-            val answer=Messages.showYesNoDialog(project,ui("preview.overwrite",result.conflicts.joinToString("\n")),ui("preview.publish"),null)
-            if(answer!=Messages.YES)return
-            result=publisher.publish(format,true)
-        }
-        if(result.errors.isNotEmpty()) Messages.showErrorDialog(project,result.errors.joinToString("\n"),ui("preview.publish"))
-        else Messages.showInfoMessage(project,ui("preview.written",result.written.joinToString("\n")),ui("preview.publish"))
     }
 }
 
