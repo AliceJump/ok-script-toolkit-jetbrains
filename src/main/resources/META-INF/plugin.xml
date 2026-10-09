@@ -47,7 +47,7 @@
             extensions="okgettingstarted"/>
         <fileEditorProvider implementation="com.alicejump.okscripttoolkit.ui.GettingStartedEditorProvider"/>
         <postStartupActivity implementation="com.alicejump.okscripttoolkit.ui.GettingStartedProjectActivity"/>
-        <postStartupActivity implementation="com.alicejump.okscripttoolkit.core.GlobalScreenshotHotkeyProjectActivity"/>
+        <postStartupActivity implementation="com.alicejump.okscripttoolkit.ui.GlobalScreenshotHotkeyProjectActivity"/>
 
         <codeInsight.declarativeInlayProvider
             language="Python"
