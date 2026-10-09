@@ -1,7 +1,13 @@
 package com.alicejump.okscripttoolkit.ui
 
+import com.alicejump.okscripttoolkit.AnnotationUiBundle
+import com.alicejump.okscripttoolkit.core.OkProjectDataService
 import com.alicejump.okscripttoolkit.core.PythonScriptLocator
 import com.alicejump.okscripttoolkit.core.ScreenshotCapture
+import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
+import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
@@ -15,7 +21,9 @@ import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.WindowManager
 import com.intellij.util.concurrency.AppExecutorUtil
 import java.awt.Window
+import java.nio.file.Files
 import java.nio.file.Paths
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
@@ -24,7 +32,7 @@ import kotlin.concurrent.thread
  * Windows 系统级 Ctrl+Alt+S 监听器。
  *
  * JetBrains Keymap 只能在 IDE 获得焦点时触发；这里复用父仓打包的 global_hotkey.py，
- * 让 RegisterHotKey 在游戏前台时也能收到快捷键，再回到现有统一标注管理截图链路。
+ * 让 RegisterHotKey 在游戏前台时也能收到快捷键，再通过现有 ScreenshotCapture 后台截图。
  */
 @Service(Service.Level.APP)
 class GlobalScreenshotHotkeyService : Disposable {
@@ -116,17 +124,47 @@ class GlobalScreenshotHotkeyService : Disposable {
         }
     }
 
-    /** Routes a global key press to the most recently focused IDE project and its existing screenshot action. */
+    /** Routes a global key press to the most recently focused IDE project without showing an IDE tool window. */
     private fun triggerScreenshot() {
         ApplicationManager.getApplication().invokeLater {
             val project = resolveTargetProject() ?: return@invokeLater
-            val window = ToolWindowManager.getInstance(project)
-                .getToolWindow(UNIFIED_ANNOTATION_TOOL_WINDOW_ID)
-                ?: return@invokeLater
-            window.show {
-                window.contentManager.contents.firstOrNull()
+            captureScreenshotInBackground(project)
+        }
+    }
+
+    /**
+     * Uses the same project data and ScreenshotCapture path as the annotation panel, but avoids ToolWindow.show().
+     * An already-created panel is refreshed after capture without changing IDE focus or creating the panel.
+     */
+    private fun captureScreenshotInBackground(project: Project) {
+        val root = project.service<OkProjectDataService>().rootPath() ?: return
+        val directory = OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory()
+        val outputDirectory = root.resolve(directory)
+        CompletableFuture.supplyAsync {
+            Files.createDirectories(outputDirectory)
+            val data = project.service<TemplateAssetDataService>()
+            val output = synchronized(data) {
+                data.load(root.toString(), directory)
+                outputDirectory.resolve(data.nextImageName() + ".png")
+            }
+            ScreenshotCapture(project).captureInteractive(output)
+        }.whenComplete { result, error ->
+            ApplicationManager.getApplication().invokeLater {
+                if (disposed || project.isDisposed) return@invokeLater
+                if (error != null || (result != null && result != ScreenshotCapture.CANCELLED)) {
+                    val detail = error?.message ?: result.orEmpty()
+                    NotificationGroupManager.getInstance()
+                        .getNotificationGroup("okScriptToolkit")
+                        .createNotification(AnnotationUiBundle.message("manager.screenshotFailed", detail), NotificationType.ERROR)
+                        .notify(project)
+                }
+                ToolWindowManager.getInstance(project)
+                    .getToolWindow(UNIFIED_ANNOTATION_TOOL_WINDOW_ID)
+                    ?.contentManager
+                    ?.contents
+                    ?.firstOrNull()
                     ?.getUserData(PUBLISH_ANNOTATION_PANEL_KEY)
-                    ?.screenshotNow()
+                    ?.reload()
             }
         }
     }
