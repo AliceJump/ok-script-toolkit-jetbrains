@@ -158,6 +158,7 @@ object PythonScriptLocator {
         "probe_window_config.py",
         "connect_game.py",
         "overlay_host.py",
+        "global_hotkey.py",
     )
 
     private data class BundledResources(val scripts: Map<String, ByteArray>, val digest: String)
