@@ -14,7 +14,14 @@ class ScreenshotWorkerService : Disposable {
 
     internal fun capture(python: String, script: String, projectDir: String, output: Path,
                          windowConfigJson: String?, method: String): ScreenshotWorker.Reply {
-        val selected = synchronized(this) {
+        return selectWorker(python, script, projectDir).capture(output, windowConfigJson, method)
+    }
+
+    internal fun probe(python: String, script: String, projectDir: String): ScreenshotWorker.Reply =
+        selectWorker(python, script, projectDir).probe()
+
+    private fun selectWorker(python: String, script: String, projectDir: String): ScreenshotWorker =
+        synchronized(this) {
             check(!disposed) { "Screenshot service disposed" }
             val nextKey = listOf(python, script, projectDir)
             if (worker == null || key != nextKey) {
@@ -25,8 +32,6 @@ class ScreenshotWorkerService : Disposable {
             }
             worker!!
         }
-        return selected.capture(output, windowConfigJson, method)
-    }
 
     @Synchronized
     override fun dispose() {

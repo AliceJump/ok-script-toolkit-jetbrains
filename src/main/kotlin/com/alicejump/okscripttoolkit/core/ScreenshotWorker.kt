@@ -18,7 +18,8 @@ internal class ScreenshotWorker(
     private val idleMs: Long = 60_000,
     private val launch: (() -> Process)? = null,
 ) {
-    data class Reply(val id: Long, val ok: Boolean, val error: String = "", val restart: Boolean = false)
+    data class Reply(val id: Long, val ok: Boolean, val error: String = "", val restart: Boolean = false,
+                     val configJson: String? = null)
     private data class Session(val process: Process, val replies: LinkedBlockingQueue<Reply>)
     private val json = ObjectMapper()
     @Volatile private var session: Session? = null
@@ -29,8 +30,15 @@ internal class ScreenshotWorker(
     }.apply { removeOnCancelPolicy = true }
     private var idle: ScheduledFuture<*>? = null
 
+    fun capture(output: Path, windowConfigJson: String?, method: String): Reply = request(mapOf(
+        "output_path" to output.toString(), "window_config" to windowConfigJson?.let { json.readTree(it) },
+        "method" to method,
+    ))
+
+    fun probe(): Reply = request(mapOf("op" to "probe"))
+
     @Synchronized
-    fun capture(output: Path, windowConfigJson: String?, method: String): Reply {
+    private fun request(payload: Map<String, Any?>): Reply {
         check(!disposed) { "Screenshot worker disposed" }
         idle?.cancel(false)
         try {
@@ -43,10 +51,7 @@ internal class ScreenshotWorker(
                     }
                 }
                 val id = ++nextId
-                val request = json.writeValueAsString(mapOf(
-                    "id" to id, "output_path" to output.toString(), "project_dir" to projectDir,
-                    "window_config" to windowConfigJson?.let { json.readTree(it) }, "method" to method,
-                ))
+                val request = json.writeValueAsString(payload + mapOf("id" to id, "project_dir" to projectDir))
                 current.process.outputStream.write((request + "\n").toByteArray(Charsets.UTF_8))
                 current.process.outputStream.flush()
                 val reply = current.replies.poll(timeoutMs, TimeUnit.MILLISECONDS)
@@ -104,7 +109,8 @@ internal class ScreenshotWorker(
                             val node = runCatching { json.readTree(line) }.getOrNull()
                             if (node != null && node.has("capture_response")) {
                                 replies.offer(Reply(node.path("capture_response").asLong(), node.path("ok").asBoolean(),
-                                    node.path("error").asText(""), node.path("restart").asBoolean()))
+                                    node.path("error").asText(""), node.path("restart").asBoolean(),
+                                    node.get("config")?.toString()))
                             } else log(line)
                         }
                     }

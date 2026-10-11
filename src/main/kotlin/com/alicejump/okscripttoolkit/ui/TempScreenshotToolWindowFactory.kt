@@ -432,7 +432,7 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
     private fun handleCapture() {
         captureButton.isEnabled = false
         statusLabel.text = msg("tempShots.capturing")
-        val outputPath = store.newFilePath()
+        val outputPath = store.newFilePath("bmp")
         val methodOverride = HardForegroundToggle.methodOverride(hardForegroundCheck)
         CompletableFuture.supplyAsync {
             ScreenshotCapture(project).captureInteractive(outputPath.toPath(), methodOverride) { config ->
@@ -474,7 +474,7 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
             .templateDir(projectDir, settings.okTemplatesDirectory()).toFile()
         val data = project.service<com.alicejump.okscripttoolkit.core.TemplateAssetDataService>()
         CompletableFuture.supplyAsync {
-            data.importImages(listOf(shot.file), targetDir)
+            data.importImages(listOf(shot.file), targetDir, convertBmp = true)
         }.whenComplete { imported, error ->
             SwingUtilities.invokeLater {
                 if (project.isDisposed) return@invokeLater

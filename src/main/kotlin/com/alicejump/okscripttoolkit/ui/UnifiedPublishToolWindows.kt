@@ -219,7 +219,7 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
                 val files = TempShotTransferable.fileOf(support.transferable)?.let(::listOf)
                     ?: runCatching { (support.transferable.getTransferData(DataFlavor.javaFileListFlavor) as? List<*>)?.filterIsInstance<File>() }.getOrNull()
                     ?: return false
-                importFiles(files)
+                importFiles(files, convertBmp = support.isDataFlavorSupported(TempShotTransferable.FLAVOR))
                 return true
             }
         })
@@ -343,9 +343,9 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
         if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) importFiles(chooser.selectedFiles.toList())
     }
 
-    private fun importFiles(files: List<File>) {
+    private fun importFiles(files: List<File>, convertBmp: Boolean = false) {
         val target = root()?.resolve(directory())?.toFile() ?: return
-        CompletableFuture.supplyAsync { data.importImages(files, target) }.whenComplete { count, error -> SwingUtilities.invokeLater {
+        CompletableFuture.supplyAsync { data.importImages(files, target, convertBmp) }.whenComplete { count, error -> SwingUtilities.invokeLater {
             if (disposed || project.isDisposed) return@invokeLater
             if (error != null || count == null || count <= 0) notify(project, assetMessage("templateAsset.importFailed"), NotificationType.ERROR)
             else notify(project, assetMessage("templateAsset.imported", count), NotificationType.INFORMATION)

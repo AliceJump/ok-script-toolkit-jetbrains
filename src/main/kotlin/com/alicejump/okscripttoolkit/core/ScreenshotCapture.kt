@@ -131,27 +131,32 @@ class ScreenshotCapture(private val project: Project) {
                 LOG.warn("probe_window_config returned ok=false: $lastJson")
                 return null
             }
-            WindowConfig(
-                exe = node.path("exe")?.let { n ->
-                    when {
-                        n.isArray -> n.map { it.asText() }
-                        n.isTextual && n.asText().isNotBlank() -> listOf(n.asText())
-                        else -> null
-                    }
-                },
-                title = node.path("title")?.takeIf { it.isTextual && it.asText().isNotBlank() }?.asText(),
-                hwndClass = node.path("hwnd_class")?.takeIf { it.isTextual && it.asText().isNotBlank() }?.asText(),
-                // 探针解不出来时给的是 JSON `null`（AST 里掺了变量），`asText()` 会把它变成字面量
-                // 字符串 "null" —— 所以必须用 `isTextual` 判，不能只看非空。
-                cocoFeatureJson = node.path("coco_feature_json")
-                    ?.takeIf { it.isTextual && it.asText().isNotBlank() }?.asText(),
-                labelEnumRelativePath = node.path("label_enum_relative_path")
-                    ?.takeIf { it.isTextual && it.asText().isNotBlank() }?.asText(),
-            ).also { LOG.info("Detected window config: ${it.describe()}") }
+            windowConfigFromProbe(node)
         } catch (e: Exception) {
             LOG.warn("probe_window_config failed", e)
             null
         }
+    }
+
+    private fun windowConfigFromProbe(node: JsonNode): WindowConfig? {
+        if (!node.path("ok").asBoolean(false)) return null
+        return WindowConfig(
+            exe = node.path("exe")?.let { n ->
+                when {
+                    n.isArray -> n.map { it.asText() }
+                    n.isTextual && n.asText().isNotBlank() -> listOf(n.asText())
+                    else -> null
+                }
+            },
+            title = node.path("title")?.takeIf { it.isTextual && it.asText().isNotBlank() }?.asText(),
+            hwndClass = node.path("hwnd_class")?.takeIf { it.isTextual && it.asText().isNotBlank() }?.asText(),
+            // 探针解不出来时给的是 JSON `null`（AST 里掺了变量），`asText()` 会把它变成字面量
+            // 字符串 "null" —— 所以必须用 `isTextual` 判，不能只看非空。
+            cocoFeatureJson = node.path("coco_feature_json")
+                ?.takeIf { it.isTextual && it.asText().isNotBlank() }?.asText(),
+            labelEnumRelativePath = node.path("label_enum_relative_path")
+                ?.takeIf { it.isTextual && it.asText().isNotBlank() }?.asText(),
+        ).also { LOG.info("Detected window config: ${it.describe()}") }
     }
 
     /**
@@ -229,7 +234,17 @@ class ScreenshotCapture(private val project: Project) {
             return OkScriptToolkitBundle0.message("projectDir.invalid", projectRoot)
         }
         val pythonPath = detectPythonPath(projectRoot, project)
-        val probed = probeWindowConfig(projectRoot, pythonPath)
+        val script = Paths.get(PythonScriptLocator.findScriptDir(), "capture_game_window.py").toFile()
+        if (!script.exists()) return OkScriptToolkitBundle0.message("screenshot.scriptNotFound")
+        val probed = try {
+            val reply = project.getService(ScreenshotWorkerService::class.java)
+                .probe(pythonPath, script.absolutePath, projectRoot)
+            if (!reply.ok) return reply.error
+            reply.configJson?.let { windowConfigFromProbe(JSON.readTree(it)) }
+        } catch (e: Exception) {
+            LOG.warn("capture probe failed", e)
+            return e.message ?: e.javaClass.simpleName
+        }
         val usable = probed != null &&
             (!probed.exe.isNullOrEmpty() || !probed.title.isNullOrBlank() || !probed.hwndClass.isNullOrBlank())
 

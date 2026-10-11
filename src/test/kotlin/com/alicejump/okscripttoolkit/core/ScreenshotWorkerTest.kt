@@ -46,6 +46,9 @@ class ScreenshotWorkerTest {
         val worker = ScreenshotWorker("unused", "unused", "", {},
             launch = { launched.incrementAndGet(); child("flood") })
         try {
+            val probe = worker.probe()
+            assertTrue(probe.ok)
+            assertEquals("{\"ok\":true,\"exe\":[\"game.exe\"]}", probe.configJson)
             repeat(2) { assertTrue(worker.capture(Paths.get("shot.png"), null, "auto").ok) }
             assertEquals(1, launched.get())
         } finally { worker.dispose() }
@@ -116,7 +119,9 @@ object ScreenshotWorkerChild {
                         System.err.println("e".repeat(100))
                         System.out.println("x".repeat(100))
                     }
-                    println("{\"capture_response\":$id,\"ok\":true}")
+                    if (line.contains("\"op\":\"probe\"")) {
+                        println("{\"capture_response\":$id,\"ok\":true,\"config\":{\"ok\":true,\"exe\":[\"game.exe\"]}}")
+                    } else println("{\"capture_response\":$id,\"ok\":true}")
                 }
             }
         }
