@@ -7,6 +7,7 @@ import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CompletableFuture
 
 /** 截图专用解释器，复用导入开销；每个请求有独立时限，闲置后释放进程。 */
 internal class ScreenshotWorker(
@@ -19,7 +20,7 @@ internal class ScreenshotWorker(
     private val launch: (() -> Process)? = null,
 ) {
     data class Reply(val id: Long, val ok: Boolean, val error: String = "", val restart: Boolean = false,
-                     val configJson: String? = null)
+                     val configJson: String? = null, val frameReady: Boolean = false)
     private data class Session(val process: Process, val replies: LinkedBlockingQueue<Reply>)
     private val json = ObjectMapper()
     @Volatile private var session: Session? = null
@@ -29,6 +30,8 @@ internal class ScreenshotWorker(
         Thread(task, "ok-script-capture-idle").apply { isDaemon = true }
     }.apply { removeOnCancelPolicy = true }
     private var idle: ScheduledFuture<*>? = null
+    private val warmupLock = Any()
+    private var warming: Pair<String, CompletableFuture<Reply>>? = null
 
     fun capture(output: Path, windowConfigJson: String?, method: String): Reply = request(mapOf(
         "output_path" to output.toString(), "window_config" to windowConfigJson?.let { json.readTree(it) },
@@ -36,6 +39,16 @@ internal class ScreenshotWorker(
     ))
 
     fun probe(): Reply = request(mapOf("op" to "probe"))
+
+    fun prewarm(method: String): CompletableFuture<Reply> = synchronized(warmupLock) {
+        warming?.takeIf { it.first == method }?.let { return@synchronized it.second }
+        val job = CompletableFuture.supplyAsync { request(mapOf("op" to "warmup", "method" to method)) }
+        warming = method to job
+        job.whenComplete { _, _ -> synchronized(warmupLock) {
+            if (warming?.second === job) warming = null
+        } }
+        job
+    }
 
     @Synchronized
     private fun request(payload: Map<String, Any?>): Reply {
@@ -110,7 +123,7 @@ internal class ScreenshotWorker(
                             if (node != null && node.has("capture_response")) {
                                 replies.offer(Reply(node.path("capture_response").asLong(), node.path("ok").asBoolean(),
                                     node.path("error").asText(""), node.path("restart").asBoolean(),
-                                    node.get("config")?.toString()))
+                                    node.get("config")?.toString(), node.path("frame_ready").asBoolean()))
                             } else log(line)
                         }
                     }

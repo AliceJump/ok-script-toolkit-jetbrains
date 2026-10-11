@@ -193,6 +193,11 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
     private var categoryNames: Map<Int, String> = emptyMap()
     init {
         val toolbar = JPanel(WrappingToolbarLayout())
+        addHierarchyListener { event ->
+            if (event.changeFlags and java.awt.event.HierarchyEvent.SHOWING_CHANGED.toLong() != 0L && isShowing) {
+                project.service<com.alicejump.okscripttoolkit.core.ScreenshotWorkerService>().prewarm()
+            }
+        }
         toolbar.addComponentListener(object : java.awt.event.ComponentAdapter() {
             override fun componentResized(event: java.awt.event.ComponentEvent?) { toolbar.revalidate() }
         })

@@ -10,6 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import kotlin.test.assertSame
 
 class ScreenshotWorkerTest {
     private fun child(mode: String): Process {
@@ -27,13 +28,45 @@ class ScreenshotWorkerTest {
     }
 
     @Test
+    fun `background warmup coalesces triggers and shares the process with the first shot`() {
+        val launched = AtomicInteger()
+        val worker = ScreenshotWorker("unused", "unused", "", {}, launch = {
+            launched.incrementAndGet(); child("normal")
+        })
+        try {
+            val warming = worker.prewarm("auto")
+            assertSame(warming, worker.prewarm("auto"))
+            val warmed = warming.get(5, TimeUnit.SECONDS)
+            assertTrue(warmed.ok)
+            assertTrue(warmed.frameReady)
+            assertFalse(worker.prewarm("error").get(5, TimeUnit.SECONDS).ok)
+            assertTrue(worker.capture(Paths.get("shot.bmp"), null, "auto").ok)
+            assertEquals(1, launched.get())
+        } finally { worker.dispose() }
+    }
+
+    @Test
+    fun `idle warmup exits and reopening can prewarm a new process`() {
+        val launched = AtomicInteger()
+        val worker = ScreenshotWorker("unused", "unused", "", {}, idleMs = 50, launch = {
+            launched.incrementAndGet(); child("normal")
+        })
+        try {
+            assertTrue(worker.prewarm("auto").get(5, TimeUnit.SECONDS).ok)
+            Thread.sleep(150)
+            assertTrue(worker.prewarm("auto").get(5, TimeUnit.SECONDS).ok)
+            assertEquals(2, launched.get())
+        } finally { worker.dispose() }
+    }
+
+    @Test
     fun `blocked output cannot prevent timeout and the next request recovers`() {
         val launched = AtomicInteger()
         val worker = ScreenshotWorker("unused", "unused", "", {}, timeoutMs = 500,
             launch = { child(if (launched.incrementAndGet() == 1) "hang" else "normal") })
         try {
             val started = System.nanoTime()
-            assertFalse(worker.capture(Paths.get("shot.png"), null, "auto").ok)
+            assertFalse(worker.prewarm("auto").get(5, TimeUnit.SECONDS).ok)
             assertTrue((System.nanoTime() - started) / 1_000_000 < 4000)
             assertTrue(worker.capture(Paths.get("shot.png"), null, "auto").ok)
             assertEquals(2, launched.get())
@@ -115,6 +148,12 @@ object ScreenshotWorkerChild {
                     return
                 }
                 else -> {
+                    if (line.contains("\"op\":\"warmup\"")) {
+                        Thread.sleep(100)
+                        val ok = !line.contains("\"method\":\"error\"")
+                        println("{\"capture_response\":$id,\"ok\":$ok,\"frame_ready\":true,\"error\":\"warmup failed\"}")
+                        return@forEach
+                    }
                     if (mode == "flood") repeat(5000) {
                         System.err.println("e".repeat(100))
                         System.out.println("x".repeat(100))

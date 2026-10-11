@@ -130,6 +130,11 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
         buildUI()
         installFileDropTarget()
         reloadAsync()
+        mainPanel.addHierarchyListener { event ->
+            if (event.changeFlags and java.awt.event.HierarchyEvent.SHOWING_CHANGED.toLong() != 0L && mainPanel.isShowing) {
+                project.service<com.alicejump.okscripttoolkit.core.ScreenshotWorkerService>().prewarm()
+            }
+        }
     }
 
     // ── UI ─────────────────────────────────────────────────────────
