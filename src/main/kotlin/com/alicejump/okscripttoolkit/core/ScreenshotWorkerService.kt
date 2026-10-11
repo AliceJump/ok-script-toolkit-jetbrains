@@ -3,6 +3,7 @@ package com.alicejump.okscripttoolkit.core
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.Logger
+import com.intellij.util.concurrency.AppExecutorUtil
 import java.nio.file.Path
 import java.nio.file.Paths
 
@@ -23,6 +24,12 @@ class ScreenshotWorkerService(private val project: com.intellij.openapi.project.
 
     /** 后台预热独立截图进程，失败仅记日志，不阻塞界面或任务启动。 */
     fun prewarm(expectedProjectDir: String? = null, expectedPythonPath: String? = null) {
+        AppExecutorUtil.getAppExecutorService().execute {
+            prepareWarmup(expectedProjectDir, expectedPythonPath)
+        }
+    }
+
+    private fun prepareWarmup(expectedProjectDir: String?, expectedPythonPath: String?) {
         val logger = Logger.getInstance(ScreenshotWorkerService::class.java)
         try {
             if (project.isDisposed) return

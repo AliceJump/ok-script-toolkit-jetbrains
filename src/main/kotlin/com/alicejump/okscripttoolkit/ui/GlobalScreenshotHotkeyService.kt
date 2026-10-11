@@ -20,6 +20,7 @@ import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.WindowManager
 import com.intellij.util.concurrency.AppExecutorUtil
 import java.awt.Window
+import java.lang.ref.WeakReference
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.util.UUID
@@ -47,7 +48,7 @@ class GlobalScreenshotHotkeyService : Disposable {
     private var process: Process? = null
 
     @Volatile
-    private var preferredProject: Project? = null
+    private var preferredProject: WeakReference<Project>? = null
 
     @Volatile
     private var disposed = false
@@ -59,7 +60,7 @@ class GlobalScreenshotHotkeyService : Disposable {
     /** Starts the shared hotkey helper once and remembers the latest usable project as a fallback target. */
     @Synchronized
     fun ensureStarted(project: Project) {
-        preferredProject = project
+        preferredProject = WeakReference(project)
         if (disposed || !SystemInfo.isWindows || process?.isAlive == true) return
 
         retryFuture?.cancel(false)
@@ -184,6 +185,7 @@ class GlobalScreenshotHotkeyService : Disposable {
             }?.let { return it }
         }
         return preferredProject
+            ?.get()
             ?.takeIf { !it.isDisposed }
             ?: projects.firstOrNull()
     }
@@ -208,6 +210,7 @@ class GlobalScreenshotHotkeyService : Disposable {
         retryDelayMs = (retryDelayMs * 2).coerceAtMost(MAX_RETRY_DELAY_MS)
         retryFuture = AppExecutorUtil.getAppScheduledExecutorService().schedule({
             val project = preferredProject
+                ?.get()
                 ?.takeIf { !it.isDisposed }
                 ?: ProjectManager.getInstance().openProjects.firstOrNull { !it.isDisposed }
             synchronized(this) { retryFuture = null }
