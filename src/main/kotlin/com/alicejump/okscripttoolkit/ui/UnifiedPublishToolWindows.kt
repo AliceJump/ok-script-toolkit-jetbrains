@@ -120,7 +120,7 @@ private object UnifiedPublishController {
             val coco = root?.let { data.load(it.toString(), OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory()) }
             PublishPreview.TemplateInput(
                 targetLabel = label(plan.target),
-                enumPath = plan.enumFile,
+                enumPath = plan.enumFile?.takeIf { it.isNotBlank() }?.let { label(java.nio.file.Path.of(it)) },
                 draftNames = coco?.let(PublishPreview::draftNames).orEmpty(),
                 publishedNames = project.service<OkProjectDataService>().features().map { it.name },
             )

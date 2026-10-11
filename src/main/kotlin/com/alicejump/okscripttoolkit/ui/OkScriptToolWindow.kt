@@ -135,6 +135,22 @@ abstract class LegacyToolWindowAlias(private val legacyId: String) : ToolWindowF
     }
 }
 
+/**
+ * New UI 会按默认布局给新注册的工具窗口显示 stripe 按钮，覆盖 init 里的设置；
+ * 启动后再统一隐藏一次别名的 stripe 按钮。
+ */
+class HideLegacyToolWindowStripes : com.intellij.openapi.startup.ProjectActivity {
+    override suspend fun execute(project: Project) {
+        ApplicationManager.getApplication().invokeLater({
+            val manager = ToolWindowManager.getInstance(project)
+            for (id in OkScriptToolWindows.LEGACY_IDS.keys) {
+                @Suppress("DEPRECATION")
+                manager.getToolWindow(id)?.isShowStripeButton = false
+            }
+        }, project.disposed)
+    }
+}
+
 class LegacyTasksToolWindowAlias : LegacyToolWindowAlias("ok-script Tasks")
 class LegacyTempShotsToolWindowAlias : LegacyToolWindowAlias("ok-script Temp Shots")
 class LegacyAnnotationToolWindowAlias : LegacyToolWindowAlias(UNIFIED_ANNOTATION_TOOL_WINDOW_ID)

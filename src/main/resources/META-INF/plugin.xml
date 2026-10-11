@@ -83,6 +83,7 @@
             factoryClass="com.alicejump.okscripttoolkit.ui.LegacyAnnotationToolWindowAlias"/>
         <toolWindow id="ok-script Resource Preview" anchor="right" icon="/icons/templates.svg" doNotActivateOnStart="true"
             factoryClass="com.alicejump.okscripttoolkit.ui.LegacyPreviewToolWindowAlias"/>
+        <postStartupActivity implementation="com.alicejump.okscripttoolkit.ui.HideLegacyToolWindowStripes"/>
         <editorNotificationProvider implementation="com.alicejump.okscripttoolkit.editor.UnpublishedTemplateNotificationProvider"/>
         <statusBarWidgetFactory id="okScriptToolkit.executor"
             implementation="com.alicejump.okscripttoolkit.ui.OkExecutorStatusBarWidgetFactory"/>
