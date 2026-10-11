@@ -155,9 +155,9 @@ class ScreenshotCapture(private val project: Project) {
     }
 
     /**
-     * 执行截图（对齐 VSCode 版 captureWithScript + runCaptureScript）。
+     * 执行截图，项目内复用专用解释器及 WGC 会话，每张图请求新帧。
      * 截图方式由 [methodOverride]（面板临时指定）或设置项 captureMethod 决定，
-     * 以 --method 传给 capture_game_window.py；不传时脚本默认 auto。
+     * 通过管道传给 capture_game_window.py；不传时脚本默认 auto。
      * 成功返回输出文件，失败返回 null（原因写入 [error]）。
      */
 
@@ -171,403 +171,39 @@ class ScreenshotCapture(private val project: Project) {
         /** 非 null 时本次截图强制走该方式（面板「硬前台」勾选传 foreground），覆盖设置项 */
         methodOverride: String? = null,
     ): Path? {
-        LOG.info("========== Screenshot capture BEGIN ==========")
-        LOG.info("capture.projectDir=$projectDir")
-        LOG.info("capture.pythonPath=$pythonPath")
-        LOG.info("capture.outputPath=$outputPath")
-        LOG.info("capture.outputPath.absolute=${outputPath.toAbsolutePath()}")
-        LOG.info("capture.windowConfig=$windowConfig")
-        LOG.info("capture.windowConfig.null=${windowConfig == null}")
-        LOG.info("capture.titleRegex=$titleRegex")
-        LOG.info("capture.titleRegex.blank=${titleRegex.isNullOrBlank()}")
-
-        val scriptDir = PythonScriptLocator.findScriptDir()
-        LOG.info("capture.scriptDir=$scriptDir")
-
-        val script = Paths.get(scriptDir, "capture_game_window.py").toFile()
-        LOG.info("capture.script=$script")
-        LOG.info("capture.script.absolute=${script.absolutePath}")
-        LOG.info("capture.script.exists=${script.exists()}")
-        LOG.info("capture.script.isFile=${script.isFile}")
-
-        if (!script.exists()) {
-            error.append(
-                OkScriptToolkitBundle0.message("screenshot.scriptNotFound")
-            )
-            LOG.warn("capture.ABORT: capture_game_window.py not found in $scriptDir")
-            LOG.info("========== Screenshot capture END (script missing) ==========")
-            return null
-        }
-
-        // ------------------------------------------------------------
-        // 1. Resolve window configuration
-        // ------------------------------------------------------------
-
-        val exeNames = windowConfig?.exe
-        val title = windowConfig?.title ?: titleRegex
-        val hwndClass = windowConfig?.hwndClass
-
-        LOG.info("capture.window.resolve:")
-        LOG.info("  windowConfig.present=${windowConfig != null}")
-        LOG.info("  windowConfig.exe=$exeNames")
-        LOG.info("  windowConfig.title=${windowConfig?.title}")
-        LOG.info("  windowConfig.hwndClass=${windowConfig?.hwndClass}")
-        LOG.info("  resolved.exe=$exeNames")
-        LOG.info("  resolved.title=$title")
-        LOG.info("  resolved.hwndClass=$hwndClass")
-
-        // ------------------------------------------------------------
-        // 2. Build --config-json
-        // ------------------------------------------------------------
-
-        val windowConfigJson =
-            if (
-                !exeNames.isNullOrEmpty() ||
-                !title.isNullOrBlank() ||
-                !hwndClass.isNullOrBlank()
-            ) {
-                JSON.writeValueAsString(
-                    mapOf(
-                        "exe" to exeNames,
-                        "title" to title,
-                        "hwnd_class" to hwndClass,
-                    )
-                )
-            } else {
-                null
-            }
-
-        LOG.info("capture.config:")
-        LOG.info("  configJson.present=${windowConfigJson != null}")
-        LOG.info("  configJson=$windowConfigJson")
-
-        if (windowConfigJson != null) {
-            LOG.info(
-                "capture.configJson.length=${windowConfigJson.length}"
-            )
-        }
-
-        // ------------------------------------------------------------
-        // 3. Build process arguments
-        // ------------------------------------------------------------
-
-        val args = mutableListOf(
-            pythonPath,
-            script.absolutePath,
-            outputPath.toString()
-        )
-
-        if (windowConfigJson != null) {
-            LOG.info("capture.args.mode=CONFIG_FILE")
-
-            val tempConfig = Files.createTempFile("ok-window-config-", ".json")
-            Files.writeString(tempConfig, windowConfigJson, Charsets.UTF_8)
-            tempConfig.toFile().deleteOnExit()
-
-            LOG.info("capture.args.add=--config-file")
-            LOG.info("capture.args.configFile=${tempConfig.toAbsolutePath()}")
-
-            args.add("--config-file")
-            args.add(tempConfig.toAbsolutePath().toString())
-        } else if (!titleRegex.isNullOrBlank()) {
-            LOG.info("capture.args.mode=LEGACY_TITLE_REGEX")
-            LOG.info("capture.args.add=titleRegex")
-            args.add(titleRegex)
-        } else {
-            LOG.info("capture.args.mode=NO_WINDOW_CONFIG")
-        }
-
-        if (projectDir.isNotBlank()) {
-            LOG.info("capture.args.add=--project-dir")
-            LOG.info("capture.args.projectDir=$projectDir")
-            args.add("--project-dir")
-            args.add(projectDir)
-        } else {
-            LOG.info("capture.args.projectDir=<blank>")
-        }
-
-        // --method：显式覆盖优先，其次设置项，最后 auto（与 capture_game_window.py 的默认值一致）
-        val method = methodOverride
-            ?.takeIf { it.isNotBlank() }
-            ?.let { OkScriptToolkitSettings.normalizeCaptureMethod(it) }
-            ?: OkScriptToolkitSettings.getInstance(project).captureMethod()
-        args.add("--method")
-        args.add(method)
-        LOG.info("capture.args.method=$method (override=$methodOverride)")
-
-        // ------------------------------------------------------------
-        // 4. Log arguments individually
-        // ------------------------------------------------------------
-
-        LOG.info("capture.process:")
-        LOG.info("  executable=$pythonPath")
-        LOG.info("  argc=${args.size}")
-
-        args.forEachIndexed { index, arg ->
-            LOG.info("  argv[$index]=${arg}")
-        }
-
-        LOG.info(
-            "capture.process.command=${
-                args.joinToString(" ") { arg ->
-                    "\"${arg.replace("\"", "\\\"")}\""
-                }
-            }"
-        )
-
-        val processDirectory = File(projectDir.ifBlank { "." })
-        LOG.info("capture.process.directory=${processDirectory.absolutePath}")
-        LOG.info("capture.process.directory.exists=${processDirectory.exists()}")
-
-        // ------------------------------------------------------------
-        // 5. Start process
-        // ------------------------------------------------------------
-
-        LOG.info("capture.process.starting=true")
-
+        val started = System.nanoTime()
         return try {
-            val startTime = System.nanoTime()
-
-            val process = ProcessBuilder(args)
-                .directory(processDirectory)
-                .redirectErrorStream(false)
-                .start()
-
-            LOG.info(
-                "capture.process.started=true pid=${
-                    runCatching {
-                        process.pid()
-                    }.getOrNull()
-                }"
-            )
-
-            LOG.info("capture.process.isAlive=${process.isAlive}")
-
-            // --------------------------------------------------------
-            // 6. stderr reader
-            // --------------------------------------------------------
-
-            val stderrBuilder = StringBuilder()
-
-            val stderrThread = Thread {
-                LOG.info("capture.stderr.thread.started")
-
-                runCatching {
-                    process.errorStream
-                        .bufferedReader(Charsets.UTF_8)
-                        .forEachLine { line ->
-                            synchronized(stderrBuilder) {
-                                stderrBuilder
-                                    .append(line)
-                                    .append('\n')
-                            }
-
-                            LOG.info(
-                                "capture_game_window[stderr]: $line"
-                            )
-                        }
-                }.onFailure {
-                    LOG.warn(
-                        "capture.stderr.read.failed",
-                        it
-                    )
-                }
-
-                LOG.info("capture.stderr.thread.finished")
-            }.apply {
-                name = "ok-script-capture-stderr"
-                isDaemon = true
-                start()
-            }
-
-            // --------------------------------------------------------
-            // 7. stdout reader
-            // --------------------------------------------------------
-
-            LOG.info("capture.stdout.reading=true")
-
-            process.inputStream
-                .bufferedReader(Charsets.UTF_8)
-                .forEachLine { line ->
-                    LOG.info(
-                        "capture_game_window[stdout]: $line"
-                    )
-                }
-
-            LOG.info("capture.stdout.reading.finished")
-            LOG.info("capture.process.isAlive.afterStdout=${process.isAlive}")
-
-            // --------------------------------------------------------
-            // 8. Wait for process
-            // --------------------------------------------------------
-
-            LOG.info("capture.process.waiting.timeout=60s")
-
-            val completed = process.waitFor(
-                60,
-                TimeUnit.SECONDS
-            )
-
-            LOG.info("capture.process.completed=$completed")
-            LOG.info("capture.process.isAlive.afterWait=${process.isAlive}")
-
-            if (!completed) {
-                LOG.warn(
-                    "capture.process.timeout=true pid=${
-                        runCatching {
-                            process.pid()
-                        }.getOrNull()
-                    }"
-                )
-
-                process.destroyForcibly()
-
-                LOG.warn("capture.process.destroyForcibly=true")
-
-                error.append("timeout")
-
-                LOG.info(
-                    "capture.durationMs=" +
-                            ((System.nanoTime() - startTime) / 1_000_000)
-                )
-
-                LOG.info(
-                    "========== Screenshot capture END (timeout) =========="
-                )
-
+            val script = Paths.get(PythonScriptLocator.findScriptDir(), "capture_game_window.py").toFile()
+            if (!script.exists()) {
+                error.append(OkScriptToolkitBundle0.message("screenshot.scriptNotFound"))
                 return null
             }
-
-            // --------------------------------------------------------
-            // 9. stderr completion
-            // --------------------------------------------------------
-
-            LOG.info("capture.stderr.thread.joining.timeout=1000ms")
-
-            stderrThread.join(1000)
-
-            LOG.info(
-                "capture.stderr.thread.alive=${stderrThread.isAlive}"
-            )
-
-            val stderr = synchronized(stderrBuilder) {
-                stderrBuilder.toString()
-            }
-
-            LOG.info(
-                "capture.process.stderr.length=${stderr.length}"
-            )
-
-            if (stderr.isNotBlank()) {
-                LOG.info(
-                    "capture.process.stderr.content:\n$stderr"
-                )
-            }
-
-            // --------------------------------------------------------
-            // 10. Exit code
-            // --------------------------------------------------------
-
-            val exitCode = process.exitValue()
-
-            LOG.info("capture.process.exitCode=$exitCode")
-
-            if (exitCode != 0) {
-                LOG.warn(
-                    "capture.process.failed=true exitCode=$exitCode"
-                )
-
-                error.append(
-                    stderr.ifBlank {
-                        "exit code $exitCode"
-                    }
-                )
-
-                LOG.info(
-                    "capture.durationMs=" +
-                            ((System.nanoTime() - startTime) / 1_000_000)
-                )
-
-                LOG.info(
-                    "========== Screenshot capture END (process failed) =========="
-                )
-
+            val configJson = JSON.writeValueAsString(mapOf(
+                "exe" to windowConfig?.exe,
+                "title" to (windowConfig?.title ?: titleRegex),
+                "hwnd_class" to windowConfig?.hwndClass,
+            ))
+            val method = methodOverride?.takeIf { it.isNotBlank() }
+                ?.let { OkScriptToolkitSettings.normalizeCaptureMethod(it) }
+                ?: OkScriptToolkitSettings.getInstance(project).captureMethod()
+            LOG.info("capture.request python=$pythonPath project=$projectDir method=$method output=$outputPath")
+            val result = project.getService(ScreenshotWorkerService::class.java)
+                .capture(pythonPath, script.absolutePath, projectDir, outputPath, configJson, method)
+            if (!result.ok) {
+                error.append(result.error)
                 return null
             }
-
-            // --------------------------------------------------------
-            // 11. Output validation
-            // --------------------------------------------------------
-
-            LOG.info("capture.output.check.path=$outputPath")
-            LOG.info(
-                "capture.output.exists=${Files.exists(outputPath)}"
-            )
-
-            if (Files.exists(outputPath)) {
-                LOG.info(
-                    "capture.output.isRegularFile=" +
-                            Files.isRegularFile(outputPath)
-                )
-
-                LOG.info(
-                    "capture.output.size=" +
-                            runCatching {
-                                Files.size(outputPath)
-                            }.getOrElse {
-                                -1L
-                            }
-                )
-
-                LOG.info(
-                    "capture.output.absolute=" +
-                            outputPath.toAbsolutePath()
-                )
-            }
-
-            if (!Files.exists(outputPath)) {
+            if (!Files.isRegularFile(outputPath)) {
                 error.append("file not created")
-
-                LOG.warn(
-                    "capture.output.missing=true path=$outputPath"
-                )
-
-                LOG.info(
-                    "capture.durationMs=" +
-                            ((System.nanoTime() - startTime) / 1_000_000)
-                )
-
-                LOG.info(
-                    "========== Screenshot capture END (output missing) =========="
-                )
-
                 return null
             }
-
-            LOG.info(
-                "capture.success=true output=$outputPath"
-            )
-
-            LOG.info(
-                "capture.durationMs=" +
-                        ((System.nanoTime() - startTime) / 1_000_000)
-            )
-
-            LOG.info("========== Screenshot capture END (SUCCESS) ==========")
-
             outputPath
         } catch (e: Exception) {
-            LOG.warn("capture.exception.type=${e.javaClass.name}")
-            LOG.warn("capture.exception.message=${e.message}")
             LOG.warn("capture failed", e)
-
-            error.append(
-                e.message ?: e.javaClass.simpleName
-            )
-
-            LOG.info("========== Screenshot capture END (EXCEPTION) ==========")
-
+            error.append(e.message ?: e.javaClass.simpleName)
             null
+        } finally {
+            LOG.info("capture.durationMs=" + ((System.nanoTime() - started) / 1_000_000))
         }
     }
 
