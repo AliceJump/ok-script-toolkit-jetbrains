@@ -50,7 +50,10 @@ import javax.swing.*
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 
-class TaskLauncherToolWindowFactory : ToolWindowFactory {
+class TaskLauncherToolWindowFactory : ToolWindowFactory, com.intellij.openapi.project.DumbAware {
+    override suspend fun isApplicableAsync(project: Project): Boolean =
+        com.alicejump.okscripttoolkit.core.OkProjectDetection.isOkScriptProject(project)
+
 
     companion object {
         private val LOG = Logger.getInstance(TaskLauncherToolWindowFactory::class.java)
@@ -58,7 +61,7 @@ class TaskLauncherToolWindowFactory : ToolWindowFactory {
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val panel = TaskLauncherPanel(project)
-        val content = ContentFactory.getInstance().createContent(panel.mainPanel, "Tasks", false)
+        val content = ContentFactory.getInstance().createContent(panel.mainPanel, "", false)
         toolWindow.contentManager.addContent(content)
 
         toolWindow.contentManager.addContentManagerListener(object : ContentManagerListener {
@@ -542,9 +545,9 @@ class TaskLauncherPanel(private val project: Project) {
         healthRow.add(schemaWarningLabel, BorderLayout.EAST)
 
         val statusBar = JPanel(BorderLayout(8, 0))
-        statusBar.border = BorderFactory.createEmptyBorder(2, 4, 2, 4)
+        statusBar.border = com.intellij.util.ui.JBUI.Borders.empty(2, 4, 2, 4)
         statusBar.add(healthRow, BorderLayout.CENTER)
-        progressBar.preferredSize = Dimension(90, 20)
+        progressBar.preferredSize = com.intellij.util.ui.JBUI.size(90, 20)
         progressBar.isVisible = false
         val statusEast = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0))
         statusEast.isOpaque = false
@@ -607,13 +610,13 @@ class TaskLauncherPanel(private val project: Project) {
         // （见 buildExecutorBar），任务页只留搜索 + 刷新。
         val toolbar = JPanel(BorderLayout(8, 0))
         toolbar.isOpaque = false
-        toolbar.border = BorderFactory.createEmptyBorder(8, 8, 4, 8)
+        toolbar.border = com.intellij.util.ui.JBUI.Borders.empty(8, 8, 4, 8)
         toolbar.add(taskSearchField, BorderLayout.CENTER)
         toolbar.add(refreshButton, BorderLayout.EAST)
 
         val listScrollPane = JBScrollPane(taskCardList)
         listScrollPane.border = BorderFactory.createEmptyBorder()
-        queueStrip.border = BorderFactory.createEmptyBorder(0, 8, 2, 8)
+        queueStrip.border = com.intellij.util.ui.JBUI.Borders.empty(0, 8, 2, 8)
 
         val taskListPane = JPanel(BorderLayout())
         taskListPane.isOpaque = false
@@ -765,7 +768,7 @@ class TaskLauncherPanel(private val project: Project) {
 
         return JPanel(BorderLayout()).apply {
             isOpaque = false
-            border = BorderFactory.createEmptyBorder(8, 10, 6, 10)
+            border = com.intellij.util.ui.JBUI.Borders.empty(8, 10, 6, 10)
             add(identity, BorderLayout.CENTER)
         }
     }
@@ -788,7 +791,7 @@ class TaskLauncherPanel(private val project: Project) {
             isOpaque = false
             border = BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(1, 0, 0, 0, JBColor.border()),
-                BorderFactory.createEmptyBorder(2, 10, 6, 10),
+                com.intellij.util.ui.JBUI.Borders.empty(2, 10, 6, 10),
             )
             add(row, BorderLayout.CENTER)
         }
@@ -800,7 +803,7 @@ class TaskLauncherPanel(private val project: Project) {
         label.foreground = color
         label.border = BorderFactory.createCompoundBorder(
             BorderFactory.createLineBorder(color, 1, true),
-            BorderFactory.createEmptyBorder(0, 6, 0, 6),
+            com.intellij.util.ui.JBUI.Borders.empty(0, 6, 0, 6),
         )
     }
 
@@ -816,7 +819,7 @@ class TaskLauncherPanel(private val project: Project) {
         detailSyncButton.isEnabled = false
         detailResetButton.isEnabled = false
         val hint = mutedLabel(OkScriptToolkitBundle.message("taskLauncher.detailPlaceholder"))
-        hint.border = BorderFactory.createEmptyBorder(12, 2, 12, 2)
+        hint.border = com.intellij.util.ui.JBUI.Borders.empty(12, 2, 12, 2)
         paramPanel.add(hint, GridBagConstraints().apply {
             gridx = 0
             gridy = 0
@@ -824,7 +827,7 @@ class TaskLauncherPanel(private val project: Project) {
             weightx = 1.0
             fill = GridBagConstraints.HORIZONTAL
             anchor = GridBagConstraints.NORTH
-            insets = Insets(8, 4, 4, 4)
+            insets = com.intellij.util.ui.JBUI.insets(8, 4, 4, 4)
         })
         paramPanel.add(JPanel().apply { isOpaque = false }, GridBagConstraints().apply {
             gridx = 0
@@ -907,7 +910,7 @@ class TaskLauncherPanel(private val project: Project) {
             gridx = 0
             gridy = 0
             anchor = GridBagConstraints.WEST
-            insets = Insets(2, 10, 2, 10)
+            insets = com.intellij.util.ui.JBUI.insets(2, 10, 2, 10)
         }
         val kind = taskKindOf(task)
         content.add(
@@ -1050,7 +1053,7 @@ class TaskLauncherPanel(private val project: Project) {
         bar.isOpaque = false
         bar.border = BorderFactory.createCompoundBorder(
             BorderFactory.createMatteBorder(1, 0, 0, 0, JBColor.border()),
-            BorderFactory.createEmptyBorder(3, 6, 3, 6),
+            com.intellij.util.ui.JBUI.Borders.empty(3, 6, 3, 6),
         )
         bar.add(statusRow, BorderLayout.CENTER)
         bar.add(right, BorderLayout.EAST)
@@ -1257,7 +1260,7 @@ class TaskLauncherPanel(private val project: Project) {
             isOpaque = false
             border = BorderFactory.createCompoundBorder(
                 BorderFactory.createLineBorder(JBColor.border(), 1, true),
-                BorderFactory.createEmptyBorder(8, 12, 10, 12),
+                com.intellij.util.ui.JBUI.Borders.empty(8, 12, 10, 12),
             )
             add(titleLabel, BorderLayout.NORTH)
             add(body, BorderLayout.CENTER)
@@ -1269,7 +1272,7 @@ class TaskLauncherPanel(private val project: Project) {
     private fun singleColumnPage(cards: List<JPanel>): JPanel {
         val column = JPanel(GridBagLayout())
         column.isOpaque = false
-        column.border = BorderFactory.createEmptyBorder(12, 14, 12, 14)
+        column.border = com.intellij.util.ui.JBUI.Borders.empty(12, 14, 12, 14)
         cards.forEachIndexed { index, card ->
             column.add(card, GridBagConstraints().apply {
                 gridx = 0
@@ -1277,7 +1280,7 @@ class TaskLauncherPanel(private val project: Project) {
                 weightx = 1.0
                 fill = GridBagConstraints.HORIZONTAL
                 anchor = GridBagConstraints.NORTHWEST
-                insets = Insets(0, 0, 10, 0)
+                insets = com.intellij.util.ui.JBUI.insets(0, 0, 10, 0)
             })
         }
         column.add(JPanel().apply { isOpaque = false }, GridBagConstraints().apply {
@@ -1353,7 +1356,7 @@ class TaskLauncherPanel(private val project: Project) {
             isOpaque = false
             border = BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(1, 0, 0, 0, JBColor.border()),
-                BorderFactory.createEmptyBorder(6, 2, 6, 2),
+                com.intellij.util.ui.JBUI.Borders.empty(6, 2, 6, 2),
             )
             add(text, BorderLayout.CENTER)
             add(open, BorderLayout.EAST)
@@ -1427,7 +1430,7 @@ class TaskLauncherPanel(private val project: Project) {
             putClientProperty("JButton.buttonType", "borderless")
             isBorderPainted = false
             isContentAreaFilled = false
-            margin = Insets(0, 0, 0, 0)
+            margin = com.intellij.util.ui.JBUI.insets(0, 0, 0, 0)
             toolTipText = OkScriptToolkitBundle.message(tipKey)
             addActionListener { action() }
         }
@@ -1464,11 +1467,11 @@ class TaskLauncherPanel(private val project: Project) {
                 weightx = 1.0
                 fill = GridBagConstraints.HORIZONTAL
                 anchor = GridBagConstraints.NORTHWEST
-                insets = Insets(0, 0, 6, 0)
+                insets = com.intellij.util.ui.JBUI.insets(0, 0, 6, 0)
             })
         }
         GlobalConfigEditor.addFieldRows(
-            form, controls, rowIndex, Insets(0, 0, 0, 0),
+            form, controls, rowIndex, com.intellij.util.ui.JBUI.insets(0, 0, 0, 0),
             isOpen = { section -> uiCollapseState[globalOptionFoldKey(group, section)] == false },
             onOpenChanged = { section, open ->
                 val key = globalOptionFoldKey(group, section)
@@ -2173,7 +2176,7 @@ class TaskLauncherPanel(private val project: Project) {
             paramPanel.add(separator, GridBagConstraints().apply {
                 gridx = 0; gridy = row; gridwidth = 2
                 fill = GridBagConstraints.HORIZONTAL
-                insets = Insets(4, 0, 4, 0)
+                insets = com.intellij.util.ui.JBUI.insets(4, 0, 4, 0)
             })
             row++
 
@@ -2190,7 +2193,7 @@ class TaskLauncherPanel(private val project: Project) {
             val gbc = GridBagConstraints().apply {
                 gridx = 0; gridy = row; gridwidth = 2
                 anchor = GridBagConstraints.NORTHWEST
-                insets = Insets(10, 10, 10, 10)
+                insets = com.intellij.util.ui.JBUI.insets(10, 10, 10, 10)
             }
             val text = when {
                 schema == null -> OkScriptToolkitBundle.message("taskLauncher.schemaNotProbed")
@@ -2457,7 +2460,7 @@ class TaskLauncherPanel(private val project: Project) {
                 fill = GridBagConstraints.HORIZONTAL
                 weightx = 1.0
                 anchor = GridBagConstraints.NORTHWEST
-                insets = Insets(2, 4, 2, 4)
+                insets = com.intellij.util.ui.JBUI.insets(2, 4, 2, 4)
             })
             paramFields[key] = valueControlOf(control)
             rowsByKey.getOrPut(key) { mutableListOf() }.add(rowPanel to control)
@@ -2541,20 +2544,23 @@ class TaskLauncherPanel(private val project: Project) {
         }
 
         private fun buildToggle(body: JPanel, stateKey: String): JButton {
-            val toggle = JButton("▼")
-            toggle.margin = Insets(0, 4, 0, 4)
+            val toggle = JButton(com.intellij.icons.AllIcons.General.ChevronDown)
+            toggle.margin = com.intellij.util.ui.JBUI.insets(0, 4)
             toggle.isContentAreaFilled = false
             toggle.isFocusable = false
             toggle.addActionListener {
                 val open = !body.isVisible
                 body.isVisible = open
-                toggle.text = if (open) "▲" else "▼"
+                toggle.icon = if (open) com.intellij.icons.AllIcons.General.ChevronUp else com.intellij.icons.AllIcons.General.ChevronDown
+                toggle.accessibleContext.accessibleName = OkScriptToolkitBundle.message(if (open) "taskLauncher.collapseSection" else "taskLauncher.expandSection")
                 if (open) openConfigGroups.add(stateKey) else openConfigGroups.remove(stateKey)
                 paramPanel.revalidate()
                 paramPanel.repaint()
             }
             body.isVisible = stateKey in openConfigGroups
-            toggle.text = if (body.isVisible) "▲" else "▼"
+            toggle.icon = if (body.isVisible) com.intellij.icons.AllIcons.General.ChevronUp else com.intellij.icons.AllIcons.General.ChevronDown
+            toggle.toolTipText = OkScriptToolkitBundle.message(if (body.isVisible) "taskLauncher.collapseSection" else "taskLauncher.expandSection")
+            toggle.accessibleContext.accessibleName = toggle.toolTipText
             return toggle
         }
 
@@ -2576,9 +2582,9 @@ class TaskLauncherPanel(private val project: Project) {
                 toggle?.let { east.add(it) }
                 north.add(east, BorderLayout.EAST)
             }
-            north.border = BorderFactory.createEmptyBorder(3, 6, 3, 6)
+            north.border = com.intellij.util.ui.JBUI.Borders.empty(3, 6, 3, 6)
             body.isOpaque = false
-            body.border = BorderFactory.createEmptyBorder(4, 4, 4, 4)
+            body.border = com.intellij.util.ui.JBUI.Borders.empty(4, 4, 4, 4)
             return JPanel(BorderLayout()).apply {
                 border = BorderFactory.createLineBorder(JBColor.border())
                 isOpaque = false
@@ -2592,7 +2598,7 @@ class TaskLauncherPanel(private val project: Project) {
                 gridx = 0; gridy = nextRow(container); gridwidth = 2
                 fill = GridBagConstraints.HORIZONTAL
                 weightx = 1.0
-                insets = Insets(4, 2, 4, 2)
+                insets = com.intellij.util.ui.JBUI.insets(4, 2, 4, 2)
             })
         }
 
@@ -2937,7 +2943,7 @@ class TaskLauncherPanel(private val project: Project) {
                             autoSaveTaskConfig(task, owningRenderer)
                         }
                     })
-                    return JBScrollPane(area).apply { preferredSize = Dimension(200, 70) }
+                    return JBScrollPane(area).apply { preferredSize = com.intellij.util.ui.JBUI.size(200, 70) }
                 }
                 val textField = JTextField(text)
                 textField.columns = 20
@@ -3020,7 +3026,7 @@ class TaskLauncherPanel(private val project: Project) {
             }
         })
         validateJson()
-        return JBScrollPane(area).apply { preferredSize = Dimension(200, 90) }
+        return JBScrollPane(area).apply { preferredSize = com.intellij.util.ui.JBUI.size(200, 90) }
     }
 
     private fun autoSaveTaskConfig(task: TaskLauncherService.TaskInfo, owningRenderer: SchemaTreeRenderer) {

@@ -60,14 +60,14 @@ private class ChooseDialogImpl(
                 anchor = GridBagConstraints.WEST
                 fill = GridBagConstraints.HORIZONTAL
                 weightx = 1.0
-                insets = Insets(4, 8, 8, 8)
+                insets = com.intellij.util.ui.JBUI.insets(4, 8, 8, 8)
             },
         )
         buttons.forEachIndexed { index, button ->
             panel.add(button, GridBagConstraints().apply {
                 gridx = 0; gridy = index + 1
                 anchor = GridBagConstraints.WEST
-                insets = Insets(2, 8, 2, 8)
+                insets = com.intellij.util.ui.JBUI.insets(2, 8, 2, 8)
             })
         }
         return panel

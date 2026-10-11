@@ -68,7 +68,7 @@ abstract class FormDialog(project: Project) : DialogWrapper(project) {
      * `media/characterManager/app.js` 的 `.locked-notice`。
      */
     protected fun addNotice(text: String) {
-        form.add(JLabel(text).apply { foreground = JBColor.GRAY }, GridBagConstraints().apply {
+        form.add(JLabel(text).apply { foreground = com.intellij.util.ui.UIUtil.getContextHelpForeground() }, GridBagConstraints().apply {
             gridx = 0; gridy = row; gridwidth = 2; anchor = GridBagConstraints.WEST
             insets = JBUI.insets(2, 4, 6, 4)
         })
@@ -152,7 +152,7 @@ class SkillDialog(
         addField("name", nameField)
         addField(msg("characterManager.fieldSkillType"), skillTypeBox)
         addField(msg("characterManager.fieldElement"), elementBox)
-        addField("description", JBScrollPane(descriptionArea).apply { preferredSize = Dimension(320, 70) })
+        addField("description", JBScrollPane(descriptionArea).apply { preferredSize = com.intellij.util.ui.JBUI.size(320, 70) })
         addField("damage_multiplier", damageField)
         addField("stagger_value", staggerField)
         addField("cooldown", cooldownField)
@@ -160,7 +160,7 @@ class SkillDialog(
         addWide(msg("characterManager.fieldBaseEffects"), effectPicker)
         return JPanel(BorderLayout()).apply {
             add(form, BorderLayout.CENTER)
-            preferredSize = Dimension(820, 620)
+            preferredSize = com.intellij.util.ui.JBUI.size(820, 620)
         }
     }
 
@@ -262,7 +262,7 @@ class EnhancementDialog(
         addWide(msg("characterManager.fieldOutputEffects"), outputPicker)
         return JPanel(BorderLayout()).apply {
             add(form, BorderLayout.CENTER)
-            preferredSize = Dimension(820, 640)
+            preferredSize = com.intellij.util.ui.JBUI.size(820, 640)
         }
     }
 
@@ -311,7 +311,7 @@ class EffectDialog(
         addField(msg("characterManager.effect.id"), idField)
         addField(msg("characterManager.effect.description"), descriptionField)
         addField(msg("characterManager.effect.category"), categoryBox)
-        form.preferredSize = Dimension(420, form.preferredSize.height)
+        form.preferredSize = Dimension(com.intellij.util.ui.JBUI.scale(420), form.preferredSize.height)
         return form
     }
 

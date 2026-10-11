@@ -75,7 +75,10 @@ import javax.swing.TransferHandler
  * 舞台使用降采样预览（[PREVIEW_MAX_HEIGHT]）而非原图：多张 4K 截图全量解码可达数百 MB，
  * 而归一化坐标只取比例，精度不受影响。
  */
-class TempScreenshotToolWindowFactory : ToolWindowFactory {
+class TempScreenshotToolWindowFactory : ToolWindowFactory, com.intellij.openapi.project.DumbAware {
+    override suspend fun isApplicableAsync(project: Project): Boolean =
+        com.alicejump.okscripttoolkit.core.OkProjectDetection.isOkScriptProject(project)
+
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val panel = TempScreenshotPanel(project)
         val content = ContentFactory.getInstance().createContent(panel.mainPanel, "", false)
@@ -98,7 +101,7 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
         /** 坐标框手柄的命中半径（像素） */
         private const val HANDLE_PX = 8
 
-        private val COORD_COLOR = JBColor(0xE8A33D, 0xFFB454)
+        private val COORD_COLOR = OkTheme.SHOT_COORD
     }
 
     val mainPanel = JPanel(BorderLayout())
@@ -157,9 +160,9 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
 
         gridPanel.border = BorderFactory.createEmptyBorder(GRID_GAP, GRID_GAP, GRID_GAP, GRID_GAP)
         val gridScroll = JBScrollPane(gridPanel)
-        gridScroll.preferredSize = Dimension(0, 200)
+        gridScroll.preferredSize = com.intellij.util.ui.JBUI.size(0, 200)
 
-        statusLabel.border = BorderFactory.createEmptyBorder(2, 4, 2, 4)
+        statusLabel.border = com.intellij.util.ui.JBUI.Borders.empty(2, 4, 2, 4)
         statusLabel.font = statusLabel.font.deriveFont(11f)
 
         // 网格与状态栏合并放在 SOUTH（BorderLayout 同一位置只能挂一个组件）
@@ -167,7 +170,7 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
         bottom.add(gridScroll, BorderLayout.CENTER)
         bottom.add(statusLabel, BorderLayout.SOUTH)
 
-        stage.preferredSize = Dimension(0, 200)
+        stage.preferredSize = com.intellij.util.ui.JBUI.size(0, 200)
         mainPanel.add(toolbar, BorderLayout.NORTH)
         mainPanel.add(stage, BorderLayout.CENTER)
         mainPanel.add(bottom, BorderLayout.SOUTH)
@@ -250,7 +253,7 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
         val card = JPanel(BorderLayout())
         card.border = BorderFactory.createCompoundBorder(
             BorderFactory.createLineBorder(JBColor.border()),
-            BorderFactory.createEmptyBorder(2, 2, 2, 2),
+            com.intellij.util.ui.JBUI.Borders.empty(2, 2, 2, 2),
         )
         card.toolTipText = shot.name + " — " + msg("tempShots.dragHint")
 
@@ -896,7 +899,7 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
             // 保留的坐标框（图像坐标 → 屏幕坐标）+ 8 向手柄 + 当前读数
             committed?.let { rect ->
                 g2.color = COORD_COLOR
-                g2.stroke = BasicStroke(1.5f)
+                g2.stroke = OkTheme.stroke(1.5f)
                 drawImageRect(g2, rect)
                 val r = coordScreenRect()
                 if (coordMode && r != null) {
@@ -919,7 +922,7 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
                 val a = toImage(start)
                 val b = toImage(current)
                 g2.color = COORD_COLOR
-                g2.stroke = BasicStroke(1.5f, 0, 0, 8f, floatArrayOf(6f, 6f), 0f)
+                g2.stroke = OkTheme.dashed(1.5f, 6f, 6f)
                 drawImageRect(
                     g2,
                     ImageRect(

@@ -10,6 +10,7 @@ import com.alicejump.okscripttoolkit.core.OkProjectDataService
 import com.alicejump.okscripttoolkit.core.PointCatalogService
 import com.alicejump.okscripttoolkit.core.TemplateThumbPipeline
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
+import com.intellij.icons.AllIcons
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
@@ -39,11 +40,17 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 
 class CardPublishingAnnotationToolWindowFactory : ToolWindowFactory, DumbAware {
+    override suspend fun isApplicableAsync(project: Project): Boolean =
+        com.alicejump.okscripttoolkit.core.OkProjectDetection.isOkScriptProject(project)
+
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) =
         PublishingAnnotationToolWindowFactory().createToolWindowContent(project, toolWindow)
 }
 
 class CardResourcePreviewToolWindowFactory : ToolWindowFactory, DumbAware {
+    override suspend fun isApplicableAsync(project: Project): Boolean =
+        com.alicejump.okscripttoolkit.core.OkProjectDetection.isOkScriptProject(project)
+
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val preview = UnifiedResourcePreview(project)
         val content = ContentFactory.getInstance().createContent(preview.component, "", false)
@@ -81,13 +88,14 @@ internal class UnifiedResourcePreview(private val project: Project) : Disposable
     private val cards = ResourceThumbnailGrid<CardVisual>(
         visual = { it },
         actions = { item -> listOf(
-            ResourceCardAction("＋", OkScriptToolkitBundle.message("gallery.insert")) { insert(item) },
-            ResourceCardAction("⧉", OkScriptToolkitBundle.message("gallery.copy")) { copy(item) },
-            ResourceCardAction("👁", OkScriptToolkitBundle.message("gallery.open")) { open(item) },
+            ResourceCardAction(AllIcons.General.Add, OkScriptToolkitBundle.message("gallery.insert")) { insert(item) },
+            ResourceCardAction(AllIcons.Actions.Copy, OkScriptToolkitBundle.message("gallery.copy")) { copy(item) },
+            ResourceCardAction(AllIcons.Actions.Show, OkScriptToolkitBundle.message("gallery.open")) { open(item) },
         ) },
-        onSingle = ::insert,
-        onDouble = ::copy,
+        primary = ::insert,
         load = { requests, callback -> TemplateThumbPipeline.loadThumbs(project, requests, ResourceThumbnailGrid.THUMB_HEIGHT, onThumb = callback) },
+        edit = ::open,
+        copy = ::copy,
     )
 
     init {

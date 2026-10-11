@@ -89,7 +89,7 @@ internal class AccountEditorDialog(
             }, BorderLayout.EAST)
         }
         val projectRoot = JPanel(BorderLayout(8, 0)).apply {
-            border = javax.swing.BorderFactory.createEmptyBorder(8, 12, 0, 12)
+            border = com.intellij.util.ui.JBUI.Borders.empty(8, 12, 0, 12)
             add(JBLabel(msg("taskLauncher.envProjectRoot")), BorderLayout.WEST)
             add(SchemaFieldUi.WrappingDescription(projectDir), BorderLayout.CENTER)
         }
@@ -98,7 +98,7 @@ internal class AccountEditorDialog(
             add(tabs, BorderLayout.CENTER)
             add(bottom, BorderLayout.SOUTH)
         }
-        dialog.minimumSize = Dimension(480, 400)
+        dialog.minimumSize = com.intellij.util.ui.JBUI.size(480, 400)
         val hostWindow = SwingUtilities.getWindowAncestor(parent)
         dialog.setSize(
             ((hostWindow?.width ?: 800) - 40).coerceIn(480, 760),
@@ -157,14 +157,14 @@ internal class AccountEditorDialog(
     }
 
     private fun buildListTab(): JPanel = JPanel(BorderLayout(8, 8)).apply {
-        border = javax.swing.BorderFactory.createEmptyBorder(12, 12, 12, 12)
+        border = com.intellij.util.ui.JBUI.Borders.empty(12, 12, 12, 12)
         add(SchemaFieldUi.WrappingDescription(msg("taskLauncher.accountListHint")), BorderLayout.NORTH)
         add(JBScrollPane(accountListArea), BorderLayout.CENTER)
         add(JPanel(FlowLayout(FlowLayout.RIGHT)).apply { add(listSave) }, BorderLayout.SOUTH)
     }
 
     private fun buildOverrideTab(): JPanel = JPanel(BorderLayout(8, 8)).apply {
-        border = javax.swing.BorderFactory.createEmptyBorder(12, 12, 12, 12)
+        border = com.intellij.util.ui.JBUI.Borders.empty(12, 12, 12, 12)
         val selectors = JPanel(GridLayout(2, 2, 8, 8)).apply {
             add(JBLabel(msg("taskLauncher.accountName")))
             add(overrideAccount)
@@ -180,7 +180,7 @@ internal class AccountEditorDialog(
     }
 
     private fun buildMapTab(): JPanel = JPanel(BorderLayout(8, 8)).apply {
-        border = javax.swing.BorderFactory.createEmptyBorder(12, 12, 12, 12)
+        border = com.intellij.util.ui.JBUI.Borders.empty(12, 12, 12, 12)
         add(JPanel(BorderLayout(8, 0)).apply {
             add(JBLabel(msg("taskLauncher.accountName")), BorderLayout.WEST)
             add(mapAccount, BorderLayout.CENTER)

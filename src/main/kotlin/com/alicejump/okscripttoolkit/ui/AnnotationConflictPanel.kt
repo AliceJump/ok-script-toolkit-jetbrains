@@ -35,11 +35,11 @@ internal class AnnotationConflictPanel : JPanel(BorderLayout(0, 6)) {
         isVisible = false
         border = BorderFactory.createCompoundBorder(
             BorderFactory.createTitledBorder(AnnotationUiBundle.message("conflict.title")),
-            BorderFactory.createEmptyBorder(2, 4, 4, 4),
+            com.intellij.util.ui.JBUI.Borders.empty(2, 4, 4, 4),
         )
         rows.layout = BoxLayout(rows, BoxLayout.Y_AXIS)
         val scroll = JScrollPane(rows)
-        scroll.preferredSize = Dimension(280, 260)
+        scroll.preferredSize = com.intellij.util.ui.JBUI.size(280, 260)
         add(scroll, BorderLayout.CENTER)
         applyButton.isEnabled = false
         applyButton.addActionListener { onApply?.invoke(choices.toMap()) }
@@ -74,7 +74,7 @@ internal class AnnotationConflictPanel : JPanel(BorderLayout(0, 6)) {
         for (conflict in conflicts) {
             val row = JPanel()
             row.layout = BoxLayout(row, BoxLayout.Y_AXIS)
-            row.border = BorderFactory.createEmptyBorder(3, 2, 9, 2)
+            row.border = com.intellij.util.ui.JBUI.Borders.empty(3, 2, 9, 2)
             row.add(JBLabel(conflictTitle(conflict)))
             row.add(CandidatePreview(conflict))
 
@@ -120,15 +120,15 @@ internal class AnnotationConflictPanel : JPanel(BorderLayout(0, 6)) {
      */
     private class CandidatePreview(private val conflict: AnnotationConflict) : JComponent() {
         companion object {
-            private val LOCAL = JBColor(0x0078D4, 0x4A9EFF)
-            private val EXTERNAL = JBColor(0xE08700, 0xFFA02E)
-            private val BORDER = JBColor(0xC8C8C8, 0x555555)
+            private val LOCAL = OkTheme.CONFLICT_LOCAL
+            private val EXTERNAL = OkTheme.CONFLICT_EXTERNAL
+            private val BORDER get() = OkTheme.CONFLICT_BORDER
         }
 
         init {
-            preferredSize = Dimension(250, 86)
-            minimumSize = Dimension(180, 70)
-            maximumSize = Dimension(Int.MAX_VALUE, 96)
+            preferredSize = com.intellij.util.ui.JBUI.size(250, 86)
+            minimumSize = com.intellij.util.ui.JBUI.size(180, 70)
+            maximumSize = Dimension(Int.MAX_VALUE, com.intellij.util.ui.JBUI.scale(96))
             toolTipText = AnnotationUiBundle.message("conflict.tooltip")
         }
 
@@ -156,8 +156,8 @@ internal class AnnotationConflictPanel : JPanel(BorderLayout(0, 6)) {
                 fun drawCandidate(shape: MergeShape, external: Boolean) {
                     g2.color = if (external) EXTERNAL else LOCAL
                     g2.stroke = if (external) {
-                        BasicStroke(2f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f, floatArrayOf(6f, 4f), 0f)
-                    } else BasicStroke(2f)
+                        OkTheme.dashed(2f, 6f, 4f)
+                    } else OkTheme.stroke(2f)
                     val x = (pad + (shape.x - minX) * scale).toInt()
                     val y = (pad + (shape.y - minY) * scale).toInt()
                     if (shape.w == 0 && shape.h == 0) {

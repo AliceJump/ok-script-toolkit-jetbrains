@@ -119,10 +119,10 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
     JPanel(GridBagLayout()), Scrollable {
 
     companion object {
-        private val KIND_HEAD_INSETS = Insets(8, 2, 2, 2)
-        private val GROUP_HEAD_INSETS = Insets(6, 10, 2, 2)
-        private val CARD_INSETS = Insets(2, 4, 2, 4)
-        private val EMPTY_INSETS = Insets(12, 10, 10, 10)
+        private val KIND_HEAD_INSETS = com.intellij.util.ui.JBUI.insets(8, 2, 2, 2)
+        private val GROUP_HEAD_INSETS = com.intellij.util.ui.JBUI.insets(6, 10, 2, 2)
+        private val CARD_INSETS = com.intellij.util.ui.JBUI.insets(2, 4, 2, 4)
+        private val EMPTY_INSETS = com.intellij.util.ui.JBUI.insets(12, 10, 10, 10)
     }
 
     private var tasks: List<TaskInfo> = emptyList()
@@ -262,8 +262,7 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
     ): JComponent {
         val row = JPanel(WrapLayout(FlowLayout.LEFT, 4, 0))
         row.isOpaque = false
-        val chevron = JBLabel(if (collapsed) "▶" else "▼")
-        if (small) chevron.font = chevron.font.deriveFont(chevron.font.size2D - 2f)
+        val chevron = JBLabel(if (collapsed) com.intellij.icons.AllIcons.General.ChevronRight else com.intellij.icons.AllIcons.General.ChevronDown)
         val title = JBLabel(label)
         title.font = title.font.deriveFont(Font.BOLD)
         if (small) title.font = title.font.deriveFont(title.font.size2D - 1f)
@@ -370,7 +369,7 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
             JCheckBox().apply {
                 isOpaque = false
                 isFocusable = false
-                margin = Insets(0, 0, 0, 0)
+                margin = com.intellij.util.ui.JBUI.insets(0, 0, 0, 0)
                 addActionListener {
                     if (!programmaticToggle) host.onToggleTrigger(task, isSelected)
                 }
@@ -388,7 +387,7 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
                 putClientProperty("JButton.buttonType", "borderless")
                 isBorderPainted = false
                 isContentAreaFilled = false
-                margin = Insets(0, 0, 0, 0)
+                margin = com.intellij.util.ui.JBUI.insets(0, 0, 0, 0)
                 toolTipText = OkScriptToolkitBundle.message("taskLauncher.run")
                 addActionListener { host.onRunTask(task) }
             }
@@ -455,14 +454,14 @@ internal class TaskCardListPanel(private val host: TaskCardHost) :
         private fun cardBorder(): javax.swing.border.Border {
             val selected = cardKey == selectedKey
             return BorderFactory.createCompoundBorder(
-                BorderFactory.createEmptyBorder(2, 2, 2, 2),
+                com.intellij.util.ui.JBUI.Borders.empty(2, 2, 2, 2),
                 BorderFactory.createCompoundBorder(
                     BorderFactory.createLineBorder(kindColor, if (selected) 2 else 1, true),
                     BorderFactory.createCompoundBorder(
-                        BorderFactory.createEmptyBorder(2, 2, 2, 2),
+                        com.intellij.util.ui.JBUI.Borders.empty(2, 2, 2, 2),
                         BorderFactory.createCompoundBorder(
                             BorderFactory.createLineBorder(statusColor, 1, true),
-                            BorderFactory.createEmptyBorder(4, 6, 4, 6),
+                            com.intellij.util.ui.JBUI.Borders.empty(4, 6, 4, 6),
                         ),
                     ),
                 ),

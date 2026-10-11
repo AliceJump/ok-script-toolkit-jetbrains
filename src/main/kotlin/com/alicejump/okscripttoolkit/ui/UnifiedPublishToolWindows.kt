@@ -175,13 +175,15 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
                 intArrayOf(0, 0, image.width, image.height), names)
         },
         actions = { image -> listOf(
-            ResourceCardAction("👁", assetMessage("templateAsset.open")) { viewSource(image) },
-            ResourceCardAction("⇄", assetMessage("templateAsset.swap")) { swapImage(image) },
-            ResourceCardAction("×", assetMessage("templateAsset.delete")) { deleteImage(image) },
+            ResourceCardAction(com.intellij.icons.AllIcons.Actions.Show, assetMessage("templateAsset.open")) { viewSource(image) },
+            ResourceCardAction(com.intellij.icons.AllIcons.Actions.SwapPanels, assetMessage("templateAsset.swap")) { swapImage(image) },
+            ResourceCardAction(com.intellij.icons.AllIcons.Actions.GC, assetMessage("templateAsset.delete")) { deleteImage(image) },
         ) },
-        onSingle = ::openImage,
+        primary = ::openImage,
         load = { requests, callback -> com.alicejump.okscripttoolkit.core.TemplateThumbPipeline.loadThumbs(
             project, requests, ResourceThumbnailGrid.THUMB_HEIGHT, onThumb = callback) },
+        edit = ::openImage,
+        delete = ::deleteImage,
     )
     private val hardForeground = HardForegroundToggle.create(project)
     private val generation = AtomicInteger(0)

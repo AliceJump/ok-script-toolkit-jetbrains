@@ -64,7 +64,7 @@ class SwapTargetDialog(
         hint.font = hint.font.deriveFont(11f)
 
         val scroll = JBScrollPane(list)
-        scroll.preferredSize = Dimension(520, 300)
+        scroll.preferredSize = com.intellij.util.ui.JBUI.size(520, 300)
 
         return JPanel(BorderLayout(0, 6)).apply {
             add(hint, BorderLayout.NORTH)

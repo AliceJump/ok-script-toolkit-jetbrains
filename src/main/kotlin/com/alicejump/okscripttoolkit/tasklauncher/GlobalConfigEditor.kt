@@ -73,15 +73,15 @@ internal object GlobalConfigEditor {
             form.add(SchemaFieldUi.WrappingDescription(group.description), GridBagConstraints().apply {
                 gridx = 0; gridy = rowIndex++; weightx = 1.0
                 fill = GridBagConstraints.HORIZONTAL
-                insets = Insets(8, 12, 8, 12)
+                insets = com.intellij.util.ui.JBUI.insets(8, 12, 8, 12)
             })
         }
-        rowIndex = addFieldRows(form, controls, rowIndex, Insets(1, 8, 1, 8), defaultOpen = accountOverride)
+        rowIndex = addFieldRows(form, controls, rowIndex, com.intellij.util.ui.JBUI.insets(1, 8, 1, 8), defaultOpen = accountOverride)
         form.add(JPanel().apply { isOpaque = false }, GridBagConstraints().apply {
             gridx = 0; gridy = rowIndex; weighty = 1.0; fill = GridBagConstraints.BOTH
         })
         val scroll = JBScrollPane(form).apply {
-            preferredSize = Dimension(560, (controls.size * 90 + 32).coerceIn(160, 500))
+            preferredSize = com.intellij.util.ui.JBUI.size(560, (controls.size * 90 + 32).coerceIn(160, 500))
             border = null
         }
         val options = if (accountOverride) arrayOf(
@@ -224,7 +224,7 @@ internal object GlobalConfigEditor {
                 isOpaque = false
                 border = javax.swing.BorderFactory.createCompoundBorder(
                     javax.swing.BorderFactory.createLineBorder(JBColor.border()),
-                    javax.swing.BorderFactory.createEmptyBorder(4, 8, 6, 8),
+                    com.intellij.util.ui.JBUI.Borders.empty(4, 8, 6, 8),
                 )
                 add(button, BorderLayout.NORTH)
                 add(body, BorderLayout.CENTER)
@@ -377,7 +377,7 @@ internal object GlobalConfigEditor {
             list.selectedIndices = values.indices.filter { index ->
                 selected.any { it == values[index] || it?.toString() == values[index]?.toString() }
             }.toIntArray()
-            val scroll = JBScrollPane(list).apply { preferredSize = Dimension(240, 112) }
+            val scroll = JBScrollPane(list).apply { preferredSize = com.intellij.util.ui.JBUI.size(240, 112) }
             return FieldControl(field, scroll, { list.selectedValuesList.toList() }).withChangeHook(onChanged)
         }
         if (value is Int) {
@@ -408,7 +408,7 @@ internal object GlobalConfigEditor {
                 lineWrap = true
                 wrapStyleWord = true
             }
-            val scroll = JBScrollPane(input).apply { preferredSize = Dimension(240, 110) }
+            val scroll = JBScrollPane(input).apply { preferredSize = com.intellij.util.ui.JBUI.size(240, 110) }
             return FieldControl(field, scroll, {
                 val parsed = try { mapper.readTree(input.text) } catch (_: Exception) { null }
                     ?: throw IllegalArgumentException()
@@ -424,7 +424,7 @@ internal object GlobalConfigEditor {
             JTextField(text, 24)
         }
         val component = if (input is JTextArea) {
-            JBScrollPane(input).apply { preferredSize = Dimension(240, 96) }
+            JBScrollPane(input).apply { preferredSize = com.intellij.util.ui.JBUI.size(240, 96) }
         } else input
         return FieldControl(field, component, { input.text }).withChangeHook(onChanged)
     }

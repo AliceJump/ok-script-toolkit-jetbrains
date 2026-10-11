@@ -211,8 +211,8 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         // honorComponentsMinimumSize = true，可拖范围由子组件的最小尺寸算出，
         // 而 `JList` 的最小尺寸 = 首选尺寸（按最宽单元格算）⇒ 左侧最小比例几乎等于
         // 当前比例。EffectPicker 早先也是同一个坑（那里已显式写了 minimumSize）。
-        left.minimumSize = Dimension(180, 120)
-        detailScroll.minimumSize = Dimension(220, 120)
+        left.minimumSize = com.intellij.util.ui.JBUI.size(180, 120)
+        detailScroll.minimumSize = com.intellij.util.ui.JBUI.size(220, 120)
 
         val splitter = Splitter(false, 0.32f)
         splitter.firstComponent = left
@@ -1000,7 +1000,7 @@ class CharacterManagerPanel(private val project: Project) : com.intellij.openapi
         isBorderPainted = false
         isContentAreaFilled = false
         isFocusPainted = false
-        preferredSize = Dimension(22, 22)
+        preferredSize = com.intellij.util.ui.JBUI.size(22, 22)
         addActionListener { action() }
     }
 
