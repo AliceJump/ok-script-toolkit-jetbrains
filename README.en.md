@@ -69,6 +69,15 @@ To build the plugin from source instead, see [Build](#build).
 
 ### Tool windows
 
+Everything lives in **one** "ok-script" tool window on the right (matching the single container of VS Code PR #41):
+
+- **Run** tab — the upper half is a task tree (trigger tasks = checkboxes; one-time tasks grouped by business group, double-click / Enter to enqueue, speed search); the lower half is the parameter form of the selected task. Executor controls sit in an ActionToolbar, and a status bar widget shows executor state (click for pause / resume / stop current / view log).
+- **Resources** tab — a segmented control switches **Inbox** (temp shots) → **Drafts** (annotation management) → **Published** (resource preview). When draft templates are unpublished a banner appears; "Preview and publish…" first opens a read-only **publish preview** (files to write + templates added / overwritten / removed, compared by name only) and writes nothing until confirmed.
+- The four old tool window ids (`ok-script Tasks` / `Temp Shots` / `Annotation Management` / `Resource Preview`) stay for one version as hidden redirect aliases.
+- Unified card gestures: click / Space selects, double-click / Enter runs the primary action, `E` edits, `Ctrl/Cmd+C` copies, `Delete` deletes, arrow keys move; all buttons use platform icons with accessible names.
+- **Capture to Inbox**: `Ctrl+Alt+Shift+O` (macOS `⌘⌥⇧O`). `Ctrl+Alt+S` is IDE Settings and is not used; see [docs/keymap.en.md](docs/keymap.en.md) for how this was checked.
+- Editor integration: hover docs for `fL.xxx` / `self.pos.xxx` end with "Reveal in Resources · Find References"; the editor context menu "Find Template References" fills the Find tool window; a banner appears when a `.py` file references unpublished templates; "Open with Annotation Editor" in the Project view context menu (png / jpg / jpeg / webp only).
+
 - **Box resources and gallery** — edit COCO boxes with the shared annotation editor, generate boxes from templates, and publish explicitly. Runtime galleries provide cropped previews, source navigation, and insertion/copy of `self.pos` expressions. Business projects own game loading. See [feature parity](https://github.com/AliceJump/ok-script-toolkit/blob/main/docs/feature-parity.en.md) for both hosts.
 <!-- Demo GIF: tool windows. Show the template gallery + temp shots area. Width 900.
      Record from the JetBrains sandbox IDE — the parent repo's GIFs are VS Code. -->
@@ -79,8 +88,8 @@ To build the plugin from source instead, see [Build](#build).
 </p>
 -->
 
-- **Resource preview** — visible Template / Rect / Point mode buttons; single-click insert and double-click copy, with persistent bottom-right insert/copy/source buttons. Side and wide previews share a responsive grid, search, counts and loading states.
-- **Annotation management** — import, capture, search and publish; single-click source cards open the editor, while bottom-right buttons view sources, swap Template annotations or delete images. Swap targets use thumbnails with proportional scaling confirmation; deletion clears all three authoring sources.
+- **Resource preview** (Resources · Published) — visible Template / Rect / Point mode buttons; double-click / Enter inserts and `Ctrl/Cmd+C` copies, with persistent bottom-right insert/copy/source buttons. Side and wide previews share a responsive grid, search, counts and loading states.
+- **Annotation management** (Resources · Drafts) — import, capture, search and publish; double-click / Enter on a source card opens the editor, while bottom-right buttons view sources, swap Template annotations or delete images. Swap targets use thumbnails with proportional scaling confirmation; deletion clears all three authoring sources.
 - **Task launcher** — schema-driven parameter forms (grouped by `configGroups`),
   per-task overrides with auto-save and live push into the running executor, and a
   single long-lived executor process: one connection, then the framework's own
@@ -95,7 +104,7 @@ To build the plugin from source instead, see [Build](#build).
   full snapshot is injected as `OK_TOOLKIT_GCONFIG` at executor launch. A health
   bar reflects executor state in real time (current task / execution queue /
   trigger polling / paused), and task rows reveal a read-only summary on hover.
-- **Temp shots** — a scratch area for at most 10 recent screenshots. Paste a
+- **Temp shots** (Resources · Inbox) — a scratch area for at most 10 recent screenshots. Paste a
   clipboard image, capture the game window, or drop/paste image files. The stage
   shows the selected shot or cycles all of them every 0.1s; box-select copies
   normalized `x,y,tox,toy` coordinates to the clipboard, and thumbnails can be

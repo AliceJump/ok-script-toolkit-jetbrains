@@ -107,7 +107,27 @@ private object UnifiedPublishController {
             { TemplatePublishFlow.configure(project) },
             { PositionPublishFlow.configure(project, selection.rect, selection.point) },
             { PositionPublishFlow.publish(project, selection.rect, selection.point, it) },
-            { publishTemplate(project, it, onComplete) }, onComplete)
+            { publishTemplate(project, it, onComplete) }, onComplete,
+            confirm = { template, positions -> confirmPreview(project, template, positions) })
+    }
+
+    /** 发布预览：只读列出将写入的文件与模板增 / 覆盖 / 删，确认后才写盘。 */
+    private fun confirmPreview(project: Project, template: TemplatePublishPlan?, positions: PositionPublishPlan?): Boolean {
+        val root = project.service<OkProjectDataService>().rootPath()
+        fun label(path: java.nio.file.Path): String = root?.let { runCatching { it.relativize(path).toString() }.getOrNull() } ?: path.toString()
+        val templateInput = template?.let { plan ->
+            val data = project.service<TemplateAssetDataService>()
+            val coco = root?.let { data.load(it.toString(), OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory()) }
+            PublishPreview.TemplateInput(
+                targetLabel = label(plan.target),
+                enumPath = plan.enumFile,
+                draftNames = coco?.let(PublishPreview::draftNames).orEmpty(),
+                publishedNames = project.service<OkProjectDataService>().features().map { it.name },
+            )
+        }
+        val positionFiles = positions?.let { listOf(it.target) }.orEmpty()
+        val preview = PublishPreview.build(templateInput, positionFiles)
+        return PublishPreviewDialog(project, preview).showAndGet()
     }
 
     private fun availability(project: Project): PublishAvailability {

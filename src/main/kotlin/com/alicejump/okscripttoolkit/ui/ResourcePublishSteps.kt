@@ -9,9 +9,12 @@ internal fun <T : Any, P : Any> publishSelectedResources(
     publishPositions: (P) -> Boolean,
     publishTemplate: (T) -> Unit,
     completePositionsOnly: () -> Unit,
+    /** 两类目标都配置完成后、任何写盘之前的最后确认（发布预览）；返回 false 即取消。 */
+    confirm: (T?, P?) -> Boolean = { _, _ -> true },
 ) {
     val template = if (templateSelected) configureTemplate() ?: return else null
     val positions = if (positionsSelected) configurePositions() ?: return else null
+    if (!confirm(template, positions)) return
     if (positions != null && !publishPositions(positions)) return
     if (template != null) publishTemplate(template) else completePositionsOnly()
 }

@@ -83,6 +83,7 @@
             factoryClass="com.alicejump.okscripttoolkit.ui.LegacyAnnotationToolWindowAlias"/>
         <toolWindow id="ok-script Resource Preview" anchor="right" icon="/icons/templates.svg" doNotActivateOnStart="true"
             factoryClass="com.alicejump.okscripttoolkit.ui.LegacyPreviewToolWindowAlias"/>
+        <editorNotificationProvider implementation="com.alicejump.okscripttoolkit.editor.UnpublishedTemplateNotificationProvider"/>
         <statusBarWidgetFactory id="okScriptToolkit.executor"
             implementation="com.alicejump.okscripttoolkit.ui.OkExecutorStatusBarWidgetFactory"/>
 
@@ -132,6 +133,9 @@
                 <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt shift O"/>
             </action>
             <action id="com.alicejump.okscripttoolkit.PublishResources" class="com.alicejump.okscripttoolkit.ui.PublishResourcesAction"/>
+            <action id="com.alicejump.okscripttoolkit.FindTemplateReferences" class="com.alicejump.okscripttoolkit.ui.FindTemplateReferencesAction">
+                <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+            </action>
             <separator/>
             <reference ref="com.alicejump.okscripttoolkit.ShowUnifiedAnnotations"/>
             <reference ref="com.alicejump.okscripttoolkit.ShowUnifiedResources"/>
@@ -141,5 +145,8 @@
             <reference ref="com.alicejump.okscripttoolkit.ShowGettingStarted"/>
             <reference ref="com.alicejump.okscripttoolkit.ShowConventionSources"/>
         </group>
+        <action id="com.alicejump.okscripttoolkit.OpenWithAnnotationEditor" class="com.alicejump.okscripttoolkit.ui.OpenWithAnnotationEditorAction">
+            <add-to-group group-id="ProjectViewPopupMenu" anchor="after" relative-to-action="EditSource"/>
+        </action>
     </actions>
 </idea-plugin>
