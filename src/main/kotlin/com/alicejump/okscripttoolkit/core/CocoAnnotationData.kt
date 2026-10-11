@@ -582,7 +582,7 @@ open class CocoAnnotationData(
      * 返回成功导入的数量（失败的文件跳过）。
      */
     @Synchronized
-    fun importImages(sourceFiles: List<File>, targetDir: File): Int {
+    fun importImages(sourceFiles: List<File>, targetDir: File, convertBmp: Boolean = false): Int {
         if (!targetDir.isDirectory && !targetDir.mkdirs()) return 0
 
         val extensions = setOf("png", "jpg", "jpeg", "bmp")
@@ -601,11 +601,17 @@ open class CocoAnnotationData(
 
                 var next = 1
                 while (next.toString() in occupiedNames) next++
-                val targetName = "$next.$ext"
+                val convert = convertBmp && ext == "bmp"
+                val targetName = "$next.${if (convert) "png" else ext}"
                 val targetFile = File(targetDir, targetName)
                 val staged = Files.createTempFile(targetDir.toPath(), ".ok-import-", ".tmp")
                 try {
-                    Files.copy(sourceFile.toPath(), staged, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                    if (convert) {
+                        val image = javax.imageio.ImageIO.read(sourceFile) ?: continue
+                        if (!javax.imageio.ImageIO.write(image, "png", staged.toFile())) continue
+                    } else {
+                        Files.copy(sourceFile.toPath(), staged, java.nio.file.StandardCopyOption.REPLACE_EXISTING)
+                    }
                     Files.move(staged, targetFile.toPath())
                 } finally {
                     Files.deleteIfExists(staged)
