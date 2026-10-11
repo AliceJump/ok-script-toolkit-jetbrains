@@ -68,26 +68,23 @@
             implementationClass="com.alicejump.okscripttoolkit.editor.OkInlayHintsProvider"/>
 
         <!-- 用户侧只保留两个资源入口：原图/统一标注器，以及模板/框/点统一资源预览。 -->
+        <!-- 唯一工具窗口：运行（任务树 + 下半区参数）/ 资源（收件箱 → 草稿 → 已发布） -->
         <toolWindow
-            id="ok-script Annotation Management"
+            id="ok-script"
             anchor="right"
-            icon="/icons/assets.svg"
-            factoryClass="com.alicejump.okscripttoolkit.ui.CardPublishingAnnotationToolWindowFactory"/>
-        <toolWindow
-            id="ok-script Resource Preview"
-            anchor="right"
-            icon="/icons/templates.svg"
-            factoryClass="com.alicejump.okscripttoolkit.ui.CardResourcePreviewToolWindowFactory"/>
-        <toolWindow
-            id="ok-script Temp Shots"
-            anchor="right"
-            icon="/icons/tempShots.svg"
-            factoryClass="com.alicejump.okscripttoolkit.ui.TempScreenshotToolWindowFactory"/>
-        <toolWindow
-            id="ok-script Tasks"
-            anchor="right"
-            icon="/icons/task.svg"
-            factoryClass="com.alicejump.okscripttoolkit.tasklauncher.TaskLauncherToolWindowFactory"/>
+            icon="/icons/okScript.svg"
+            factoryClass="com.alicejump.okscripttoolkit.ui.OkScriptToolWindowFactory"/>
+        <!-- 旧 id 重定向别名：保留一个版本，不显示 stripe 按钮，激活时转到 ok-script 对应位置 -->
+        <toolWindow id="ok-script Tasks" anchor="right" icon="/icons/task.svg" doNotActivateOnStart="true"
+            factoryClass="com.alicejump.okscripttoolkit.ui.LegacyTasksToolWindowAlias"/>
+        <toolWindow id="ok-script Temp Shots" anchor="right" icon="/icons/tempShots.svg" doNotActivateOnStart="true"
+            factoryClass="com.alicejump.okscripttoolkit.ui.LegacyTempShotsToolWindowAlias"/>
+        <toolWindow id="ok-script Annotation Management" anchor="right" icon="/icons/assets.svg" doNotActivateOnStart="true"
+            factoryClass="com.alicejump.okscripttoolkit.ui.LegacyAnnotationToolWindowAlias"/>
+        <toolWindow id="ok-script Resource Preview" anchor="right" icon="/icons/templates.svg" doNotActivateOnStart="true"
+            factoryClass="com.alicejump.okscripttoolkit.ui.LegacyPreviewToolWindowAlias"/>
+        <statusBarWidgetFactory id="okScriptToolkit.executor"
+            implementation="com.alicejump.okscripttoolkit.ui.OkExecutorStatusBarWidgetFactory"/>
 
         <notificationGroup id="okScriptToolkit" displayType="BALLOON" isLogByDefault="true"/>
         <JavaScript.JsonSchema.ProviderFactory implementation="com.alicejump.okscripttoolkit.editor.OkConventionSchemaProviderFactory"/>
@@ -111,9 +108,8 @@
         <action id="com.alicejump.okscripttoolkit.ShowTasks" class="com.alicejump.okscripttoolkit.tasklauncher.ShowTasksAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
+        <!-- 旧「截图到标注管理」：不再占用 Ctrl+Alt+S（与 IDE Settings 冲突），改由「截到收件箱」承担快捷键 -->
         <action id="com.alicejump.okscripttoolkit.ScreenshotToTemplateAssets" class="com.alicejump.okscripttoolkit.ui.ScreenshotToPublishingAnnotationsAction">
-            <keyboard-shortcut keymap="$default" first-keystroke="control alt S"/>
-            <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt S"/>
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
         <action id="com.alicejump.okscripttoolkit.ShowCharacterManager" class="com.alicejump.okscripttoolkit.ui.ShowCharacterManagerAction">
@@ -125,5 +121,25 @@
         <action id="com.alicejump.okscripttoolkit.ShowConventionSources" class="com.alicejump.okscripttoolkit.ui.ShowConventionSourcesAction">
             <add-to-group group-id="ToolsMenu" anchor="last"/>
         </action>
+
+        <!-- ok-script 动作组：Tools 菜单里的一个子菜单，也可在 Find Action 里按名字找到 -->
+        <group id="OkScriptToolkit.Main" popup="true" icon="/icons/okScript.svg">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <action id="com.alicejump.okscripttoolkit.ShowOkScriptRun" class="com.alicejump.okscripttoolkit.ui.ShowOkScriptRunAction"/>
+            <action id="com.alicejump.okscripttoolkit.CaptureToInbox" class="com.alicejump.okscripttoolkit.ui.CaptureToInboxAction">
+                <!-- 已核对 2025.1 全部自带 keymap 与内置插件：无冲突；见 docs/keymap.md -->
+                <keyboard-shortcut keymap="$default" first-keystroke="control alt shift O"/>
+                <keyboard-shortcut keymap="Mac OS X" first-keystroke="meta alt shift O"/>
+            </action>
+            <action id="com.alicejump.okscripttoolkit.PublishResources" class="com.alicejump.okscripttoolkit.ui.PublishResourcesAction"/>
+            <separator/>
+            <reference ref="com.alicejump.okscripttoolkit.ShowUnifiedAnnotations"/>
+            <reference ref="com.alicejump.okscripttoolkit.ShowUnifiedResources"/>
+            <reference ref="com.alicejump.okscripttoolkit.ShowTempShots"/>
+            <reference ref="com.alicejump.okscripttoolkit.ShowCharacterManager"/>
+            <separator/>
+            <reference ref="com.alicejump.okscripttoolkit.ShowGettingStarted"/>
+            <reference ref="com.alicejump.okscripttoolkit.ShowConventionSources"/>
+        </group>
     </actions>
 </idea-plugin>

@@ -51,8 +51,6 @@ import javax.swing.TransferHandler
 import javax.swing.filechooser.FileNameExtensionFilter
 import com.intellij.ui.SearchTextField
 
-internal val PUBLISH_ANNOTATION_PANEL_KEY =
-    Key.create<PublishingAnnotationManagerPanel>("okScriptToolkit.publishingAnnotationPanel")
 
 private fun publishingMessage(key: String, vararg values: Any) = AnnotationUiBundle.message(key, *values)
 private fun assetMessage(key: String, vararg values: Any) = OkScriptToolkitBundle.message(key, *values)
@@ -154,15 +152,6 @@ private object UnifiedPublishController {
     }
 }
 
-class PublishingAnnotationToolWindowFactory : ToolWindowFactory, DumbAware {
-    override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        val panel = PublishingAnnotationManagerPanel(project)
-        val content = ContentFactory.getInstance().createContent(panel, "", false)
-        content.putUserData(PUBLISH_ANNOTATION_PANEL_KEY, panel)
-        content.setDisposer(panel)
-        toolWindow.contentManager.addContent(content)
-    }
-}
 
 /** 工作原图、图片动作和刷新始终通过同一个面板快照调用。 */
 internal class PublishingAnnotationManagerPanel(private val project: Project) : JPanel(BorderLayout(0, 4)), Disposable {
@@ -233,6 +222,9 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
 
     private fun root() = project.service<OkProjectDataService>().rootPath()
     private fun directory() = OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory()
+    /** 资源 tab 横幅「预览并发布…」入口：与工具栏发布按钮同一流程。 */
+    fun publishNow() = UnifiedPublishController.publish(project, ::reload)
+
     fun reload() {
         if (disposed || project.isDisposed) return
         val sequence = generation.incrementAndGet()
@@ -384,7 +376,6 @@ private fun notify(project: Project, message: String, type: NotificationType) {
 class ScreenshotToPublishingAnnotationsAction : AnAction(), DumbAware {
     override fun actionPerformed(event: AnActionEvent) {
         val project = event.project ?: return
-        val window = ToolWindowManager.getInstance(project).getToolWindow(UNIFIED_ANNOTATION_TOOL_WINDOW_ID) ?: return
-        window.show { window.contentManager.contents.firstOrNull()?.getUserData(PUBLISH_ANNOTATION_PANEL_KEY)?.screenshotNow() }
+        OkScriptToolWindows.withResources(project, ResourceSection.DRAFT) { it.screenshotToDrafts() }
     }
 }

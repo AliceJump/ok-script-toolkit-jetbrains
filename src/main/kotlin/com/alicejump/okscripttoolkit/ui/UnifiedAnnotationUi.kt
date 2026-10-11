@@ -1417,8 +1417,8 @@ class UnifiedAnnotationPanel(
 }
 
 class ShowUnifiedAnnotationsAction : AnAction(), DumbAware {
-    override fun actionPerformed(e: AnActionEvent) { e.project?.let { ToolWindowManager.getInstance(it).getToolWindow(UNIFIED_ANNOTATION_TOOL_WINDOW_ID)?.show() } }
+    override fun actionPerformed(e: AnActionEvent) { e.project?.let { OkScriptToolWindows.show(it, OkTab.RESOURCES, ResourceSection.DRAFT) } }
 }
 class ShowUnifiedResourcesAction : AnAction(), DumbAware {
-    override fun actionPerformed(e: AnActionEvent) { e.project?.let { ToolWindowManager.getInstance(it).getToolWindow(UNIFIED_RESOURCE_PREVIEW_TOOL_WINDOW_ID)?.show() } }
+    override fun actionPerformed(e: AnActionEvent) { e.project?.let { OkScriptToolWindows.show(it, OkTab.RESOURCES, ResourceSection.PUBLISHED) } }
 }

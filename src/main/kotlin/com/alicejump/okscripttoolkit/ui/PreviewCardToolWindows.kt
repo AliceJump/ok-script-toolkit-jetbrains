@@ -39,25 +39,7 @@ import javax.swing.event.DocumentListener
 import kotlin.math.max
 import kotlin.math.roundToInt
 
-class CardPublishingAnnotationToolWindowFactory : ToolWindowFactory, DumbAware {
-    override suspend fun isApplicableAsync(project: Project): Boolean =
-        com.alicejump.okscripttoolkit.core.OkProjectDetection.isOkScriptProject(project)
 
-    override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) =
-        PublishingAnnotationToolWindowFactory().createToolWindowContent(project, toolWindow)
-}
-
-class CardResourcePreviewToolWindowFactory : ToolWindowFactory, DumbAware {
-    override suspend fun isApplicableAsync(project: Project): Boolean =
-        com.alicejump.okscripttoolkit.core.OkProjectDetection.isOkScriptProject(project)
-
-    override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        val preview = UnifiedResourcePreview(project)
-        val content = ContentFactory.getInstance().createContent(preview.component, "", false)
-        content.setDisposer(preview)
-        toolWindow.contentManager.addContent(content)
-    }
-}
 
 internal data class CardVisual(val key: String, val name: String, val detail: String, val tooltip: String, val imagePath: Path, val bbox: IntArray, val categories: String? = null)
 
@@ -83,6 +65,7 @@ internal class UnifiedResourcePreview(private val project: Project) : Disposable
     private val generation = AtomicInteger(0)
     private var mode = PreviewMode.TEMPLATE
     private var visuals = emptyList<CardVisual>()
+    private val modeButtons = mutableMapOf<PreviewMode, JToggleButton>()
     private var disposed = false
     private val pythonEditor = PythonEditorTarget(project, this)
     private val cards = ResourceThumbnailGrid<CardVisual>(
@@ -108,6 +91,7 @@ internal class UnifiedResourcePreview(private val project: Project) : Disposable
         val group = ButtonGroup()
         val toolbar = JPanel(WrappingToolbarLayout()).apply {
             for (target in PreviewMode.entries) add(JToggleButton(AnnotationUiBundle.message(target.labelKey)).apply {
+                modeButtons[target] = this
                 group.add(this)
                 isSelected = target == mode
                 addActionListener { if (mode != target) { mode = target; refresh() } }
@@ -122,18 +106,29 @@ internal class UnifiedResourcePreview(private val project: Project) : Disposable
         refresh()
     }
 
+    private var pendingReveal: String? = null
+
+    /** 「在资源中定位」：切到模板、按名字过滤并选中；数据还在加载时等加载完成再选。 */
+    fun reveal(name: String): Boolean {
+        if (mode != PreviewMode.TEMPLATE) { mode = PreviewMode.TEMPLATE; modeButtons[mode]?.isSelected = true; pendingReveal = name; search.text = name; refresh(); return true }
+        search.text = name
+        if (visuals.isEmpty()) { pendingReveal = name; return true }
+        return cards.reveal { it.name == name }
+    }
+
     fun refresh() {
         if (disposed || project.isDisposed) return
         val current = generation.incrementAndGet()
         val requestedMode = mode
         visuals = emptyList()
         cards.setItems(emptyList(), invalidate = true)
-        cards.showError(AnnotationUiBundle.message("preview.loading"))
+        cards.showStatus(AnnotationUiBundle.message("preview.loading"))
         CompletableFuture.supplyAsync { loadVisuals(requestedMode) }.whenComplete { result, error ->
             SwingUtilities.invokeLater {
                 if (disposed || project.isDisposed || current != generation.get()) return@invokeLater
                 visuals = result.orEmpty()
                 applyFilter(invalidate = true)
+                pendingReveal?.let { name -> pendingReveal = null; cards.reveal { it.name == name } }
                 if (error != null) cards.showError(AnnotationUiBundle.message("manager.reloadFailed", (error.cause ?: error).message.orEmpty()))
             }
         }

@@ -110,6 +110,9 @@ dependencies {
     }
     testImplementation(kotlin("test"))
     testImplementation("junit:junit:4.13.2")
+    // 平台 UI 组件测试（BasePlatformTestCase，JUnit 3/4 风格）在 JUnit Platform 上跑需要 vintage 引擎；
+    // 版本与 kotlin-test-junit5 解析出的 jupiter 5.10.1 对齐。
+    testRuntimeOnly("org.junit.vintage:junit-vintage-engine:5.10.1")
 }
 
 kotlin {

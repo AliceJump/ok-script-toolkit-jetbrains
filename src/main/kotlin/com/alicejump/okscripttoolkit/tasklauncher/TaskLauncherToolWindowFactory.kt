@@ -50,26 +50,18 @@ import javax.swing.*
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 
-class TaskLauncherToolWindowFactory : ToolWindowFactory, com.intellij.openapi.project.DumbAware {
-    override suspend fun isApplicableAsync(project: Project): Boolean =
-        com.alicejump.okscripttoolkit.core.OkProjectDetection.isOkScriptProject(project)
 
-
-    companion object {
-        private val LOG = Logger.getInstance(TaskLauncherToolWindowFactory::class.java)
+/** 把已有图标按钮包装成 AnAction：显隐 / 启用读按钮当前状态，点击 = doClick。 */
+internal class ButtonProxyAction(private val button: javax.swing.AbstractButton) :
+    com.intellij.openapi.project.DumbAwareAction(button.toolTipText, button.toolTipText, button.icon) {
+    override fun getActionUpdateThread() = com.intellij.openapi.actionSystem.ActionUpdateThread.EDT
+    override fun update(e: com.intellij.openapi.actionSystem.AnActionEvent) {
+        e.presentation.isVisible = button.isVisible
+        e.presentation.isEnabled = button.isEnabled
+        e.presentation.text = button.toolTipText
+        e.presentation.icon = button.icon
     }
-
-    override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        val panel = TaskLauncherPanel(project)
-        val content = ContentFactory.getInstance().createContent(panel.mainPanel, "", false)
-        toolWindow.contentManager.addContent(content)
-
-        toolWindow.contentManager.addContentManagerListener(object : ContentManagerListener {
-            override fun contentRemoved(event: ContentManagerEvent) {
-                panel.onDispose()
-            }
-        })
-    }
+    override fun actionPerformed(e: com.intellij.openapi.actionSystem.AnActionEvent) = button.doClick(0)
 }
 
 class TaskLauncherPanel(private val project: Project) {
@@ -98,12 +90,6 @@ class TaskLauncherPanel(private val project: Project) {
         private const val TAB_TASKS = 0
 
         /**
-         * 任务页改用**上下分栏**的宽度阈值（px）。
-         * 再窄时左右分栏两边都不够用 —— 右侧工具窗默认停靠宽度就在这个值以下。
-         */
-        private const val TASK_PAGE_STACK_WIDTH = 560
-
-        /**
          * 任务页两个半区的最小边长（px）。
          *
          * `Splitter` 默认按子组件的最小尺寸夹住分隔条的可拖范围；两个半区都是滚动容器，
@@ -129,7 +115,7 @@ class TaskLauncherPanel(private val project: Project) {
      * 之前是「操作/任务/状态」三列平铺 JTable —— probe 顺序直出、无分组、无搜索，
      * 与 VS Code 侧的任务编排完全对不上。
      */
-    private val taskCardList = TaskCardListPanel(CardHost())
+    private val taskCardList = TaskTreePanel(CardHost())
     private val taskSearchField = SearchTextField(false)
 
     /** 执行队列条（#queueStrip 的等价物）：一次性队列非空时显示任务名 chips */
@@ -614,8 +600,8 @@ class TaskLauncherPanel(private val project: Project) {
         toolbar.add(taskSearchField, BorderLayout.CENTER)
         toolbar.add(refreshButton, BorderLayout.EAST)
 
-        val listScrollPane = JBScrollPane(taskCardList)
-        listScrollPane.border = BorderFactory.createEmptyBorder()
+        // 树自带滚动容器（TaskTreePanel）
+        val listScrollPane = taskCardList
         queueStrip.border = com.intellij.util.ui.JBUI.Borders.empty(0, 8, 2, 8)
 
         val taskListPane = JPanel(BorderLayout())
@@ -659,7 +645,8 @@ class TaskLauncherPanel(private val project: Project) {
         val host = taskPageHost ?: return
         val width = host.width
         if (!force && width <= 0) return
-        val stacked = width < TASK_PAGE_STACK_WIDTH
+        // 参数表单固定在下半区（与 VS Code「运行」视图下的「参数」同一位置，见 UI 方案决策 2）
+        val stacked = true
         if (!force && host.componentCount > 0 && stacked == taskPageStacked) return
         taskPageStacked = stacked
 
@@ -680,7 +667,7 @@ class TaskLauncherPanel(private val project: Project) {
         host.repaint()
     }
 
-    // ── 左列表：搜索 / 队列条 / 悬停（表格渲染器已由 TaskCardListPanel 取代） ──
+    // ── 左列表：搜索 / 队列条 / 悬停（列表由 TaskTreePanel 渲染） ──
 
     /** 搜索框输入 → 卡片列表过滤（对齐 webview setSearch：搜索激活时忽略折叠） */
     private fun applySearch() {
@@ -1040,14 +1027,16 @@ class TaskLauncherPanel(private val project: Project) {
         // 容器**当前**宽度算的，而放在 BorderLayout.EAST 时它的宽度恰恰取自它自己的首选宽度
         // ⇒ 首算拿到宽度 0，退化成「每项一行」= 按钮竖排（用户反馈「按钮怎么是竖着的」）。
         // 这里本来就只想要一行（图标按钮 6 个 ≈ 130px），FlowLayout 的首选宽度就是单行。
-        val right = JPanel(FlowLayout(FlowLayout.RIGHT, 2, 0))
-        right.isOpaque = false
-        right.add(runnerStartButton)
-        right.add(runnerPauseButton)
-        right.add(runnerResumeButton)
-        right.add(runnerStopCurrentButton)
-        right.add(runnerCloseButton)
-        right.add(logButton)
+        // 平台 ActionToolbar：每个动作代理到原按钮（启用 / 显隐仍由 syncHealthBar 写在按钮上），
+        // 获得 New UI 的悬停样式、键盘导航与 tooltip。
+        val group = com.intellij.openapi.actionSystem.DefaultActionGroup().apply {
+            listOf(runnerStartButton, runnerPauseButton, runnerResumeButton, runnerStopCurrentButton, runnerCloseButton, logButton)
+                .forEach { add(ButtonProxyAction(it)) }
+        }
+        val actionToolbar = com.intellij.openapi.actionSystem.ActionManager.getInstance()
+            .createActionToolbar("OkScriptToolkit.ExecutorBar", group, true)
+        actionToolbar.targetComponent = mainPanel
+        val right = actionToolbar.component.apply { isOpaque = false; border = com.intellij.util.ui.JBUI.Borders.empty() }
 
         val bar = JPanel(BorderLayout(8, 0))
         bar.isOpaque = false
@@ -1371,7 +1360,7 @@ class TaskLauncherPanel(private val project: Project) {
 
     /** 把某个独立工具窗口拉到前台（工具页入口用；窗口不存在时静默忽略） */
     private fun showToolWindow(id: String) {
-        com.intellij.openapi.wm.ToolWindowManager.getInstance(project).getToolWindow(id)?.show()
+        com.alicejump.okscripttoolkit.ui.OkScriptToolWindows.showLegacy(project, id)
     }
 
     // ── 配置页：全局配置（内联卡片 + 改动即存）──────────────────────

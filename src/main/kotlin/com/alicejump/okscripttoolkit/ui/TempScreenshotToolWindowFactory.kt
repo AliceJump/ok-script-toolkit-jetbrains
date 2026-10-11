@@ -75,17 +75,6 @@ import javax.swing.TransferHandler
  * 舞台使用降采样预览（[PREVIEW_MAX_HEIGHT]）而非原图：多张 4K 截图全量解码可达数百 MB，
  * 而归一化坐标只取比例，精度不受影响。
  */
-class TempScreenshotToolWindowFactory : ToolWindowFactory, com.intellij.openapi.project.DumbAware {
-    override suspend fun isApplicableAsync(project: Project): Boolean =
-        com.alicejump.okscripttoolkit.core.OkProjectDetection.isOkScriptProject(project)
-
-    override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        val panel = TempScreenshotPanel(project)
-        val content = ContentFactory.getInstance().createContent(panel.mainPanel, "", false)
-        content.setDisposer(panel)
-        toolWindow.contentManager.addContent(content)
-    }
-}
 
 class TempScreenshotPanel(private val project: Project) : Disposable {
 
@@ -431,6 +420,9 @@ class TempScreenshotPanel(private val project: Project) : Disposable {
             }
         }
     }
+
+    /** 「截到收件箱」动作入口：与面板上的截图按钮同一条路径。 */
+    fun captureNow() { if (captureButton.isEnabled) handleCapture() }
 
     private fun handleCapture() {
         captureButton.isEnabled = false
@@ -954,9 +946,7 @@ class ShowTempShotsAction : AnAction() {
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        ToolWindowManager.getInstance(project)
-            .getToolWindow("ok-script Temp Shots")
-            ?.show()
+        OkScriptToolWindows.show(project, OkTab.RESOURCES, ResourceSection.INBOX)
     }
 
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.BGT

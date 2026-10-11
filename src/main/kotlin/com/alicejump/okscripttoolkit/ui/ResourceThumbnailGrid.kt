@@ -129,6 +129,13 @@ internal class ResourceThumbnailGrid<T>(
         grid.revalidate(); grid.repaint()
     }
 
+    /** 非错误的过渡状态（加载中…），清空网格并用灰字显示。 */
+    fun showStatus(message: String) {
+        grid.removeAll(); cardsByIndex.clear(); shown = emptyList()
+        renderEmpty(message, error = false)
+        grid.revalidate(); grid.repaint()
+    }
+
     /** 空网格的链接动作（只在“完全没有资源”时显示，搜索无结果时不显示）。 */
     fun setEmptyAction(label: String?, action: (() -> Unit)?) {
         emptyAction = if (label != null && action != null) label to action else null
