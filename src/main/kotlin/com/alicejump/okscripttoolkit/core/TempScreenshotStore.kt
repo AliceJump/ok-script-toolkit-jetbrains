@@ -59,7 +59,7 @@ class TempScreenshotStore(private val project: Project) : Disposable {
 
     fun get(id: String): TempShot? = files.get(id)
 
-    fun newFilePath(): File = files.newFilePath()
+    fun newFilePath(extension: String = "png"): File = files.newFilePath(extension)
 
     fun addFile(source: File): TempShot? = files.addFile(source)?.also { notifyChanged() }
 

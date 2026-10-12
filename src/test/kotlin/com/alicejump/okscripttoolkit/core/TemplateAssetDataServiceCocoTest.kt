@@ -12,6 +12,24 @@ import kotlin.test.assertTrue
 
 class TemplateAssetDataServiceCocoTest {
     @Test
+    fun `temporary BMP promotion preserves pixels and normal import retains format`() {
+        val root = TestTmp.create("ok-coco-bmp-promotion")
+        val service = serviceAt(root)
+        val target = root.resolve("ok_templates").apply { mkdirs() }
+        val image = java.awt.image.BufferedImage(3, 2, java.awt.image.BufferedImage.TYPE_INT_RGB)
+        for (y in 0..1) for (x in 0..2) image.setRGB(x, y, (120 + x + y shl 16) or (40 + y shl 8) or (7 + x))
+        val source = root.resolve("shot.bmp")
+        assertTrue(javax.imageio.ImageIO.write(image, "bmp", source))
+        assertEquals(1, service.importImages(listOf(source), target, convertBmp = true))
+        val promoted = javax.imageio.ImageIO.read(target.resolve("1.png"))
+        assertEquals(3 to 2, promoted.width to promoted.height)
+        for (y in 0..1) for (x in 0..2) assertEquals(image.getRGB(x, y), promoted.getRGB(x, y))
+        assertEquals(1, service.importImages(listOf(source), target))
+        assertTrue(source.readBytes().contentEquals(target.resolve("2.bmp").readBytes()))
+        assertFalse(target.resolve("coco_annotations.json").exists())
+    }
+
+    @Test
     fun `first import reads target reservations without registering images`() {
         val root = TestTmp.create("ok-coco-import-first")
         val target = root.resolve("ok_templates").apply { mkdirs() }

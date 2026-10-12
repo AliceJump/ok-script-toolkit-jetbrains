@@ -96,6 +96,7 @@ class TaskRunnerService(private val project: Project) : Disposable {
 
     @Volatile
     private var currentProjectDir = ""
+    private var currentPythonPath = ""
 
     /** UI 自动保存和工具栏可能从不同线程同时推送命令，stdin 每行必须完整写入。 */
     private val commandLock = Any()
@@ -354,6 +355,7 @@ class TaskRunnerService(private val project: Project) : Disposable {
             stopRequested = false
             startupIntents.clear()
             currentProjectDir = projectDir
+            currentPythonPath = pythonPath
             snapshot = ExecutorState(status = "connecting", enabledTriggers = enabledTriggers)
             sessionId
         }
@@ -674,6 +676,12 @@ class TaskRunnerService(private val project: Project) : Disposable {
             line.contains(MARKER_STATE) -> applySnapshot(line.substringAfter(MARKER_STATE).trim())
             line.contains("OK_TOOLKIT_EXECUTOR_READY") -> {
                 connecting = false
+                if (!stopRequested) {
+                    runCatching {
+                        project.service<com.alicejump.okscripttoolkit.core.ScreenshotWorkerService>()
+                            .prewarm(currentProjectDir, currentPythonPath)
+                    }.onFailure { LOG.info("Screenshot warmup unavailable", it) }
+                }
                 snapshot = snapshot.copy(controlError = null)
                 if (!stopRequested) {
                     for ((key, enabled) in startupIntents.pendingTriggerCommands()) {
