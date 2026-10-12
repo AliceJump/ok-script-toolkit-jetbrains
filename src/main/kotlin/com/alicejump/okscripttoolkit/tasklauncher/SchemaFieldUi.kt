@@ -31,7 +31,7 @@ internal object SchemaFieldUi {
             override fun getMinimumSize(): Dimension = super.getMinimumSize().apply { width = 100 }
         }.apply {
             isOpaque = false
-            border = BorderFactory.createEmptyBorder(6, if (indented) 22 else 8, 6, 8)
+            border = com.intellij.util.ui.JBUI.Borders.empty(6, if (indented) 22 else 8, 6, 8)
             add(heading, BorderLayout.NORTH)
             add(control, BorderLayout.CENTER)
         }

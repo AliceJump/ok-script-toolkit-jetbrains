@@ -50,23 +50,18 @@ import javax.swing.*
 import javax.swing.event.DocumentEvent
 import javax.swing.event.DocumentListener
 
-class TaskLauncherToolWindowFactory : ToolWindowFactory {
 
-    companion object {
-        private val LOG = Logger.getInstance(TaskLauncherToolWindowFactory::class.java)
+/** 把已有图标按钮包装成 AnAction：显隐 / 启用读按钮当前状态，点击 = doClick。 */
+internal class ButtonProxyAction(private val button: javax.swing.AbstractButton) :
+    com.intellij.openapi.project.DumbAwareAction(button.toolTipText, button.toolTipText, button.icon) {
+    override fun getActionUpdateThread() = com.intellij.openapi.actionSystem.ActionUpdateThread.EDT
+    override fun update(e: com.intellij.openapi.actionSystem.AnActionEvent) {
+        e.presentation.isVisible = button.isVisible
+        e.presentation.isEnabled = button.isEnabled
+        e.presentation.text = button.toolTipText
+        e.presentation.icon = button.icon
     }
-
-    override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        val panel = TaskLauncherPanel(project)
-        val content = ContentFactory.getInstance().createContent(panel.mainPanel, "Tasks", false)
-        toolWindow.contentManager.addContent(content)
-
-        toolWindow.contentManager.addContentManagerListener(object : ContentManagerListener {
-            override fun contentRemoved(event: ContentManagerEvent) {
-                panel.onDispose()
-            }
-        })
-    }
+    override fun actionPerformed(e: com.intellij.openapi.actionSystem.AnActionEvent) = button.doClick(0)
 }
 
 class TaskLauncherPanel(private val project: Project) {
@@ -95,12 +90,6 @@ class TaskLauncherPanel(private val project: Project) {
         private const val TAB_TASKS = 0
 
         /**
-         * 任务页改用**上下分栏**的宽度阈值（px）。
-         * 再窄时左右分栏两边都不够用 —— 右侧工具窗默认停靠宽度就在这个值以下。
-         */
-        private const val TASK_PAGE_STACK_WIDTH = 560
-
-        /**
          * 任务页两个半区的最小边长（px）。
          *
          * `Splitter` 默认按子组件的最小尺寸夹住分隔条的可拖范围；两个半区都是滚动容器，
@@ -126,7 +115,7 @@ class TaskLauncherPanel(private val project: Project) {
      * 之前是「操作/任务/状态」三列平铺 JTable —— probe 顺序直出、无分组、无搜索，
      * 与 VS Code 侧的任务编排完全对不上。
      */
-    private val taskCardList = TaskCardListPanel(CardHost())
+    private val taskCardList = TaskTreePanel(CardHost())
     private val taskSearchField = SearchTextField(false)
 
     /** 执行队列条（#queueStrip 的等价物）：一次性队列非空时显示任务名 chips */
@@ -542,9 +531,9 @@ class TaskLauncherPanel(private val project: Project) {
         healthRow.add(schemaWarningLabel, BorderLayout.EAST)
 
         val statusBar = JPanel(BorderLayout(8, 0))
-        statusBar.border = BorderFactory.createEmptyBorder(2, 4, 2, 4)
+        statusBar.border = com.intellij.util.ui.JBUI.Borders.empty(2, 4, 2, 4)
         statusBar.add(healthRow, BorderLayout.CENTER)
-        progressBar.preferredSize = Dimension(90, 20)
+        progressBar.preferredSize = com.intellij.util.ui.JBUI.size(90, 20)
         progressBar.isVisible = false
         val statusEast = JPanel(FlowLayout(FlowLayout.RIGHT, 6, 0))
         statusEast.isOpaque = false
@@ -607,13 +596,13 @@ class TaskLauncherPanel(private val project: Project) {
         // （见 buildExecutorBar），任务页只留搜索 + 刷新。
         val toolbar = JPanel(BorderLayout(8, 0))
         toolbar.isOpaque = false
-        toolbar.border = BorderFactory.createEmptyBorder(8, 8, 4, 8)
+        toolbar.border = com.intellij.util.ui.JBUI.Borders.empty(8, 8, 4, 8)
         toolbar.add(taskSearchField, BorderLayout.CENTER)
         toolbar.add(refreshButton, BorderLayout.EAST)
 
-        val listScrollPane = JBScrollPane(taskCardList)
-        listScrollPane.border = BorderFactory.createEmptyBorder()
-        queueStrip.border = BorderFactory.createEmptyBorder(0, 8, 2, 8)
+        // 树自带滚动容器（TaskTreePanel）
+        val listScrollPane = taskCardList
+        queueStrip.border = com.intellij.util.ui.JBUI.Borders.empty(0, 8, 2, 8)
 
         val taskListPane = JPanel(BorderLayout())
         taskListPane.isOpaque = false
@@ -656,7 +645,8 @@ class TaskLauncherPanel(private val project: Project) {
         val host = taskPageHost ?: return
         val width = host.width
         if (!force && width <= 0) return
-        val stacked = width < TASK_PAGE_STACK_WIDTH
+        // 参数表单固定在下半区（与 VS Code「运行」视图下的「参数」同一位置，见 UI 方案决策 2）
+        val stacked = true
         if (!force && host.componentCount > 0 && stacked == taskPageStacked) return
         taskPageStacked = stacked
 
@@ -677,7 +667,7 @@ class TaskLauncherPanel(private val project: Project) {
         host.repaint()
     }
 
-    // ── 左列表：搜索 / 队列条 / 悬停（表格渲染器已由 TaskCardListPanel 取代） ──
+    // ── 左列表：搜索 / 队列条 / 悬停（列表由 TaskTreePanel 渲染） ──
 
     /** 搜索框输入 → 卡片列表过滤（对齐 webview setSearch：搜索激活时忽略折叠） */
     private fun applySearch() {
@@ -765,7 +755,7 @@ class TaskLauncherPanel(private val project: Project) {
 
         return JPanel(BorderLayout()).apply {
             isOpaque = false
-            border = BorderFactory.createEmptyBorder(8, 10, 6, 10)
+            border = com.intellij.util.ui.JBUI.Borders.empty(8, 10, 6, 10)
             add(identity, BorderLayout.CENTER)
         }
     }
@@ -788,7 +778,7 @@ class TaskLauncherPanel(private val project: Project) {
             isOpaque = false
             border = BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(1, 0, 0, 0, JBColor.border()),
-                BorderFactory.createEmptyBorder(2, 10, 6, 10),
+                com.intellij.util.ui.JBUI.Borders.empty(2, 10, 6, 10),
             )
             add(row, BorderLayout.CENTER)
         }
@@ -800,7 +790,7 @@ class TaskLauncherPanel(private val project: Project) {
         label.foreground = color
         label.border = BorderFactory.createCompoundBorder(
             BorderFactory.createLineBorder(color, 1, true),
-            BorderFactory.createEmptyBorder(0, 6, 0, 6),
+            com.intellij.util.ui.JBUI.Borders.empty(0, 6, 0, 6),
         )
     }
 
@@ -816,7 +806,7 @@ class TaskLauncherPanel(private val project: Project) {
         detailSyncButton.isEnabled = false
         detailResetButton.isEnabled = false
         val hint = mutedLabel(OkScriptToolkitBundle.message("taskLauncher.detailPlaceholder"))
-        hint.border = BorderFactory.createEmptyBorder(12, 2, 12, 2)
+        hint.border = com.intellij.util.ui.JBUI.Borders.empty(12, 2, 12, 2)
         paramPanel.add(hint, GridBagConstraints().apply {
             gridx = 0
             gridy = 0
@@ -824,7 +814,7 @@ class TaskLauncherPanel(private val project: Project) {
             weightx = 1.0
             fill = GridBagConstraints.HORIZONTAL
             anchor = GridBagConstraints.NORTH
-            insets = Insets(8, 4, 4, 4)
+            insets = com.intellij.util.ui.JBUI.insets(8, 4, 4, 4)
         })
         paramPanel.add(JPanel().apply { isOpaque = false }, GridBagConstraints().apply {
             gridx = 0
@@ -907,7 +897,7 @@ class TaskLauncherPanel(private val project: Project) {
             gridx = 0
             gridy = 0
             anchor = GridBagConstraints.WEST
-            insets = Insets(2, 10, 2, 10)
+            insets = com.intellij.util.ui.JBUI.insets(2, 10, 2, 10)
         }
         val kind = taskKindOf(task)
         content.add(
@@ -1037,20 +1027,22 @@ class TaskLauncherPanel(private val project: Project) {
         // 容器**当前**宽度算的，而放在 BorderLayout.EAST 时它的宽度恰恰取自它自己的首选宽度
         // ⇒ 首算拿到宽度 0，退化成「每项一行」= 按钮竖排（用户反馈「按钮怎么是竖着的」）。
         // 这里本来就只想要一行（图标按钮 6 个 ≈ 130px），FlowLayout 的首选宽度就是单行。
-        val right = JPanel(FlowLayout(FlowLayout.RIGHT, 2, 0))
-        right.isOpaque = false
-        right.add(runnerStartButton)
-        right.add(runnerPauseButton)
-        right.add(runnerResumeButton)
-        right.add(runnerStopCurrentButton)
-        right.add(runnerCloseButton)
-        right.add(logButton)
+        // 平台 ActionToolbar：每个动作代理到原按钮（启用 / 显隐仍由 syncHealthBar 写在按钮上），
+        // 获得 New UI 的悬停样式、键盘导航与 tooltip。
+        val group = com.intellij.openapi.actionSystem.DefaultActionGroup().apply {
+            listOf(runnerStartButton, runnerPauseButton, runnerResumeButton, runnerStopCurrentButton, runnerCloseButton, logButton)
+                .forEach { add(ButtonProxyAction(it)) }
+        }
+        val actionToolbar = com.intellij.openapi.actionSystem.ActionManager.getInstance()
+            .createActionToolbar("OkScriptToolkit.ExecutorBar", group, true)
+        actionToolbar.targetComponent = mainPanel
+        val right = actionToolbar.component.apply { isOpaque = false; border = com.intellij.util.ui.JBUI.Borders.empty() }
 
         val bar = JPanel(BorderLayout(8, 0))
         bar.isOpaque = false
         bar.border = BorderFactory.createCompoundBorder(
             BorderFactory.createMatteBorder(1, 0, 0, 0, JBColor.border()),
-            BorderFactory.createEmptyBorder(3, 6, 3, 6),
+            com.intellij.util.ui.JBUI.Borders.empty(3, 6, 3, 6),
         )
         bar.add(statusRow, BorderLayout.CENTER)
         bar.add(right, BorderLayout.EAST)
@@ -1257,7 +1249,7 @@ class TaskLauncherPanel(private val project: Project) {
             isOpaque = false
             border = BorderFactory.createCompoundBorder(
                 BorderFactory.createLineBorder(JBColor.border(), 1, true),
-                BorderFactory.createEmptyBorder(8, 12, 10, 12),
+                com.intellij.util.ui.JBUI.Borders.empty(8, 12, 10, 12),
             )
             add(titleLabel, BorderLayout.NORTH)
             add(body, BorderLayout.CENTER)
@@ -1269,7 +1261,7 @@ class TaskLauncherPanel(private val project: Project) {
     private fun singleColumnPage(cards: List<JPanel>): JPanel {
         val column = JPanel(GridBagLayout())
         column.isOpaque = false
-        column.border = BorderFactory.createEmptyBorder(12, 14, 12, 14)
+        column.border = com.intellij.util.ui.JBUI.Borders.empty(12, 14, 12, 14)
         cards.forEachIndexed { index, card ->
             column.add(card, GridBagConstraints().apply {
                 gridx = 0
@@ -1277,7 +1269,7 @@ class TaskLauncherPanel(private val project: Project) {
                 weightx = 1.0
                 fill = GridBagConstraints.HORIZONTAL
                 anchor = GridBagConstraints.NORTHWEST
-                insets = Insets(0, 0, 10, 0)
+                insets = com.intellij.util.ui.JBUI.insets(0, 0, 10, 0)
             })
         }
         column.add(JPanel().apply { isOpaque = false }, GridBagConstraints().apply {
@@ -1353,7 +1345,7 @@ class TaskLauncherPanel(private val project: Project) {
             isOpaque = false
             border = BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(1, 0, 0, 0, JBColor.border()),
-                BorderFactory.createEmptyBorder(6, 2, 6, 2),
+                com.intellij.util.ui.JBUI.Borders.empty(6, 2, 6, 2),
             )
             add(text, BorderLayout.CENTER)
             add(open, BorderLayout.EAST)
@@ -1368,7 +1360,7 @@ class TaskLauncherPanel(private val project: Project) {
 
     /** 把某个独立工具窗口拉到前台（工具页入口用；窗口不存在时静默忽略） */
     private fun showToolWindow(id: String) {
-        com.intellij.openapi.wm.ToolWindowManager.getInstance(project).getToolWindow(id)?.show()
+        com.alicejump.okscripttoolkit.ui.OkScriptToolWindows.showLegacy(project, id)
     }
 
     // ── 配置页：全局配置（内联卡片 + 改动即存）──────────────────────
@@ -1427,7 +1419,7 @@ class TaskLauncherPanel(private val project: Project) {
             putClientProperty("JButton.buttonType", "borderless")
             isBorderPainted = false
             isContentAreaFilled = false
-            margin = Insets(0, 0, 0, 0)
+            margin = com.intellij.util.ui.JBUI.insets(0, 0, 0, 0)
             toolTipText = OkScriptToolkitBundle.message(tipKey)
             addActionListener { action() }
         }
@@ -1464,11 +1456,11 @@ class TaskLauncherPanel(private val project: Project) {
                 weightx = 1.0
                 fill = GridBagConstraints.HORIZONTAL
                 anchor = GridBagConstraints.NORTHWEST
-                insets = Insets(0, 0, 6, 0)
+                insets = com.intellij.util.ui.JBUI.insets(0, 0, 6, 0)
             })
         }
         GlobalConfigEditor.addFieldRows(
-            form, controls, rowIndex, Insets(0, 0, 0, 0),
+            form, controls, rowIndex, com.intellij.util.ui.JBUI.insets(0, 0, 0, 0),
             isOpen = { section -> uiCollapseState[globalOptionFoldKey(group, section)] == false },
             onOpenChanged = { section, open ->
                 val key = globalOptionFoldKey(group, section)
@@ -2173,7 +2165,7 @@ class TaskLauncherPanel(private val project: Project) {
             paramPanel.add(separator, GridBagConstraints().apply {
                 gridx = 0; gridy = row; gridwidth = 2
                 fill = GridBagConstraints.HORIZONTAL
-                insets = Insets(4, 0, 4, 0)
+                insets = com.intellij.util.ui.JBUI.insets(4, 0, 4, 0)
             })
             row++
 
@@ -2190,7 +2182,7 @@ class TaskLauncherPanel(private val project: Project) {
             val gbc = GridBagConstraints().apply {
                 gridx = 0; gridy = row; gridwidth = 2
                 anchor = GridBagConstraints.NORTHWEST
-                insets = Insets(10, 10, 10, 10)
+                insets = com.intellij.util.ui.JBUI.insets(10, 10, 10, 10)
             }
             val text = when {
                 schema == null -> OkScriptToolkitBundle.message("taskLauncher.schemaNotProbed")
@@ -2457,7 +2449,7 @@ class TaskLauncherPanel(private val project: Project) {
                 fill = GridBagConstraints.HORIZONTAL
                 weightx = 1.0
                 anchor = GridBagConstraints.NORTHWEST
-                insets = Insets(2, 4, 2, 4)
+                insets = com.intellij.util.ui.JBUI.insets(2, 4, 2, 4)
             })
             paramFields[key] = valueControlOf(control)
             rowsByKey.getOrPut(key) { mutableListOf() }.add(rowPanel to control)
@@ -2541,20 +2533,23 @@ class TaskLauncherPanel(private val project: Project) {
         }
 
         private fun buildToggle(body: JPanel, stateKey: String): JButton {
-            val toggle = JButton("▼")
-            toggle.margin = Insets(0, 4, 0, 4)
+            val toggle = JButton(com.intellij.icons.AllIcons.General.ChevronDown)
+            toggle.margin = com.intellij.util.ui.JBUI.insets(0, 4)
             toggle.isContentAreaFilled = false
             toggle.isFocusable = false
             toggle.addActionListener {
                 val open = !body.isVisible
                 body.isVisible = open
-                toggle.text = if (open) "▲" else "▼"
+                toggle.icon = if (open) com.intellij.icons.AllIcons.General.ChevronUp else com.intellij.icons.AllIcons.General.ChevronDown
+                toggle.accessibleContext.accessibleName = OkScriptToolkitBundle.message(if (open) "taskLauncher.collapseSection" else "taskLauncher.expandSection")
                 if (open) openConfigGroups.add(stateKey) else openConfigGroups.remove(stateKey)
                 paramPanel.revalidate()
                 paramPanel.repaint()
             }
             body.isVisible = stateKey in openConfigGroups
-            toggle.text = if (body.isVisible) "▲" else "▼"
+            toggle.icon = if (body.isVisible) com.intellij.icons.AllIcons.General.ChevronUp else com.intellij.icons.AllIcons.General.ChevronDown
+            toggle.toolTipText = OkScriptToolkitBundle.message(if (body.isVisible) "taskLauncher.collapseSection" else "taskLauncher.expandSection")
+            toggle.accessibleContext.accessibleName = toggle.toolTipText
             return toggle
         }
 
@@ -2576,9 +2571,9 @@ class TaskLauncherPanel(private val project: Project) {
                 toggle?.let { east.add(it) }
                 north.add(east, BorderLayout.EAST)
             }
-            north.border = BorderFactory.createEmptyBorder(3, 6, 3, 6)
+            north.border = com.intellij.util.ui.JBUI.Borders.empty(3, 6, 3, 6)
             body.isOpaque = false
-            body.border = BorderFactory.createEmptyBorder(4, 4, 4, 4)
+            body.border = com.intellij.util.ui.JBUI.Borders.empty(4, 4, 4, 4)
             return JPanel(BorderLayout()).apply {
                 border = BorderFactory.createLineBorder(JBColor.border())
                 isOpaque = false
@@ -2592,7 +2587,7 @@ class TaskLauncherPanel(private val project: Project) {
                 gridx = 0; gridy = nextRow(container); gridwidth = 2
                 fill = GridBagConstraints.HORIZONTAL
                 weightx = 1.0
-                insets = Insets(4, 2, 4, 2)
+                insets = com.intellij.util.ui.JBUI.insets(4, 2, 4, 2)
             })
         }
 
@@ -2937,7 +2932,7 @@ class TaskLauncherPanel(private val project: Project) {
                             autoSaveTaskConfig(task, owningRenderer)
                         }
                     })
-                    return JBScrollPane(area).apply { preferredSize = Dimension(200, 70) }
+                    return JBScrollPane(area).apply { preferredSize = com.intellij.util.ui.JBUI.size(200, 70) }
                 }
                 val textField = JTextField(text)
                 textField.columns = 20
@@ -3020,7 +3015,7 @@ class TaskLauncherPanel(private val project: Project) {
             }
         })
         validateJson()
-        return JBScrollPane(area).apply { preferredSize = Dimension(200, 90) }
+        return JBScrollPane(area).apply { preferredSize = com.intellij.util.ui.JBUI.size(200, 90) }
     }
 
     private fun autoSaveTaskConfig(task: TaskLauncherService.TaskInfo, owningRenderer: SchemaTreeRenderer) {

@@ -47,8 +47,8 @@ class ResourceInteractionTest {
             val calls = mutableListOf<String>()
             val grid = ResourceThumbnailGrid<String>(
                 visual = { CardVisual(it, it, "", it, Path.of("$it.png"), intArrayOf(0, 0, 10, 10)) },
-                actions = { item -> listOf(ResourceCardAction("×", "Delete $item") { calls += item }) },
-                onSingle = { calls += "open:$it" }, load = { _, _ -> },
+                actions = { item -> listOf(ResourceCardAction(com.intellij.icons.AllIcons.Actions.GC, "Delete $item") { calls += item }) },
+                primary = { calls += "open:$it" }, load = { _, _ -> },
             )
             grid.setItems(listOf("first", "second"))
             descendants(grid).filterIsInstance<JButton>().single { it.toolTipText == "Delete second" }.doClick(0)
@@ -66,7 +66,7 @@ class ResourceInteractionTest {
             val callbacks = mutableListOf<(String, ImageIcon?) -> Unit>()
             val grid = ResourceThumbnailGrid<String>(
                 visual = { CardVisual(it, it, "", it, Path.of("$it.png"), intArrayOf(0, 0, 10, 10)) },
-                actions = { emptyList() }, onSingle = {},
+                actions = { emptyList() }, primary = {},
                 load = { _: List<TemplateThumbPipeline.Request<String>>, callback -> callbacks += callback },
             )
             grid.setItems(listOf("same"))
@@ -80,24 +80,74 @@ class ResourceInteractionTest {
         }
     }
 
+    private fun cards(grid: java.awt.Container) = descendants(grid).filterIsInstance<JPanel>().filter { it.isFocusable && it.accessibleContext.accessibleName != null }
+
+    private fun press(card: javax.swing.JComponent, code: Int, modifiers: Int = 0) {
+        val stroke = javax.swing.KeyStroke.getKeyStroke(code, modifiers)
+        val key = card.getInputMap(javax.swing.JComponent.WHEN_FOCUSED).get(stroke) ?: error("no binding for $stroke")
+        card.actionMap.get(key).actionPerformed(java.awt.event.ActionEvent(card, 0, key.toString()))
+    }
+
     @Test
-    fun `filter and direct buttons cancel pending preview insertion`() {
+    fun `single click only selects and double click runs the primary action`() {
+        SwingUtilities.invokeAndWait {
+            val calls = mutableListOf<String>()
+            val grid = ResourceThumbnailGrid<String>(
+                visual = { CardVisual(it, it, "", it, Path.of("$it.png"), intArrayOf(0, 0, 10, 10)) },
+                actions = { emptyList() }, primary = { calls += "primary:$it" }, load = { _, _ -> },
+                onSelect = { calls += "select:$it" },
+            )
+            grid.setItems(listOf("first", "second"))
+            val card = cards(grid)[1]
+            card.mouseListeners.forEach { it.mouseClicked(MouseEvent(card, MouseEvent.MOUSE_CLICKED, 0, 0, 2, 2, 1, false, MouseEvent.BUTTON1)) }
+            assertEquals(listOf("select:second"), calls)
+            assertEquals("second", grid.selected)
+            card.mouseListeners.forEach { it.mouseClicked(MouseEvent(card, MouseEvent.MOUSE_CLICKED, 0, 0, 2, 2, 2, false, MouseEvent.BUTTON1)) }
+            assertEquals(listOf("select:second", "primary:second"), calls)
+            grid.dispose()
+        }
+    }
+
+    @Test
+    fun `keyboard gestures match the VS Code card contract`() {
+        SwingUtilities.invokeAndWait {
+            val calls = mutableListOf<String>()
+            val grid = ResourceThumbnailGrid<String>(
+                visual = { CardVisual(it, it, "", it, Path.of("$it.png"), intArrayOf(0, 0, 10, 10)) },
+                actions = { emptyList() }, primary = { calls += "primary:$it" }, load = { _, _ -> },
+                edit = { calls += "edit:$it" }, copy = { calls += "copy:$it" }, delete = { calls += "delete:$it" },
+            )
+            grid.setItems(listOf("a", "b", "c"))
+            val (a, b, _) = cards(grid)
+            press(a, java.awt.event.KeyEvent.VK_ENTER)
+            press(a, java.awt.event.KeyEvent.VK_E)
+            press(a, java.awt.event.KeyEvent.VK_C, java.awt.Toolkit.getDefaultToolkit().menuShortcutKeyMaskEx)
+            press(a, java.awt.event.KeyEvent.VK_DELETE)
+            assertEquals(listOf("primary:a", "edit:a", "copy:a", "delete:a"), calls)
+            press(a, java.awt.event.KeyEvent.VK_RIGHT)
+            assertEquals("b", grid.selected)
+            press(b, java.awt.event.KeyEvent.VK_END)
+            assertEquals("c", grid.selected)
+            assertEquals(listOf("a", "b", "c"), cards(grid).map { it.accessibleContext.accessibleName })
+            grid.dispose()
+        }
+    }
+
+    @Test
+    fun `selection survives refresh and empty grid shows status text`() {
         SwingUtilities.invokeAndWait {
             val grid = ResourceThumbnailGrid<String>(
                 visual = { CardVisual(it, it, "", it, Path.of("$it.png"), intArrayOf(0, 0, 10, 10)) },
-                actions = { listOf(ResourceCardAction("⧉", "Copy") {}) }, onSingle = {}, onDouble = {}, load = { _, _ -> },
+                actions = { emptyList() }, primary = {}, load = { _, _ -> },
             )
-            grid.setItems(listOf("first"))
-            val card = descendants(grid).filterIsInstance<JPanel>().single { it.getClientProperty("thumbnailClickTimer") != null }
-            card.mouseListeners.forEach { it.mouseClicked(MouseEvent(card, MouseEvent.MOUSE_CLICKED, 0, 0, 2, 2, 1, false, MouseEvent.BUTTON1)) }
-            val timer = card.getClientProperty("thumbnailClickTimer") as Timer
-            assertTrue(timer.isRunning)
-            assertEquals(500, timer.initialDelay)
-            descendants(grid).filterIsInstance<JButton>().single { it.toolTipText == "Copy" }.doClick(0)
-            assertFalse(timer.isRunning)
-            timer.start()
+            grid.setItems(listOf("a", "b"))
+            assertTrue(grid.reveal { it == "b" })
+            grid.setItems(listOf("b", "c"))
+            assertEquals("b", grid.selected)
             grid.setItems(emptyList())
-            assertFalse(timer.isRunning)
+            assertTrue(grid.emptyMessage.isNotBlank())
+            grid.showError("broken")
+            assertEquals("broken", grid.emptyMessage)
             grid.dispose()
         }
     }

@@ -150,10 +150,10 @@ class UnifiedAnnotationPanel(
         private const val POINT_RADIUS = 6
         private const val HANDLE_MARGIN = 8
         private const val MIN_RECT = 3
-        private val NORMAL = JBColor(0xE53935, 0xFF5252)
-        private val SELECTED = JBColor(0x0078D4, 0x4A9EFF)
-        private val HOVER = JBColor(0xE08700, 0xFFA02E)
-        private val COORD = JBColor(0x7A5AF8, 0xA48BFF)
+        private val NORMAL = OkTheme.SHAPE_NORMAL
+        private val SELECTED = OkTheme.SHAPE_SELECTED
+        private val HOVER = OkTheme.SHAPE_HOVER
+        private val COORD = OkTheme.SHAPE_COORD
         private val MAPPER = ObjectMapper()
     }
 
@@ -178,13 +178,13 @@ class UnifiedAnnotationPanel(
     private val retryButton = JButton(ui("save.retry"))
     private val hidden = AnnotationKind.entries.associateWith { mutableSetOf<String>() }
     private var disposed = false
-    private val undoButton = JButton("↩")
-    private val redoButton = JButton("↪")
-    private val prevButton = JButton("◀")
-    private val nextButton = JButton("▶")
+    private val undoButton = iconButton(com.intellij.icons.AllIcons.Actions.Undo, ui("tool.undo"))
+    private val redoButton = iconButton(com.intellij.icons.AllIcons.Actions.Redo, ui("tool.redo"))
+    private val prevButton = iconButton(com.intellij.icons.AllIcons.Actions.Back, ui("tool.prevImage"))
+    private val nextButton = iconButton(com.intellij.icons.AllIcons.Actions.Forward, ui("tool.nextImage"))
     private val navLabel = JBLabel()
     private val statusLabel = JBLabel(" ")
-    private val swatch = JPanel().apply { preferredSize = Dimension(16, 16); isOpaque = true }
+    private val swatch = JPanel().apply { preferredSize = com.intellij.util.ui.JBUI.size(16, 16); isOpaque = true }
     private val rows = JPanel()
 
     private var currentIndex = startIndex.coerceIn(0, (images.size - 1).coerceAtLeast(0))
@@ -256,8 +256,8 @@ class UnifiedAnnotationPanel(
 
         rows.layout = BoxLayout(rows, BoxLayout.Y_AXIS)
         val listPanel = JPanel(BorderLayout(0, 4))
-        listPanel.preferredSize = Dimension(300, 560)
-        listPanel.border = BorderFactory.createEmptyBorder(0, 8, 0, 0)
+        listPanel.preferredSize = com.intellij.util.ui.JBUI.size(300, 560)
+        listPanel.border = com.intellij.util.ui.JBUI.Borders.empty(0, 8, 0, 0)
         listPanel.add(JPanel(WrappingToolbarLayout()).apply {
             add(JBLabel(ui("list.title")))
             fun visibility(key: String, action: () -> Unit) { add(JButton(ui(key)).apply { addActionListener { action(); syncRows(); canvas.repaint() } }) }
@@ -271,9 +271,9 @@ class UnifiedAnnotationPanel(
         }, BorderLayout.NORTH)
         listPanel.add(JPanel(BorderLayout()).apply { add(conflictPanel, BorderLayout.NORTH); add(JScrollPane(rows), BorderLayout.CENTER) }, BorderLayout.CENTER)
 
-        canvasHost.minimumSize = Dimension(1, 1)
-        canvas.minimumSize = Dimension(1, 1)
-        canvasHost.preferredSize = Dimension(900, 560)
+        canvasHost.minimumSize = com.intellij.util.ui.JBUI.size(1, 1)
+        canvas.minimumSize = com.intellij.util.ui.JBUI.size(1, 1)
+        canvasHost.preferredSize = com.intellij.util.ui.JBUI.size(900, 560)
         canvasHost.background = UIUtil.getPanelBackground()
         canvasHost.add(canvas)
         canvasHost.addComponentListener(object : java.awt.event.ComponentAdapter() {
@@ -881,13 +881,13 @@ class UnifiedAnnotationPanel(
             paintConflictCandidates(g2)
             coordRect?.let { rect ->
                 val r = toScreen(rect)
-                g2.color = COORD; g2.stroke = BasicStroke(2f); g2.drawRect(r.x, r.y, r.width, r.height)
+                g2.color = COORD; g2.stroke = OkTheme.stroke(2f); g2.drawRect(r.x, r.y, r.width, r.height)
                 handlePoints(r).values.forEach { p -> g2.fillRect(p.x - 3, p.y - 3, 6, 6) }
             }
             if (drawStart != null && drawPreview != null && (kind != AnnotationKind.POINT || tool == Tool.COORD)) {
                 val a = toImage(drawStart!!); val b = toImage(drawPreview!!)
                 val rect = Rectangle(min(a.x,b.x), min(a.y,b.y), abs(a.x-b.x), abs(a.y-b.y))
-                val r = toScreen(rect); g2.color = JBColor.GREEN; g2.drawRect(r.x,r.y,r.width,r.height)
+                val r = toScreen(rect); g2.color = OkTheme.SHAPE_DRAFT; g2.drawRect(r.x,r.y,r.width,r.height)
             }
             g2.dispose()
         }
@@ -896,7 +896,7 @@ class UnifiedAnnotationPanel(
             val isSelected = shape.id in selected
             val color = if (isSelected) SELECTED else if (shape.id == hovered) HOVER else NORMAL
             g2.color = color
-            g2.stroke = BasicStroke(if (isSelected) 2.5f else 2f)
+            g2.stroke = OkTheme.stroke(if (isSelected) 2.5f else 2f)
             if (kind == AnnotationKind.POINT) {
                 val p = toScreenPoint(Point(shape.x, shape.y))
                 g2.drawOval(p.x - 4, p.y - 4, 8, 8)
@@ -922,7 +922,7 @@ class UnifiedAnnotationPanel(
             val previous = g2.color
             g2.color = color
             g2.fillRoundRect(x, y, labelWidth, labelHeight, 6, 6)
-            g2.color = Color.WHITE
+            g2.color = OkTheme.LABEL_ON_SHAPE
             g2.drawString(text, x + 4, y + metrics.ascent + 2)
             g2.color = previous
         }
@@ -938,8 +938,8 @@ class UnifiedAnnotationPanel(
         private fun paintConflictCandidate(g2: Graphics2D, shape: MergeShape, external: Boolean) {
             g2.color = if (external) HOVER else SELECTED
             g2.stroke = if (external) {
-                BasicStroke(2f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_MITER, 10f, floatArrayOf(7f, 4f), 0f)
-            } else BasicStroke(2f)
+                OkTheme.dashed(2f, 7f, 4f)
+            } else OkTheme.stroke(2f)
             if (kind == AnnotationKind.POINT || (shape.w == 0 && shape.h == 0)) {
                 val p = toScreenPoint(Point(shape.x, shape.y))
                 g2.drawOval(p.x - 5, p.y - 5, 10, 10)
@@ -1417,8 +1417,8 @@ class UnifiedAnnotationPanel(
 }
 
 class ShowUnifiedAnnotationsAction : AnAction(), DumbAware {
-    override fun actionPerformed(e: AnActionEvent) { e.project?.let { ToolWindowManager.getInstance(it).getToolWindow(UNIFIED_ANNOTATION_TOOL_WINDOW_ID)?.show() } }
+    override fun actionPerformed(e: AnActionEvent) { e.project?.let { OkScriptToolWindows.show(it, OkTab.RESOURCES, ResourceSection.DRAFT) } }
 }
 class ShowUnifiedResourcesAction : AnAction(), DumbAware {
-    override fun actionPerformed(e: AnActionEvent) { e.project?.let { ToolWindowManager.getInstance(it).getToolWindow(UNIFIED_RESOURCE_PREVIEW_TOOL_WINDOW_ID)?.show() } }
+    override fun actionPerformed(e: AnActionEvent) { e.project?.let { OkScriptToolWindows.show(it, OkTab.RESOURCES, ResourceSection.PUBLISHED) } }
 }

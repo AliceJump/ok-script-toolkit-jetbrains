@@ -117,12 +117,16 @@ class ShowGettingStartedAction : AnAction(), DumbAware {
 
 class GettingStartedProjectActivity : ProjectActivity {
     override suspend fun execute(project: Project) {
+        // 平台组件测试的 TestEditorManager 打不开自定义编辑器；首启引导与测试无关
+        if (com.intellij.openapi.application.ApplicationManager.getApplication().isUnitTestMode) return
         val state = PropertiesComponent.getInstance()
         if (state.getValue(GETTING_STARTED_STATE_KEY) == GETTING_STARTED_VERSION) return
         state.setValue(GETTING_STARTED_STATE_KEY, GETTING_STARTED_VERSION)
-        UIUtil.invokeLaterIfNeeded {
-            if (!project.isDisposed) openGettingStarted(project)
-        }
+        // Application.invokeLater 自带 write-intent 锁；裸 Swing invokeLater 打开编辑器会触发
+        // 「Read access is allowed from inside read-action only」（平台组件测试里暴露出来）。
+        com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater({
+            openGettingStarted(project)
+        }, project.disposed)
     }
 }
 
@@ -225,7 +229,7 @@ private class GettingStartedPanel(private val project: Project) : JPanel(BorderL
                 when (key) {
                     "task" -> showTaskLauncherTasks(project)
                     "run" -> showTaskLauncherRunner(project)
-                    else -> ToolWindowManager.getInstance(project).getToolWindow(toolWindowId)?.show()
+                    else -> OkScriptToolWindows.showLegacy(project, toolWindowId)
                 }
             }
         }, BorderLayout.SOUTH)

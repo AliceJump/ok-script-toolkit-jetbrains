@@ -119,7 +119,7 @@ class ModifyListDialog(
             val body = JPanel(MigLayout("fillx, ins 0", "[grow][grow]"))
             body.add(optionsPane, "grow, push")
             body.add(selectedPane, "grow, push, w 40%!")
-            body.preferredSize = Dimension(640, 320)
+            body.preferredSize = com.intellij.util.ui.JBUI.size(640, 320)
             body
         } else {
             // 自由编辑模式
@@ -154,7 +154,7 @@ class ModifyListDialog(
             addRow.add(addField, "growx")
             addRow.add(addButton)
             pane.add(addRow, "growx")
-            pane.preferredSize = Dimension(480, 320)
+            pane.preferredSize = com.intellij.util.ui.JBUI.size(480, 320)
             pane
         }
     }

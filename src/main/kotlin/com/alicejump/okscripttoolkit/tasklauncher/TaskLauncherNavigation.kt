@@ -2,12 +2,10 @@ package com.alicejump.okscripttoolkit.tasklauncher
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.ui.components.JBTabbedPane
 import java.awt.Component
 import java.awt.Container
 
-private const val TASK_TOOL_WINDOW_ID = "ok-script Tasks"
 
 fun showTaskLauncherTasks(project: Project) =
     showTaskLauncherTab(project, "taskLauncher.tabTasks")
@@ -16,10 +14,8 @@ fun showTaskLauncherRunner(project: Project) =
     showTaskLauncherTab(project, "taskLauncher.tabRunner")
 
 private fun showTaskLauncherTab(project: Project, titleKey: String) {
-    val toolWindow = ToolWindowManager.getInstance(project).getToolWindow(TASK_TOOL_WINDOW_ID) ?: return
-    toolWindow.show {
-        val root = toolWindow.contentManager.contents.firstOrNull()?.component ?: return@show
-        selectTaskLauncherTab(root, OkScriptToolkitBundle.message(titleKey))
+    com.alicejump.okscripttoolkit.ui.OkScriptToolWindows.withTasks(project) { panel ->
+        selectTaskLauncherTab(panel.mainPanel, OkScriptToolkitBundle.message(titleKey))
     }
 }
 

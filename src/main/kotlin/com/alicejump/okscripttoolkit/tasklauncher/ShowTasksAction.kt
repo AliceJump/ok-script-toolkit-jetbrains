@@ -17,8 +17,7 @@ class ShowTasksAction : AnAction() {
 
     override fun actionPerformed(e: AnActionEvent) {
         val project = e.project ?: return
-        val toolWindow = ToolWindowManager.getInstance(project).getToolWindow("ok-script Tasks")
-        toolWindow?.show()
+        com.alicejump.okscripttoolkit.ui.OkScriptToolWindows.show(project, com.alicejump.okscripttoolkit.ui.OkTab.RUN)
     }
 
     /**

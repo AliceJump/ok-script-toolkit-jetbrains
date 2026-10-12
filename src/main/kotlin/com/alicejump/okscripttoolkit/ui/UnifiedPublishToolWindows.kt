@@ -51,8 +51,6 @@ import javax.swing.TransferHandler
 import javax.swing.filechooser.FileNameExtensionFilter
 import com.intellij.ui.SearchTextField
 
-internal val PUBLISH_ANNOTATION_PANEL_KEY =
-    Key.create<PublishingAnnotationManagerPanel>("okScriptToolkit.publishingAnnotationPanel")
 
 private fun publishingMessage(key: String, vararg values: Any) = AnnotationUiBundle.message(key, *values)
 private fun assetMessage(key: String, vararg values: Any) = OkScriptToolkitBundle.message(key, *values)
@@ -109,7 +107,27 @@ private object UnifiedPublishController {
             { TemplatePublishFlow.configure(project) },
             { PositionPublishFlow.configure(project, selection.rect, selection.point) },
             { PositionPublishFlow.publish(project, selection.rect, selection.point, it) },
-            { publishTemplate(project, it, onComplete) }, onComplete)
+            { publishTemplate(project, it, onComplete) }, onComplete,
+            confirm = { template, positions -> confirmPreview(project, template, positions) })
+    }
+
+    /** 发布预览：只读列出将写入的文件与模板增 / 覆盖 / 删，确认后才写盘。 */
+    private fun confirmPreview(project: Project, template: TemplatePublishPlan?, positions: PositionPublishPlan?): Boolean {
+        val root = project.service<OkProjectDataService>().rootPath()
+        fun label(path: java.nio.file.Path): String = root?.let { runCatching { it.relativize(path).toString() }.getOrNull() } ?: path.toString()
+        val templateInput = template?.let { plan ->
+            val data = project.service<TemplateAssetDataService>()
+            val coco = root?.let { data.load(it.toString(), OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory()) }
+            PublishPreview.TemplateInput(
+                targetLabel = label(plan.target),
+                enumPath = plan.enumFile?.takeIf { it.isNotBlank() }?.let { label(java.nio.file.Path.of(it)) },
+                draftNames = coco?.let(PublishPreview::draftNames).orEmpty(),
+                publishedNames = project.service<OkProjectDataService>().features().map { it.name },
+            )
+        }
+        val positionFiles = positions?.let { listOf(it.target) }.orEmpty()
+        val preview = PublishPreview.build(templateInput, positionFiles)
+        return PublishPreviewDialog(project, preview).showAndGet()
     }
 
     private fun availability(project: Project): PublishAvailability {
@@ -154,15 +172,6 @@ private object UnifiedPublishController {
     }
 }
 
-class PublishingAnnotationToolWindowFactory : ToolWindowFactory, DumbAware {
-    override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        val panel = PublishingAnnotationManagerPanel(project)
-        val content = ContentFactory.getInstance().createContent(panel, "", false)
-        content.putUserData(PUBLISH_ANNOTATION_PANEL_KEY, panel)
-        content.setDisposer(panel)
-        toolWindow.contentManager.addContent(content)
-    }
-}
 
 /** 工作原图、图片动作和刷新始终通过同一个面板快照调用。 */
 internal class PublishingAnnotationManagerPanel(private val project: Project) : JPanel(BorderLayout(0, 4)), Disposable {
@@ -175,13 +184,15 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
                 intArrayOf(0, 0, image.width, image.height), names)
         },
         actions = { image -> listOf(
-            ResourceCardAction("👁", assetMessage("templateAsset.open")) { viewSource(image) },
-            ResourceCardAction("⇄", assetMessage("templateAsset.swap")) { swapImage(image) },
-            ResourceCardAction("×", assetMessage("templateAsset.delete")) { deleteImage(image) },
+            ResourceCardAction(com.intellij.icons.AllIcons.Actions.Show, assetMessage("templateAsset.open")) { viewSource(image) },
+            ResourceCardAction(com.intellij.icons.AllIcons.Actions.SwapPanels, assetMessage("templateAsset.swap")) { swapImage(image) },
+            ResourceCardAction(com.intellij.icons.AllIcons.Actions.GC, assetMessage("templateAsset.delete")) { deleteImage(image) },
         ) },
-        onSingle = ::openImage,
+        primary = ::openImage,
         load = { requests, callback -> com.alicejump.okscripttoolkit.core.TemplateThumbPipeline.loadThumbs(
             project, requests, ResourceThumbnailGrid.THUMB_HEIGHT, onThumb = callback) },
+        edit = ::openImage,
+        delete = ::deleteImage,
     )
     private val hardForeground = HardForegroundToggle.create(project)
     private val generation = AtomicInteger(0)
@@ -236,6 +247,9 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
 
     private fun root() = project.service<OkProjectDataService>().rootPath()
     private fun directory() = OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory()
+    /** 资源 tab 横幅「预览并发布…」入口：与工具栏发布按钮同一流程。 */
+    fun publishNow() = UnifiedPublishController.publish(project, ::reload)
+
     fun reload() {
         if (disposed || project.isDisposed) return
         val sequence = generation.incrementAndGet()
@@ -387,7 +401,6 @@ private fun notify(project: Project, message: String, type: NotificationType) {
 class ScreenshotToPublishingAnnotationsAction : AnAction(), DumbAware {
     override fun actionPerformed(event: AnActionEvent) {
         val project = event.project ?: return
-        val window = ToolWindowManager.getInstance(project).getToolWindow(UNIFIED_ANNOTATION_TOOL_WINDOW_ID) ?: return
-        window.show { window.contentManager.contents.firstOrNull()?.getUserData(PUBLISH_ANNOTATION_PANEL_KEY)?.screenshotNow() }
+        OkScriptToolWindows.withResources(project, ResourceSection.DRAFT) { it.screenshotToDrafts() }
     }
 }

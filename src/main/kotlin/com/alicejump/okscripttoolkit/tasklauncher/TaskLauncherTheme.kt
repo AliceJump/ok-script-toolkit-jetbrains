@@ -85,7 +85,7 @@ internal object TaskLauncherTheme {
         label.foreground = color
         label.border = javax.swing.BorderFactory.createCompoundBorder(
             javax.swing.BorderFactory.createLineBorder(color, 1, true),
-            javax.swing.BorderFactory.createEmptyBorder(0, 6, 0, 6),
+            com.intellij.util.ui.JBUI.Borders.empty(0, 6, 0, 6),
         )
     }
 
@@ -103,7 +103,7 @@ internal object TaskLauncherTheme {
             }
 
         init {
-            preferredSize = java.awt.Dimension(9, 9)
+            preferredSize = com.intellij.util.ui.JBUI.size(9, 9)
             minimumSize = preferredSize
             maximumSize = preferredSize
             isOpaque = false
