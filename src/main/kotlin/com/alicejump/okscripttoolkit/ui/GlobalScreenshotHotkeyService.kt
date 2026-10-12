@@ -1,10 +1,9 @@
 package com.alicejump.okscripttoolkit.ui
 
-import com.alicejump.okscripttoolkit.AnnotationUiBundle
-import com.alicejump.okscripttoolkit.core.OkProjectDataService
+import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.PythonScriptLocator
 import com.alicejump.okscripttoolkit.core.ScreenshotCapture
-import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
+import com.alicejump.okscripttoolkit.core.TempScreenshotStore
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
@@ -16,14 +15,11 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.startup.ProjectActivity
 import com.intellij.openapi.util.SystemInfo
-import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.WindowManager
 import com.intellij.util.concurrency.AppExecutorUtil
 import java.awt.Window
 import java.lang.ref.WeakReference
-import java.nio.file.Files
 import java.nio.file.Paths
-import java.util.UUID
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
@@ -34,7 +30,9 @@ import kotlin.concurrent.thread
  * Windows 系统级 Ctrl+Alt+S 监听器。
  *
  * JetBrains Keymap 只能在 IDE 获得焦点时触发；这里复用父仓打包的 global_hotkey.py，
- * 让 RegisterHotKey 在游戏前台时也能收到快捷键，再通过现有 ScreenshotCapture 后台截图。
+ * 让 RegisterHotKey 在游戏前台时也能收到快捷键。落点与 VS Code #41 / CaptureToInbox 一致：
+ * 写入资源收件箱（TempScreenshotStore），不抢焦点、不打开工具窗口。
+ * IDE 内快捷键仍是 Ctrl+Alt+Shift+O（避开 Settings）。
  */
 @Service(Service.Level.APP)
 class GlobalScreenshotHotkeyService : Disposable {
@@ -139,39 +137,47 @@ class GlobalScreenshotHotkeyService : Disposable {
     }
 
     /**
-     * Uses the same project data and ScreenshotCapture path as the annotation panel, but avoids ToolWindow.show().
-     * An already-created panel is refreshed after capture without changing IDE focus or creating the panel.
+     * Captures into the Resources inbox without ToolWindow.show(), matching VS Code's global hotkey path.
+     * TempScreenshotStore listeners refresh an already-open inbox panel without stealing focus.
      */
     private fun captureScreenshotInBackground(project: Project) {
-        val root = project.service<OkProjectDataService>().rootPath() ?: return
-        val directory = OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory()
-        val outputDirectory = root.resolve(directory)
         if (!captureInProgress.compareAndSet(false, true)) return
+        val store = TempScreenshotStore.getInstance(project)
+        val output = store.newFilePath("bmp")
         CompletableFuture.supplyAsync {
             if (disposed || project.isDisposed) return@supplyAsync ScreenshotCapture.CANCELLED
-            Files.createDirectories(outputDirectory)
-            val output = outputDirectory.resolve("screenshot_${UUID.randomUUID()}.png")
-            ScreenshotCapture(project).captureInteractive(output)
+            ScreenshotCapture(project).captureInteractive(output.toPath())
         }.whenComplete { result, error ->
             captureInProgress.set(false)
             ApplicationManager.getApplication().invokeLater {
                 if (disposed || project.isDisposed) return@invokeLater
-                if (error != null || (result != null && result != ScreenshotCapture.CANCELLED)) {
-                    val detail = error?.message ?: result.orEmpty()
-                    NotificationGroupManager.getInstance()
-                        .getNotificationGroup("okScriptToolkit")
-                        .createNotification(AnnotationUiBundle.message("manager.screenshotFailed", detail), NotificationType.ERROR)
-                        .notify(project)
+                when {
+                    error != null -> notifyCapture(project, error.message ?: error.toString(), failed = true)
+                    result == ScreenshotCapture.CANCELLED -> Unit
+                    result != null -> notifyCapture(project, result, failed = true)
+                    else -> {
+                        store.register(output)
+                        notifyCapture(
+                            project,
+                            OkScriptToolkitBundle.message("tempShots.captureSaved", output.name),
+                            failed = false,
+                        )
+                    }
                 }
-                ToolWindowManager.getInstance(project)
-                    .getToolWindow(UNIFIED_ANNOTATION_TOOL_WINDOW_ID)
-                    ?.contentManager
-                    ?.contents
-                    ?.firstOrNull()
-                    ?.getUserData(PUBLISH_ANNOTATION_PANEL_KEY)
-                    ?.reload()
             }
         }
+    }
+
+    private fun notifyCapture(project: Project, detail: String, failed: Boolean) {
+        val text = if (failed) {
+            OkScriptToolkitBundle.message("tempShots.captureFailed", detail)
+        } else {
+            detail
+        }
+        NotificationGroupManager.getInstance()
+            .getNotificationGroup("okScriptToolkit")
+            .createNotification(text, if (failed) NotificationType.ERROR else NotificationType.INFORMATION)
+            .notify(project)
     }
 
     /** Resolves the last focused IDE frame first, then falls back to the latest startup project. */

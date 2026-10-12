@@ -51,4 +51,14 @@ class OkScriptToolWindowTest {
         val paused = executorWidgetText(TaskRunnerService.ExecutorState(status = "running", paused = true), name)
         assertTrue(paused != running)
     }
+
+    @Test
+    fun `global hotkey capture lands in TempScreenshotStore inbox`() {
+        val src = TestRepoLayout.locate("src/main/kotlin/com/alicejump/okscripttoolkit/ui/GlobalScreenshotHotkeyService.kt").readText()
+        assertTrue("TempScreenshotStore" in src)
+        assertTrue("newFilePath(\"bmp\")" in src)
+        assertFalse("okTemplatesDirectory()" in src)
+        assertFalse("UNIFIED_ANNOTATION_TOOL_WINDOW_ID" in src)
+    }
+
 }

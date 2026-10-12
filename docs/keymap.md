@@ -21,6 +21,8 @@ python3 scripts/check_keymap_conflicts.py <PyCharm 2025.1 目录> "control alt s
 ```
 
 2025.1.1.1 的结果：`control alt shift O`、`meta alt shift O` 均为 **FREE**
+
+Windows 系统级 `Ctrl+Alt+S`（游戏前台也能触发）同样写入**资源收件箱**，与 VS Code #41 一致；不打开工具窗口。
 （`$default`、Mac OS X、Mac OS X 10.5+、GNOME、KDE、XWin、Emacs、Sublime Text、macOS System Shortcuts 与全部内置插件）。
 Eclipse / VS Code / NetBeans 等 keymap 是单独下载的插件，未在本地核对。
 

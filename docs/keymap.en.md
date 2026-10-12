@@ -21,6 +21,8 @@ python3 scripts/check_keymap_conflicts.py <PyCharm 2025.1 dir> "control alt shif
 ```
 
 Result on 2025.1.1.1: both `control alt shift O` and `meta alt shift O` are **FREE**
+
+The Windows system-wide `Ctrl+Alt+S` (works while a game holds focus) also lands in the **Resources inbox**, matching VS Code #41, without opening a tool window.
 (`$default`, Mac OS X, Mac OS X 10.5+, GNOME, KDE, XWin, Emacs, Sublime Text, macOS System Shortcuts and all bundled plugins).
 Eclipse / VS Code / NetBeans keymaps are separate downloadable plugins and were not checked locally.
 
