@@ -5,12 +5,23 @@ import com.intellij.openapi.components.service
 import com.intellij.openapi.project.Project
 import java.nio.file.Path
 
-internal enum class ResourceKind { TEMPLATE, RECT, POINT }
+enum class ResourceKind { TEMPLATE, RECT, POINT }
 
 /** Read-only projection, derived afresh from the current authoring data. */
 internal data class AuthoringResource(val name: String, val kind: ResourceKind, val imagePath: Path, val bbox: IntArray) {
     val expression: String get() = "self.pos.$name" + if (kind == ResourceKind.RECT) ".to_box()" else ""
     val summary: String get() = if (kind == ResourceKind.POINT) "Point · (${bbox[0]}, ${bbox[1]})" else "Box · ${bbox[2]}×${bbox[3]}"
+}
+
+internal fun positionChoices(resources: List<AuthoringResource>, name: String, kind: ResourceKind? = null): List<AuthoringResource> =
+    resources.filter { it.name == name && (kind == null || it.kind == kind) }
+        .groupBy { it.kind }.values.mapNotNull { it.singleOrNull() }
+
+internal fun normalizedPosition(source: AuthoringResource, width: Int, height: Int): List<Double>? {
+    if (width <= 0 || height <= 0) return null
+    val (x, y, w, h) = source.bbox
+    return if (source.kind == ResourceKind.POINT) listOf(x.toDouble() / width, y.toDouble() / height)
+    else listOf(x.toDouble() / width, y.toDouble() / height, (x + w).toDouble() / width, (y + h).toDouble() / height)
 }
 
 internal object ResourceAuthoring {
@@ -39,16 +50,13 @@ internal object ResourceAuthoring {
         return AuthoringResource(name, kind, (data.annotationFile?.parent ?: return null).resolve(image.fileName).normalize(), annotation.bbox)
     }
 
-    fun normalized(project: Project, name: String): List<Double>? {
-        val source = positions(project).singleOrNull { it.name == name } ?: return null
+    fun normalized(project: Project, name: String, kind: ResourceKind? = null): List<Double>? {
+        val source = positionChoices(positions(project), name, kind).singleOrNull() ?: return null
         val dimensions = if (source.kind == ResourceKind.RECT) {
             project.service<BoxCatalogService>().imageSize(source.imagePath.fileName.toString())?.let { it.width to it.height }
         } else project.service<PointCatalogService>().read().file.images
             .firstOrNull { PointCatalogService.sameImage(it.file, source.imagePath.fileName.toString()) }?.let { it.width to it.height }
         val (width, height) = dimensions ?: return null
-        if (width <= 0 || height <= 0) return null
-        val (x, y, w, h) = source.bbox
-        return if (source.kind == ResourceKind.POINT) listOf(x.toDouble() / width, y.toDouble() / height)
-        else listOf(x.toDouble() / width, y.toDouble() / height, (x + w).toDouble() / width, (y + h).toDouble() / height)
+        return normalizedPosition(source, width, height)
     }
 }

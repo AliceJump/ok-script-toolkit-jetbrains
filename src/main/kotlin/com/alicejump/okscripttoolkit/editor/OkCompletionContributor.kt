@@ -2,6 +2,7 @@ package com.alicejump.okscripttoolkit.editor
 
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
 import com.alicejump.okscripttoolkit.core.ResourceAuthoring
+import com.alicejump.okscripttoolkit.core.positionChoices
 import com.intellij.codeInsight.completion.CompletionContributor
 import com.intellij.codeInsight.completion.CompletionParameters
 import com.intellij.codeInsight.completion.CompletionResultSet
@@ -43,10 +44,10 @@ class OkPythonCompletionContributor : CompletionContributor() {
                 val paths = resources.map { it.name }.distinct().sorted()
                 OkEditorSupport.boxSegments(paths, context.module.orEmpty()).forEach { segment ->
                     val name = listOf(context.module.orEmpty(), segment).filter { it.isNotEmpty() }.joinToString(".")
-                    val leaf = resources.singleOrNull { it.name == name }?.takeUnless { paths.any { path -> path.startsWith("$name.") } }
-                    val element = if (leaf == null) LookupElementBuilder.create(segment) else
+                    val choices = positionChoices(resources, name).takeUnless { paths.any { path -> path.startsWith("$name.") } }.orEmpty()
+                    val element = if (choices.isEmpty()) LookupElementBuilder.create(segment) else
                         LookupElementBuilder.create(EditorReference(EditorReference.Kind.POS, TextRange.EMPTY_RANGE, name), segment)
-                            .withTypeText(leaf.summary, true)
+                            .withTypeText(choices.joinToString(" / ") { it.summary }, true)
                     replacement.addElement(element)
                 }
             }

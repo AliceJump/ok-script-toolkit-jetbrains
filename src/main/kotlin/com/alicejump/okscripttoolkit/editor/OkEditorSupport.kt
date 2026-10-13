@@ -9,6 +9,7 @@ import com.alicejump.okscripttoolkit.core.LangEntry
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
 import com.alicejump.okscripttoolkit.core.ResourceAuthoring
 import com.alicejump.okscripttoolkit.core.ResourceKind
+import com.alicejump.okscripttoolkit.core.positionChoices
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.openapi.components.service
 import com.intellij.openapi.editor.Document
@@ -28,6 +29,7 @@ data class EditorReference(
     val id: String,
     val module: String? = null,
     val hintOffset: Int = range.endOffset,
+    val resourceKind: ResourceKind? = null,
 ) {
     enum class Kind { LANG, FEATURE, EFFECT, OCR, POS }
 }
@@ -42,7 +44,7 @@ object OkEditorSupport {
 
     fun references(document: Document, startOffset: Int, endOffset: Int, project: Project): List<EditorReference> {
         val result = mutableListOf<EditorReference>()
-        val resolvedPaths by lazy(LazyThreadSafetyMode.NONE) { positionPaths(project) }
+        val resolvedKinds by lazy(LazyThreadSafetyMode.NONE) { positionKinds(project) }
         var line = document.getLineNumber(startOffset.coerceIn(0, document.textLength))
         val lastLine = document.getLineNumber(endOffset.coerceIn(0, document.textLength))
         while (line <= lastLine) {
@@ -53,7 +55,7 @@ object OkEditorSupport {
                 lineText,
                 lineStart,
                 project,
-                if ("self.pos." in lineText) resolvedPaths else null,
+                if ("self.pos." in lineText) resolvedKinds else null,
             )
             line++
         }
@@ -77,7 +79,7 @@ object OkEditorSupport {
         text: String,
         baseOffset: Int,
         project: Project,
-        resolvedPositionPaths: Set<String>? = null,
+        resolvedPositionKinds: Map<String, Set<ResourceKind>>? = null,
     ): List<EditorReference> {
         val refs = mutableListOf<EditorReference>()
         langPattern.matcher(text).run {
@@ -89,21 +91,8 @@ object OkEditorSupport {
             )
         }
 
-        val positionPaths = resolvedPositionPaths
-            ?: if ("self.pos." in text) positionPaths(project) else emptySet()
-        fun addPos(matcher: java.util.regex.Matcher) {
-            while (matcher.find()) {
-                val path = matcher.group(1)
-                if (path !in positionPaths) continue
-                refs += EditorReference(
-                    EditorReference.Kind.POS,
-                    TextRange(baseOffset + matcher.start(), baseOffset + matcher.end()),
-                    path,
-                )
-            }
-        }
-        addPos(posCallPattern.matcher(text))
-        addPos(posPathPattern.matcher(text))
+        refs += positionReferencesInLine(text, baseOffset, resolvedPositionKinds
+            ?: if ("self.pos." in text) positionKinds(project) else emptyMap())
 
         val aliases = OkScriptToolkitSettings.getInstance(project).featureAliases()
         if (aliases.isNotEmpty()) {
@@ -175,7 +164,7 @@ object OkEditorSupport {
                     "<p><i>${OkScriptToolkitBundle.message("documentation.ocrRuntime")}</i></p>"
             }
             EditorReference.Kind.FEATURE -> data.feature(reference.id)?.let { formatFeature(it, project) }
-            EditorReference.Kind.POS -> formatPosition(project, reference.id)
+            EditorReference.Kind.POS -> formatPosition(project, reference.id, reference.resourceKind)
             EditorReference.Kind.EFFECT -> data.effect(reference.id)?.let(::formatEffect)
         }
     }
@@ -189,7 +178,7 @@ object OkEditorSupport {
             EditorReference.Kind.OCR -> data.poEntry("ocr", reference.id)?.let(data::pick)?.let { "→ ${it.value}" }
             EditorReference.Kind.EFFECT -> data.effect(reference.id)?.let { "「${it.description}」" }
             EditorReference.Kind.FEATURE -> data.feature(reference.id)?.let { "「${it.width}×${it.height}」" }
-            EditorReference.Kind.POS -> ResourceAuthoring.normalized(project, reference.id)
+            EditorReference.Kind.POS -> ResourceAuthoring.normalized(project, reference.id, reference.resourceKind)
                 ?.joinToString(", ") { "%.4f".format(it) }
         }
     }
@@ -208,7 +197,7 @@ object OkEditorSupport {
                 "<p><b>fL.${html(it.name)}</b></p><p><b>Size:</b> ${it.width} × ${it.height}</p>" +
                     "<p><b>Source:</b> <code>${html(it.imagePath.toString())}</code></p>"
             }
-            EditorReference.Kind.POS -> formatPosition(project, reference.id)
+            EditorReference.Kind.POS -> formatPosition(project, reference.id, reference.resourceKind)
         } ?: return null
         return "<html>$body</html>"
     }
@@ -221,22 +210,42 @@ object OkEditorSupport {
         }.distinct().sorted()
     }
 
-    private fun positionPaths(project: Project): Set<String> =
-        ResourceAuthoring.positions(project).map { it.name }.toSet()
+    private fun positionKinds(project: Project): Map<String, Set<ResourceKind>> =
+        ResourceAuthoring.positions(project).groupBy { it.name }.mapValues { (_, resources) -> resources.map { it.kind }.toSet() }
 
-    private fun formatPosition(project: Project, path: String): String? {
-        val source = ResourceAuthoring.positions(project).singleOrNull { it.name == path } ?: return null
-        val preview = AnnotatedSourcePreview.fileFor(project, source.imagePath, source.bbox)?.let {
-            runCatching { Base64.getEncoder().encodeToString(Files.readAllBytes(it)) }.getOrNull()
+    internal fun positionReferencesInLine(text: String, baseOffset: Int, kinds: Map<String, Set<ResourceKind>>): List<EditorReference> {
+        val refs = mutableListOf<EditorReference>()
+        fun add(matcher: java.util.regex.Matcher, boxed: Boolean) {
+            while (matcher.find()) {
+                val name = matcher.group(1)
+                val available = kinds[name] ?: continue
+                val kind = if (boxed) ResourceKind.RECT else if (ResourceKind.POINT in available) ResourceKind.POINT else ResourceKind.RECT
+                if (kind !in available) continue
+                refs += EditorReference(EditorReference.Kind.POS,
+                    TextRange(baseOffset + matcher.start(), baseOffset + matcher.end()), name, resourceKind = kind)
+            }
         }
-        return HtmlResources.render("position-documentation", mapOf(
-            "EXPRESSION" to html(source.expression),
-            "PREVIEW" to (preview?.let { HtmlResources.render("box-preview", mapOf("IMAGE" to it)) } ?: ""),
-            "SUMMARY" to html(source.summary),
-            "GEOMETRY" to if (source.kind == ResourceKind.POINT) "(${source.bbox[0]}, ${source.bbox[1]})" else "bbox: ${source.bbox.joinToString(", ")}",
-            "SOURCE_LABEL" to html(OkScriptToolkitBundle.message("documentation.source")),
-            "SOURCE" to html(source.imagePath.toString()),
-        ))
+        add(posCallPattern.matcher(text), true)
+        add(posPathPattern.matcher(text), false)
+        return refs
+    }
+
+    private fun formatPosition(project: Project, path: String, kind: ResourceKind?): String? {
+        val choices = positionChoices(ResourceAuthoring.positions(project), path, kind)
+        if (choices.isEmpty()) return null
+        return choices.joinToString("\n") { source ->
+            val preview = AnnotatedSourcePreview.fileFor(project, source.imagePath, source.bbox)?.let {
+                runCatching { Base64.getEncoder().encodeToString(Files.readAllBytes(it)) }.getOrNull()
+            }
+            HtmlResources.render("position-documentation", mapOf(
+                "EXPRESSION" to html(source.expression),
+                "PREVIEW" to (preview?.let { HtmlResources.render("box-preview", mapOf("IMAGE" to it)) } ?: ""),
+                "SUMMARY" to html(source.summary),
+                "GEOMETRY" to if (source.kind == ResourceKind.POINT) "(${source.bbox[0]}, ${source.bbox[1]})" else "bbox: ${source.bbox.joinToString(", ")}",
+                "SOURCE_LABEL" to html(OkScriptToolkitBundle.message("documentation.source")),
+                "SOURCE" to html(source.imagePath.toString()),
+            ))
+        }
     }
 
     private fun findOcrReferences(text: String, baseOffset: Int): List<EditorReference> {
