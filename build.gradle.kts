@@ -101,11 +101,10 @@ dependencies {
             local(localPath)
         } else {
             pycharm(providers.gradleProperty("platformVersion").get())
-            bundledPlugin("PythonCore")
-            // 约定文件 JSON Schema（OkConventionSchemaProviderFactory）编译需要 json 插件里的
-            // com.jetbrains.jsonSchema.extension.* —— plugin.xml 已 depends com.intellij.modules.json
-            bundledPlugin("com.intellij.modules.json")
         }
+        bundledPlugin("PythonCore")
+        // 本地平台与下载平台都需要 Python 和 JSON 插件的编译依赖。
+        bundledPlugin("com.intellij.modules.json")
         testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
     }
     testImplementation(kotlin("test"))

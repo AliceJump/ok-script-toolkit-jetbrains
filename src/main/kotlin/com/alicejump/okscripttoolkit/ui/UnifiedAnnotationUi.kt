@@ -576,6 +576,16 @@ class UnifiedAnnotationPanel(
     val hasUnsavedChanges: Boolean get() = sessions.values.any { it.dirty }
     val focusedComponent: JComponent get() = canvas
 
+    internal fun focusResource(target: AnnotationKind, name: String) {
+        switchKind(target)
+        templateMode.isSelected = target == AnnotationKind.TEMPLATE
+        rectMode.isSelected = target == AnnotationKind.RECT
+        pointMode.isSelected = target == AnnotationKind.POINT
+        canvas.focusResource(name)
+        syncRows()
+        SwingUtilities.invokeLater { if (!disposed) canvas.focusResource(name) }
+    }
+
     fun showImage(nextImages: List<TemplateImage>, index: Int) {
         canvas.finishTransientEdit()
         images = nextImages + images.filter { old -> sessions.values.any { it.dirty && it.key.file == old.file.name } && nextImages.none { it.file == old.file } }
@@ -846,6 +856,17 @@ class UnifiedAnnotationPanel(
         }
 
         fun selectedIds(): Set<Int> = selected.toSet()
+        fun focusResource(name: String) {
+            val shape = shapes().firstOrNull { it.name == name } ?: return
+            hidden.getValue(kind).remove(name)
+            selected.clear(); selected += shape.id
+            if (kind != AnnotationKind.POINT) scale = max(fitScale, minOf(scale,
+                max(1, width - 40).toDouble() / shape.w, max(1, height - 40).toDouble() / shape.h))
+            offsetX = width / 2.0 - (shape.x + shape.w / 2.0) * scale
+            offsetY = height / 2.0 - (shape.y + shape.h / 2.0) * scale
+            recalcOffset()
+            requestFocusInWindow(); repaint()
+        }
         fun clearSelection() { selected.clear() }
         fun deselect(id: Int) { selected.remove(id) }
         fun selectFromList(id: Int, multiple: Boolean) {

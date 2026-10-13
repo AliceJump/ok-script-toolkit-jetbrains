@@ -4,14 +4,15 @@ import com.alicejump.okscripttoolkit.AnnotationUiBundle
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.AnnotationSwap
 import com.alicejump.okscripttoolkit.core.BoxCatalogService
-import com.alicejump.okscripttoolkit.core.PointCatalogService
-import com.alicejump.okscripttoolkit.core.deleteAnnotationImage
 import com.alicejump.okscripttoolkit.core.CocoAnnotationData
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
+import com.alicejump.okscripttoolkit.core.PointCatalogService
+import com.alicejump.okscripttoolkit.core.ResourceAuthoring
 import com.alicejump.okscripttoolkit.core.ScreenshotCapture
 import com.alicejump.okscripttoolkit.core.TemplateAssetDataService
 import com.alicejump.okscripttoolkit.core.TemplateImage
+import com.alicejump.okscripttoolkit.core.deleteAnnotationImage
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
@@ -32,6 +33,7 @@ import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.ui.SearchTextField
 import com.intellij.ui.content.ContentFactory
 import java.awt.BorderLayout
 import java.awt.datatransfer.DataFlavor
@@ -49,7 +51,6 @@ import javax.swing.JPanel
 import javax.swing.SwingUtilities
 import javax.swing.TransferHandler
 import javax.swing.filechooser.FileNameExtensionFilter
-import com.intellij.ui.SearchTextField
 
 internal val PUBLISH_ANNOTATION_PANEL_KEY =
     Key.create<PublishingAnnotationManagerPanel>("okScriptToolkit.publishingAnnotationPanel")
@@ -191,6 +192,7 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
     private val search = SearchTextField()
     private var images: List<TemplateImage> = emptyList()
     private var categoryNames: Map<Int, String> = emptyMap()
+    private var positionNames: Map<String, List<String>> = emptyMap()
     init {
         val toolbar = JPanel(WrappingToolbarLayout())
         addHierarchyListener { event ->
@@ -249,7 +251,9 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
         CompletableFuture.supplyAsync {
             synchronized(data) {
                 data.load(root.toString(), directory())
-                Triple(data.listImages(), data.readErrors.isNotEmpty(), data.categories().associate { it.id to it.name })
+                val positions = ResourceAuthoring.positions(project)
+                    .groupBy({ it.imagePath.fileName.toString().lowercase() }, { it.name })
+                Pair(Triple(data.listImages(), data.readErrors.isNotEmpty(), data.categories().associate { it.id to it.name }), positions)
             }
         }.whenComplete { result, error -> SwingUtilities.invokeLater {
             if (disposed || project.isDisposed || sequence != generation.get()) return@invokeLater
@@ -257,7 +261,8 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
                 notify(project, publishingMessage("manager.reloadFailed", error.message ?: error), NotificationType.ERROR)
                 return@invokeLater
             }
-            val (loadedImages, invalid, names) = result
+            val (loadedImages, invalid, names) = result.first
+            positionNames = result.second
             if (invalid && !readFailed) notify(project, assetMessage("templateAsset.sourceInvalid"), NotificationType.ERROR)
             readFailed = invalid
             images = loadedImages
@@ -271,7 +276,7 @@ internal class PublishingAnnotationManagerPanel(private val project: Project) : 
         val filtered = images.filter { image ->
             image.file.name.contains(query, ignoreCase = true) || image.annotations.any {
                 categoryNames[it.categoryId]?.contains(query, ignoreCase = true) == true
-            }
+            } || positionNames[image.file.name.lowercase()].orEmpty().any { it.contains(query, ignoreCase = true) }
         }
         cards.setItems(filtered, images.size, invalidate)
     }

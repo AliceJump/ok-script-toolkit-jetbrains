@@ -1,8 +1,8 @@
 package com.alicejump.okscripttoolkit.editor
 
-import com.alicejump.okscripttoolkit.core.BoxCatalogService
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
-import com.alicejump.okscripttoolkit.core.PointCatalogService
+import com.alicejump.okscripttoolkit.core.ResourceAuthoring
+import com.alicejump.okscripttoolkit.core.positionChoices
 import com.intellij.codeInsight.completion.CompletionContributor
 import com.intellij.codeInsight.completion.CompletionParameters
 import com.intellij.codeInsight.completion.CompletionResultSet
@@ -10,6 +10,7 @@ import com.intellij.codeInsight.completion.CompletionType
 import com.intellij.codeInsight.completion.PrioritizedLookupElement
 import com.intellij.codeInsight.lookup.LookupElementBuilder
 import com.intellij.openapi.components.service
+import com.intellij.openapi.util.TextRange
 
 class OkPythonCompletionContributor : CompletionContributor() {
     override fun fillCompletionVariants(parameters: CompletionParameters, result: CompletionResultSet) {
@@ -39,19 +40,19 @@ class OkPythonCompletionContributor : CompletionContributor() {
                 )
             }
             CompletionKind.POS -> {
-                val rects = project.service<BoxCatalogService>().readAuthoring().boxes.map { it.path }
-                val pointResult = project.service<PointCatalogService>().read()
-                val points = if (pointResult.errors.isEmpty()) pointResult.file.points.map { it.path } else emptyList()
-                val paths = (rects + points).distinct().sorted()
+                val resources = ResourceAuthoring.positions(project)
+                val paths = resources.map { it.name }.distinct().sorted()
                 OkEditorSupport.boxSegments(paths, context.module.orEmpty()).forEach { segment ->
-                    replacement.addElement(
-                        LookupElementBuilder.create(segment)
-                            .withTypeText("self.pos", true),
-                    )
+                    val name = listOf(context.module.orEmpty(), segment).filter { it.isNotEmpty() }.joinToString(".")
+                    val choices = positionChoices(resources, name).takeUnless { paths.any { path -> path.startsWith("$name.") } }.orEmpty()
+                    val element = if (choices.isEmpty()) LookupElementBuilder.create(segment) else
+                        LookupElementBuilder.create(EditorReference(EditorReference.Kind.POS, TextRange.EMPTY_RANGE, name), segment)
+                            .withTypeText(choices.joinToString(" / ") { it.summary }, true)
+                    replacement.addElement(element)
                 }
             }
             CompletionKind.FEATURE -> data.features().forEach { feature ->
-                val element = LookupElementBuilder.create(feature.name)
+                val element = LookupElementBuilder.create(EditorReference(EditorReference.Kind.FEATURE, TextRange.EMPTY_RANGE, feature.name), feature.name)
                     .withTypeText("${feature.width}×${feature.height}", true)
                 replacement.addElement(PrioritizedLookupElement.withPriority(element, 1000.0))
             }
