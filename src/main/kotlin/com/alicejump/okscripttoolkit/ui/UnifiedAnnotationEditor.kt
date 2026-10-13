@@ -1,7 +1,11 @@
 package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.AnnotationUiBundle
+import com.alicejump.okscripttoolkit.core.ResourceAuthoring
+import com.alicejump.okscripttoolkit.core.ResourceKind
 import com.alicejump.okscripttoolkit.core.TemplateImage
+import com.intellij.notification.NotificationGroupManager
+import com.intellij.notification.NotificationType
 import com.intellij.openapi.fileEditor.FileEditor
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileEditorPolicy
@@ -14,8 +18,10 @@ import com.intellij.openapi.util.UserDataHolderBase
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.LightVirtualFile
 import java.beans.PropertyChangeListener
+import java.util.concurrent.CompletableFuture
 import javax.swing.Icon
 import javax.swing.JComponent
+import javax.swing.SwingUtilities
 
 internal object AnnotationEditorFileType : FileType {
     override fun getName() = "ok-script Annotation Editor"
@@ -52,6 +58,7 @@ class AnnotationEditor(project: Project, private val file: AnnotationEditorFile)
     override fun getFile(): VirtualFile = file
     override fun dispose() = panel.dispose()
     fun showImage(images: List<TemplateImage>, index: Int) = panel.showImage(images, index)
+    internal fun focusResource(kind: AnnotationKind, name: String) = panel.focusResource(kind, name)
 }
 
 internal fun openUnifiedAnnotationEditor(project: Project, images: List<TemplateImage>, index: Int) {
@@ -60,4 +67,32 @@ internal fun openUnifiedAnnotationEditor(project: Project, images: List<Template
     val existing = manager.openFiles.filterIsInstance<AnnotationEditorFile>().firstOrNull()
     val editors = manager.openFile(existing ?: AnnotationEditorFile(images, index), true)
     if (existing != null) editors.filterIsInstance<AnnotationEditor>().forEach { it.showImage(images, index) }
+}
+
+internal fun openResourceAnnotationEditor(project: Project, kind: ResourceKind, name: String) {
+    CompletableFuture.supplyAsync {
+        val resource = ResourceAuthoring.find(project, kind, name) ?: return@supplyAsync null
+        val images = ResourceAuthoring.templates(project)?.listImages().orEmpty()
+        val index = images.indexOfFirst { it.file.toPath().toAbsolutePath().normalize() == resource.imagePath.toAbsolutePath().normalize() }
+        if (index < 0) null else images to index
+    }.whenComplete { result, error -> SwingUtilities.invokeLater {
+        if (project.isDisposed) return@invokeLater
+        if (error != null || result == null) {
+            NotificationGroupManager.getInstance().getNotificationGroup("okScriptToolkit")
+                .createNotification(AnnotationUiBundle.message("preview.resourceMissing", name), NotificationType.WARNING).notify(project)
+            return@invokeLater
+        }
+        val (images, index) = result
+        openUnifiedAnnotationEditor(project, images, index)
+        val manager = FileEditorManager.getInstance(project)
+        manager.openFiles.filterIsInstance<AnnotationEditorFile>().firstOrNull()?.let { file ->
+            manager.getEditors(file).filterIsInstance<AnnotationEditor>().forEach {
+                it.focusResource(when (kind) {
+                    ResourceKind.TEMPLATE -> AnnotationKind.TEMPLATE
+                    ResourceKind.RECT -> AnnotationKind.RECT
+                    ResourceKind.POINT -> AnnotationKind.POINT
+                }, name)
+            }
+        }
+    } }
 }

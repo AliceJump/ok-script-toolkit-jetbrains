@@ -1,16 +1,16 @@
 package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
-import com.alicejump.okscripttoolkit.core.AnnotatedSourcePreview
-import com.alicejump.okscripttoolkit.core.HtmlResources
 import com.alicejump.okscripttoolkit.core.FeatureTemplate
+import com.alicejump.okscripttoolkit.core.HtmlResources
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
+import com.alicejump.okscripttoolkit.core.ResourceKind
 import com.alicejump.okscripttoolkit.core.TemplateThumbPipeline
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
+import com.intellij.icons.AllIcons
 import com.intellij.notification.NotificationGroupManager
 import com.intellij.notification.NotificationType
-import com.intellij.icons.AllIcons
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
@@ -35,8 +35,8 @@ import java.awt.Container
 import java.awt.Cursor
 import java.awt.Dimension
 import java.awt.FlowLayout
-import java.awt.GridLayout
 import java.awt.Graphics
+import java.awt.GridLayout
 import java.awt.datatransfer.StringSelection
 import java.awt.event.ComponentAdapter
 import java.awt.event.ComponentEvent
@@ -45,10 +45,10 @@ import java.awt.event.MouseEvent
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import javax.swing.Icon
-import javax.swing.JLabel
 import javax.swing.ImageIcon
-import javax.swing.JComponent
 import javax.swing.JButton
+import javax.swing.JComponent
+import javax.swing.JLabel
 import javax.swing.JMenuItem
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
@@ -328,28 +328,8 @@ internal class TemplateGalleryPanel(private val project: Project) : com.intellij
         notify(OkScriptToolkitBundle.message("gallery.copied", text), NotificationType.INFORMATION)
     }
 
-    /**
-     * 对齐 VSCode 版 openAnnotatedImage：优先从 ok_templates 素材库 COCO
-     * 反查原图与原始 bbox（30s TTL），查不到回退画廊数据；
-     * bbox 外扩 200px 裁剪，画红框 + 白色外圈标注后在 IDE 内打开。
-     */
     private fun openAnnotatedSource(template: FeatureTemplate) {
-        CompletableFuture.supplyAsync {
-            val (imagePath, bbox) = data.findOkTemplateCocoEntry(template.name)
-                ?: (template.imagePath to template.bbox)
-            AnnotatedSourcePreview.fileFor(project, imagePath, bbox)
-        }.whenComplete { path, error ->
-            if (error != null) LOG.warn("Failed to open annotated image for ${template.name}", error)
-            SwingUtilities.invokeLater {
-                if (project.isDisposed) return@invokeLater
-                val file = path?.let { LocalFileSystem.getInstance().refreshAndFindFileByNioFile(it) }
-                if (file != null) {
-                    OpenFileDescriptor(project, file).navigate(true)
-                } else {
-                    openRawSource(template)
-                }
-            }
-        }
+        openResourceAnnotationEditor(project, ResourceKind.TEMPLATE, template.name)
     }
 
     private fun openRawSource(template: FeatureTemplate) {

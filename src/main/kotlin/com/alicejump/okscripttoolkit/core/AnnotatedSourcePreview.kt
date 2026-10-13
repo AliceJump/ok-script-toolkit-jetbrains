@@ -25,11 +25,14 @@ internal object AnnotatedSourcePreview {
     }.getOrNull()
 
     fun render(original: BufferedImage, bbox: IntArray): BufferedImage? {
-        if (bbox.size != 4 || bbox[2] <= 0 || bbox[3] <= 0) return null
-        val bx = bbox[0].coerceAtLeast(0)
-        val by = bbox[1].coerceAtLeast(0)
-        val right = (bbox[0].toLong() + bbox[2]).coerceAtMost(original.width.toLong()).toInt()
-        val bottom = (bbox[1].toLong() + bbox[3]).coerceAtMost(original.height.toLong()).toInt()
+        if (bbox.size != 4) return null
+        val point = bbox[2] == 0 && bbox[3] == 0
+        if (!point && (bbox[2] <= 0 || bbox[3] <= 0)) return null
+        if (point && (bbox[0] !in 0..original.width || bbox[1] !in 0..original.height)) return null
+        val bx = if (point) bbox[0].coerceIn(0, original.width - 1) else bbox[0].coerceAtLeast(0)
+        val by = if (point) bbox[1].coerceIn(0, original.height - 1) else bbox[1].coerceAtLeast(0)
+        val right = if (point) bx + 1 else (bbox[0].toLong() + bbox[2]).coerceAtMost(original.width.toLong()).toInt()
+        val bottom = if (point) by + 1 else (bbox[1].toLong() + bbox[3]).coerceAtMost(original.height.toLong()).toInt()
         if (right <= bx || bottom <= by) return null
         val x0 = (bx - 200).coerceAtLeast(0)
         val y0 = (by - 200).coerceAtLeast(0)
@@ -50,10 +53,12 @@ internal object AnnotatedSourcePreview {
             val h = ((bottom - by) * scale).roundToInt().coerceAtLeast(1)
             g.stroke = BasicStroke(4f)
             g.color = Color.WHITE
-            g.drawRect(x, y, w - 1, h - 1)
+            if (point) { g.drawLine(x - 6, y, x + 6, y); g.drawLine(x, y - 6, x, y + 6) }
+            else g.drawRect(x, y, w - 1, h - 1)
             g.stroke = BasicStroke(2f)
             g.color = Color(255, 40, 40)
-            g.drawRect(x, y, w - 1, h - 1)
+            if (point) { g.drawLine(x - 6, y, x + 6, y); g.drawLine(x, y - 6, x, y + 6) }
+            else g.drawRect(x, y, w - 1, h - 1)
         } finally {
             g.dispose()
         }

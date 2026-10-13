@@ -2,12 +2,12 @@ package com.alicejump.okscripttoolkit.ui
 
 import com.alicejump.okscripttoolkit.AnnotationUiBundle
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
-import com.alicejump.okscripttoolkit.core.AnnotatedSourcePreview
 import com.alicejump.okscripttoolkit.core.BoxCatalogService
 import com.alicejump.okscripttoolkit.core.FeatureTemplate
 import com.alicejump.okscripttoolkit.core.OkDataChangeService
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
 import com.alicejump.okscripttoolkit.core.PointCatalogService
+import com.alicejump.okscripttoolkit.core.ResourceKind
 import com.alicejump.okscripttoolkit.core.TemplateThumbPipeline
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.notification.NotificationGroupManager
@@ -15,11 +15,9 @@ import com.intellij.notification.NotificationType
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.components.service
-import com.intellij.openapi.fileEditor.OpenFileDescriptor
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.SearchTextField
@@ -186,22 +184,11 @@ internal class UnifiedResourcePreview(private val project: Project) : Disposable
     }
 
     private fun open(item: CardVisual) {
-        val templateMode = mode == PreviewMode.TEMPLATE
-        CompletableFuture.supplyAsync {
-            val (path, bbox) = if (templateMode) project.service<OkProjectDataService>().findOkTemplateCocoEntry(item.name)
-                ?: (item.imagePath to item.bbox) else item.imagePath to item.bbox
-            AnnotatedSourcePreview.fileFor(project, path, bbox) ?: path
-        }.whenComplete { path, error -> SwingUtilities.invokeLater {
-            if (disposed || project.isDisposed) return@invokeLater
-            if (error != null) {
-                NotificationGroupManager.getInstance().getNotificationGroup("okScriptToolkit")
-                    .createNotification(AnnotationUiBundle.message("preview.openFailed", (error.cause ?: error).message.orEmpty()), NotificationType.ERROR)
-                    .notify(project)
-                return@invokeLater
-            }
-            val file = path?.let { LocalFileSystem.getInstance().refreshAndFindFileByNioFile(it) } ?: return@invokeLater
-            OpenFileDescriptor(project, file).navigate(true)
-        } }
+        if (!disposed) openResourceAnnotationEditor(project, when (mode) {
+            PreviewMode.TEMPLATE -> ResourceKind.TEMPLATE
+            PreviewMode.RECT -> ResourceKind.RECT
+            PreviewMode.POINT -> ResourceKind.POINT
+        }, item.name)
     }
 
     override fun dispose() { disposed = true; generation.incrementAndGet(); cards.dispose() }

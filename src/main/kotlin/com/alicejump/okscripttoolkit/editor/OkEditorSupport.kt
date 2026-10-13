@@ -2,12 +2,13 @@ package com.alicejump.okscripttoolkit.editor
 
 import com.alicejump.okscripttoolkit.OkScriptToolkitBundle
 import com.alicejump.okscripttoolkit.core.AnnotatedSourcePreview
-import com.alicejump.okscripttoolkit.core.BoxCatalogService
 import com.alicejump.okscripttoolkit.core.EffectEntry
 import com.alicejump.okscripttoolkit.core.FeatureTemplate
+import com.alicejump.okscripttoolkit.core.HtmlResources
 import com.alicejump.okscripttoolkit.core.LangEntry
 import com.alicejump.okscripttoolkit.core.OkProjectDataService
-import com.alicejump.okscripttoolkit.core.PointCatalogService
+import com.alicejump.okscripttoolkit.core.ResourceAuthoring
+import com.alicejump.okscripttoolkit.core.ResourceKind
 import com.alicejump.okscripttoolkit.settings.OkScriptToolkitSettings
 import com.intellij.openapi.components.service
 import com.intellij.openapi.editor.Document
@@ -16,6 +17,7 @@ import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.util.text.StringUtil
 import java.awt.image.BufferedImage
 import java.io.ByteArrayOutputStream
+import java.nio.file.Files
 import java.util.Base64
 import java.util.regex.Pattern
 import javax.imageio.ImageIO
@@ -37,14 +39,6 @@ object OkEditorSupport {
     private val effectTypePattern = Pattern.compile("\\bEffectType\\.([A-Z][A-Z0-9_]*)")
     private val effectStringPattern = Pattern.compile("r?['\"]([A-Z][A-Z0-9_]{2,})['\"]")
     private val ocrCallPattern = Pattern.compile("(?<![\\w.])self\\.(ocr|wait_ocr|wait_click_ocr|find_boxes)\\(")
-
-    private data class PositionSource(
-        val path: String,
-        val kind: String,
-        val imagePath: java.nio.file.Path,
-        val bbox: IntArray,
-        val normalized: List<Double>,
-    )
 
     fun references(document: Document, startOffset: Int, endOffset: Int, project: Project): List<EditorReference> {
         val result = mutableListOf<EditorReference>()
@@ -180,7 +174,7 @@ object OkEditorSupport {
                 formatLang(it, data, "match=re.compile(r\"${html(reference.id)}\")") +
                     "<p><i>${OkScriptToolkitBundle.message("documentation.ocrRuntime")}</i></p>"
             }
-            EditorReference.Kind.FEATURE -> data.feature(reference.id)?.let(::formatFeature)
+            EditorReference.Kind.FEATURE -> data.feature(reference.id)?.let { formatFeature(it, project) }
             EditorReference.Kind.POS -> formatPosition(project, reference.id)
             EditorReference.Kind.EFFECT -> data.effect(reference.id)?.let(::formatEffect)
         }
@@ -195,7 +189,7 @@ object OkEditorSupport {
             EditorReference.Kind.OCR -> data.poEntry("ocr", reference.id)?.let(data::pick)?.let { "→ ${it.value}" }
             EditorReference.Kind.EFFECT -> data.effect(reference.id)?.let { "「${it.description}」" }
             EditorReference.Kind.FEATURE -> data.feature(reference.id)?.let { "「${it.width}×${it.height}」" }
-            EditorReference.Kind.POS -> positionSource(project, reference.id)?.normalized
+            EditorReference.Kind.POS -> ResourceAuthoring.normalized(project, reference.id)
                 ?.joinToString(", ") { "%.4f".format(it) }
         }
     }
@@ -227,59 +221,22 @@ object OkEditorSupport {
         }.distinct().sorted()
     }
 
-    private fun positionPaths(project: Project): Set<String> {
-        val rects = project.service<BoxCatalogService>().readAuthoring().boxes.map { it.path }
-        val pointResult = project.service<PointCatalogService>().read()
-        val points = if (pointResult.errors.isEmpty()) pointResult.file.points.map { it.path } else emptyList()
-        return (rects + points).toSet()
-    }
-
-    private fun positionSource(project: Project, path: String): PositionSource? {
-        val root = project.service<OkProjectDataService>().rootPath() ?: return null
-        val directory = OkScriptToolkitSettings.getInstance(project).okTemplatesDirectory()
-        val rectCatalog = project.service<BoxCatalogService>()
-        rectCatalog.readAuthoring().boxes.firstOrNull { it.path == path }?.let { rect ->
-            val imagePath = root.resolve(directory).resolve(rect.image)
-            val size = rectCatalog.imageSize(rect.image) ?: return null
-            val width = size.width.toDouble()
-            val height = size.height.toDouble()
-            if (width <= 0 || height <= 0) return null
-            val x = rect.bbox[0].toDouble()
-            val y = rect.bbox[1].toDouble()
-            val w = rect.bbox[2].toDouble()
-            val h = rect.bbox[3].toDouble()
-            return PositionSource(path, "Rect", imagePath, rect.bbox, listOf(x / width, y / height, (x + w) / width, (y + h) / height))
-        }
-        val pointResult = project.service<PointCatalogService>().read()
-        if (pointResult.errors.isNotEmpty()) return null
-        val point = pointResult.file.points.firstOrNull { it.path == path } ?: return null
-        val image = pointResult.file.images.firstOrNull { PointCatalogService.sameImage(it.file, point.image) } ?: return null
-        if (image.width <= 0 || image.height <= 0) return null
-        val imagePath = root.resolve(directory).resolve(point.image)
-        return PositionSource(
-            path,
-            "Point",
-            imagePath,
-            intArrayOf(point.x, point.y, 0, 0),
-            listOf(point.x.toDouble() / image.width, point.y.toDouble() / image.height),
-        )
-    }
+    private fun positionPaths(project: Project): Set<String> =
+        ResourceAuthoring.positions(project).map { it.name }.toSet()
 
     private fun formatPosition(project: Project, path: String): String? {
-        val source = positionSource(project, path) ?: return null
-        val previewBox = if (source.kind == "Point") {
-            val marker = 10
-            intArrayOf((source.bbox[0] - marker / 2).coerceAtLeast(0), (source.bbox[1] - marker / 2).coerceAtLeast(0), marker, marker)
-        } else source.bbox
-        val preview = AnnotatedSourcePreview.fileFor(project, source.imagePath, previewBox)?.let {
-            runCatching { Base64.getEncoder().encodeToString(java.nio.file.Files.readAllBytes(it)) }.getOrNull()
+        val source = ResourceAuthoring.positions(project).singleOrNull { it.name == path } ?: return null
+        val preview = AnnotatedSourcePreview.fileFor(project, source.imagePath, source.bbox)?.let {
+            runCatching { Base64.getEncoder().encodeToString(Files.readAllBytes(it)) }.getOrNull()
         }
-        val values = source.normalized.joinToString(", ") { "%.6f".format(it) }
-        return "<div class='definition'><code>self.pos.${html(path)}</code></div>" +
-            "<div class='content'><p><b>${html(source.kind)}:</b> <code>$values</code></p>" +
-            (preview?.let { "<p><img src='data:image/png;base64,$it' width='160'/></p>" } ?: "") +
-            "<p><b>${html(OkScriptToolkitBundle.message("documentation.source"))}:</b> " +
-            "<code>${html(source.imagePath.toString())}</code></p></div>"
+        return HtmlResources.render("position-documentation", mapOf(
+            "EXPRESSION" to html(source.expression),
+            "PREVIEW" to (preview?.let { HtmlResources.render("box-preview", mapOf("IMAGE" to it)) } ?: ""),
+            "SUMMARY" to html(source.summary),
+            "GEOMETRY" to if (source.kind == ResourceKind.POINT) "(${source.bbox[0]}, ${source.bbox[1]})" else "bbox: ${source.bbox.joinToString(", ")}",
+            "SOURCE_LABEL" to html(OkScriptToolkitBundle.message("documentation.source")),
+            "SOURCE" to html(source.imagePath.toString()),
+        ))
     }
 
     private fun findOcrReferences(text: String, baseOffset: Int): List<EditorReference> {
@@ -367,15 +324,19 @@ object OkEditorSupport {
             "<div class='content'><table><tr><th>Language</th><th>Type</th><th>Value</th></tr>$rows</table></div>"
     }
 
-    private fun formatFeature(feature: FeatureTemplate): String {
-        val thumbHtml = cropThumbnailBase64(feature)
-        return "<div class='definition'><code>fL.${html(feature.name)}</code></div>" +
-            "<div class='content'>" +
-            (if (thumbHtml != null) "<p><img src='data:image/png;base64,$thumbHtml' width='120'/></p>" else "") +
-            "<p><b>Template name:</b> <code>${html(feature.name)}</code></p>" +
-            "<p><b>Size:</b> ${feature.width} × ${feature.height}</p>" +
-            "<p><b>Source:</b> <code>${html(feature.imagePath.toString())}</code></p>" +
-            "<p><b>bbox:</b> <code>${feature.bbox.joinToString(", ")}</code></p></div>"
+    private fun formatFeature(feature: FeatureTemplate, project: Project): String {
+        val thumb = cropThumbnailBase64(feature)
+        return HtmlResources.render("template-documentation", mapOf(
+            "EXPRESSION" to html("${OkScriptToolkitSettings.getInstance(project).featureAliases().firstOrNull() ?: "fL"}.${feature.name}"),
+            "PREVIEW" to (thumb?.let { HtmlResources.render("box-preview", mapOf("IMAGE" to it)) } ?: ""),
+            "NAME_LABEL" to html(OkScriptToolkitBundle.message("documentation.templateName")),
+            "NAME" to html(feature.name),
+            "SIZE_LABEL" to html(OkScriptToolkitBundle.message("documentation.size")),
+            "SIZE" to "${feature.width} × ${feature.height}",
+            "SOURCE_LABEL" to html(OkScriptToolkitBundle.message("documentation.source")),
+            "SOURCE" to html(feature.imagePath.toString()),
+            "BBOX" to feature.bbox.joinToString(", "),
+        ))
     }
 
     private fun cropThumbnailBase64(feature: FeatureTemplate): String? {
