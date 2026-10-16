@@ -34,7 +34,7 @@ class TemplateAssetDataServiceLabelEnumTest {
     }
 
     private fun compileWithPython(source: String): String? {
-        val python = listOf("python", "python3").firstOrNull { exe ->
+        val python = listOfNotNull(System.getenv("PYTHON"), "python", "python3").firstOrNull { exe ->
             runCatching {
                 ProcessBuilder(exe, "--version").redirectErrorStream(true).start().waitFor() == 0
             }.getOrDefault(false)
@@ -60,6 +60,28 @@ class TemplateAssetDataServiceLabelEnumTest {
     }
 
     // ── 值转义 ────────────────────────────────────────────────────────
+
+    @Test
+    fun `quote style ignores comments and docstrings and follows the majority`() {
+        val doc = "\"\"\""
+        val source = "class Labels(str, Enum):\n    $doc\n    fake = 'example'\n    other = 'example'\n    $doc\n" +
+            "    # ignored = 'comment'\n    first = \"first\" # 'comment'\n    second: str = r\"second\"\n    third = 'third'\n"
+        assertEquals('"', labelEnumQuote(source))
+        assertEquals('"', labelEnumQuote("    a = \"a\"\n    b = 'b'\n"))
+        assertEquals('\'', labelEnumQuote("    a = 'a'\n    b = \"b\"\n"))
+        assertEquals('\'', labelEnumQuote(""))
+        assertEquals('\'', labelEnumQuote("class Labels(str, Enum):\n    pass\n"))
+    }
+
+    @Test
+    fun `double quoted values escape the delimiter and compile`() {
+        assertEquals("\"it's \\\"quoted\\\"\"", pythonStringLiteral("it's \"quoted\"", '"'))
+        val labels = listOf("it's \"quoted\"", "a\\b\n\t\u0007", "中文")
+        val source = "from enum import Enum\nclass Labels(str, Enum):\n" + labels.joinToString("") {
+            "    ${memberNameFor(it)} = ${pythonStringLiteral(it, '"')}\n"
+        }
+        assertCompiles(source)
+    }
 
     @Test
     fun `single quote in a label is escaped`() {

@@ -245,7 +245,7 @@ class TemplateAssetDataService(private val project: Project) : CocoAnnotationDat
                 enumStagingRoot = Files.createTempDirectory(enumParent, ".ok-toolkit-enum-")
                 enumStagingRoot!!.resolve("new").resolve(enumTarget.fileName)
             }
-            generateLabelEnum(stagedEnum.toString(), labels)
+            generateLabelEnum(stagedEnum.toString(), labels, enumFile)
         }
 
         // UI 的进度回调会检查取消；最后一次回调后仍可能在生成 COCO/枚举期间取消。
@@ -316,7 +316,7 @@ class TemplateAssetDataService(private val project: Project) : CocoAnnotationDat
      * 2. **成员名**走 [memberNameFor] 规范化成合法标识符。分类名带空格 / 连字符 / 中文时，
      *    `    洗手 台 = '...'` 这种行会让整个文件 `SyntaxError`，用户拿到的枚举文件直接不能用。
      */
-    fun generateLabelEnum(filePath: String, labels: List<String>) {
+    fun generateLabelEnum(filePath: String, labels: List<String>, originalFilePath: String = filePath) {
         val file = File(filePath)
         file.parentFile?.mkdirs()
         // 类名走取值链：**个人偏好（IDE 设置）> 项目约定 `labelEnum.name` > 文件名推导**。
@@ -325,11 +325,14 @@ class TemplateAssetDataService(private val project: Project) : CocoAnnotationDat
         //
         // ⚠️ 个人覆盖会改掉写进源码的类名，而项目的代码按名字 import。那道闸不在这一层：
         // 覆盖前的确认在 `ui/TemplatePublishFlow`（UI 层）做，见 [LabelEnumGuard]。
-        val rawClassName = OkScriptToolkitSettings.getInstance(project).labelEnumName(filePath).value
+        val rawClassName = OkScriptToolkitSettings.getInstance(project).labelEnumName(originalFilePath).value
         // 类名同样进源码：非法标识符直接退回一个安全的默认名，而不是生成坏文件。
         // 走 `writableClassName` 而**不是**内联一个正则 —— 面板的写入前校验要用**同一个**函数
         // 算"将要写入的类名"，两处各写一遍会让警告内容与实际写进去的东西不符。
         val className = LabelEnumGuard.writableClassName(rawClassName)
+        // 发布先写临时文件；引号风格必须从实际覆盖的目标读取。
+        val originalFile = File(originalFilePath)
+        val quote = labelEnumQuote(if (originalFile.exists()) originalFile.readText(Charsets.UTF_8) else "")
         val content = buildString {
             append("from enum import Enum\n\n\n")
             append("class ").append(className).append("(str, Enum):\n")
@@ -344,7 +347,7 @@ class TemplateAssetDataService(private val project: Project) : CocoAnnotationDat
                 var suffix = 2
                 while (memberName in usedMemberNames) memberName = "${baseName}_${suffix++}"
                 usedMemberNames.add(memberName)
-                append("    ").append(memberName).append(" = ").append(pythonStringLiteral(label)).append('\n')
+                append("    ").append(memberName).append(" = ").append(pythonStringLiteral(label, quote)).append('\n')
             }
         }
         file.writeText(content, Charsets.UTF_8)
@@ -357,7 +360,7 @@ class TemplateAssetDataService(private val project: Project) : CocoAnnotationDat
 private val PYTHON_ENUM_MEMBER = Regex("[A-Za-z][A-Za-z0-9_]*")
 
 /**
- * 把一段用户输入变成合法的 Python 单引号字符串字面量（含引号）。
+ * 把一段用户输入变成合法的 Python 字符串字面量（含选定的引号）。
  *
  * 为什么不用 Jackson 的 `writeValueAsString`：JSON 与 Python 的字符串转义规则**不完全重合**。
  * JSON 里单引号无需转义，而 Python 单引号字面量里 `\'` 是必需的。所以这里逐字符显式转义。
@@ -365,13 +368,17 @@ private val PYTHON_ENUM_MEMBER = Regex("[A-Za-z][A-Za-z0-9_]*")
  * 与 VSCode 版 `templateAssetData.ts` 的 `pythonStringLiteral` 是同一份规则，
  * 改动需两端同步（本仓库的"跨仓一致性"约定）。
  */
-internal fun pythonStringLiteral(value: String): String {
+internal fun pythonStringLiteral(value: String, quote: Char = '\''): String {
+    require(quote == '\'' || quote == '"')
     val out = StringBuilder(value.length + 2)
-    out.append('\'')
+    out.append(quote)
     for (ch in value) {
         when (ch) {
             '\\' -> out.append("\\\\")
-            '\'' -> out.append("\\'")
+            '\'', '"' -> {
+                if (ch == quote) out.append('\\')
+                out.append(ch)
+            }
             '\n' -> out.append("\\n")
             '\r' -> out.append("\\r")
             '\t' -> out.append("\\t")
@@ -383,8 +390,28 @@ internal fun pythonStringLiteral(value: String): String {
             }
         }
     }
-    out.append('\'')
+    out.append(quote)
     return out.toString()
+}
+
+/** 沿用已有成员值的主要引号风格；数量相同时取首个，空文件默认单引号。 */
+internal fun labelEnumQuote(source: String): Char {
+    // 按字符串和注释扫描，避免把文档字符串中的赋值示例当成成员。
+    val triple = "\"\"\"|'''"
+    val tokens = Regex("""#[^\r\n]*|($triple)(?:\\[\s\S]|(?!\1)[^\\])*\1|(["'])(?:\\[\s\S]|(?!\2)[^\\\r\n])*\2""")
+    val assignment = Regex("""[ \t]+[A-Za-z_]\w*[ \t]*(?::[^=\r\n]+)?=[ \t]*[rRuU]?""")
+    val quotes = tokens.findAll(source).mapNotNull { token ->
+        val quote = token.groups[2]?.value?.single() ?: return@mapNotNull null
+        val lineStart = source.lastIndexOf('\n', token.range.first - 1) + 1
+        quote.takeIf { assignment.matches(source.substring(lineStart, token.range.first)) }
+    }.toList()
+    val singles = quotes.count { it == '\'' }
+    val doubles = quotes.size - singles
+    return when {
+        singles == doubles -> quotes.firstOrNull() ?: '\''
+        singles > doubles -> '\''
+        else -> '"'
+    }
 }
 
 /**
