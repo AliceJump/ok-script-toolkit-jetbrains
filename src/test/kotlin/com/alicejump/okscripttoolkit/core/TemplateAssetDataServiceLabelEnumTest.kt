@@ -74,6 +74,22 @@ class TemplateAssetDataServiceLabelEnumTest {
     }
 
     @Test
+    fun `unicode member names keep the original quote style`() {
+        assertEquals('"', labelEnumQuote("    中文 = \"中文\"\n"))
+        assertEquals('"', labelEnumQuote("    ℘ = \"symbol\"\n    𐐀 = \"non-bmp\"\n"))
+    }
+
+    @Test
+    fun `long strings do not overflow the regex stack`() {
+        for (quote in listOf("\"", "'")) {
+            val triple = quote.repeat(3)
+            val doc = "    $triple\n" + "a".repeat(20_000) + "\n    fake = 'ignored'\n    $triple\n"
+            assertEquals('"', labelEnumQuote(doc + "    label = \"value\"\n"))
+            assertEquals(quote.single(), labelEnumQuote("    label = $quote" + "a".repeat(20_000) + "$quote\n"))
+        }
+    }
+
+    @Test
     fun `double quoted values escape the delimiter and compile`() {
         assertEquals("\"it's \\\"quoted\\\"\"", pythonStringLiteral("it's \"quoted\"", '"'))
         val labels = listOf("it's \"quoted\"", "a\\b\n\t\u0007", "中文")

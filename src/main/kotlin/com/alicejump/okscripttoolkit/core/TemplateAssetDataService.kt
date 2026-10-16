@@ -398,8 +398,9 @@ internal fun pythonStringLiteral(value: String, quote: Char = '\''): String {
 internal fun labelEnumQuote(source: String): Char {
     // 按字符串和注释扫描，避免把文档字符串中的赋值示例当成成员。
     val triple = "\"\"\"|'''"
-    val tokens = Regex("""#[^\r\n]*|($triple)(?:\\[\s\S]|(?!\1)[^\\])*\1|(["'])(?:\\[\s\S]|(?!\2)[^\\\r\n])*\2""")
-    val assignment = Regex("""[ \t]+[A-Za-z_]\w*[ \t]*(?::[^=\r\n]+)?=[ \t]*[rRuU]?""")
+    // 普通字符整段消费，外层使用占有量词，避免长字符串使 JVM 正则递归栈溢出。
+    val tokens = Regex("""#[^\r\n]*|($triple)(?:[^\\'\"]+|\\[\s\S]|(?!\1)['\"])*+\1|(["'])(?:[^\\'\"\r\n]+|\\[\s\S]|(?!\2)['\"])*+\2""")
+    val assignment = Regex("""[ \t]+[_\p{javaUnicodeIdentifierStart}][_\p{javaUnicodeIdentifierPart}]*[ \t]*(?::[^=\r\n]+)?=[ \t]*[rRuU]?""")
     val quotes = tokens.findAll(source).mapNotNull { token ->
         val quote = token.groups[2]?.value?.single() ?: return@mapNotNull null
         val lineStart = source.lastIndexOf('\n', token.range.first - 1) + 1
