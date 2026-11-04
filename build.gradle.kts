@@ -213,13 +213,14 @@ intellijPlatform {
             }
         }
         if (verifyPyCharm20263) {
-            // 新版本检查应暴露弃用 API；同时保留原有的二进制兼容与 internal API 门槛。
+            // 2026.3 将同步打开编辑器的 API 标记为弃用，但新接口仅存在于新 IDE；
+            // 为兼容最低支持的 2025.1，保留四处旧调用，交给 CI 独立检查已知告警清单。
+            // 兼容性缺失、internal API 和必需依赖错误仍直接让 verifier 失败。
             failureLevel = listOf(
                 VerifyPluginTask.FailureLevel.COMPATIBILITY_PROBLEMS,
                 VerifyPluginTask.FailureLevel.INTERNAL_API_USAGES,
                 VerifyPluginTask.FailureLevel.OVERRIDE_ONLY_API_USAGES,
                 VerifyPluginTask.FailureLevel.MISSING_DEPENDENCIES,
-                VerifyPluginTask.FailureLevel.DEPRECATED_API_USAGES,
             )
         }
     }
