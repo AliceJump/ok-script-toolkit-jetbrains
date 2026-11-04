@@ -52,7 +52,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
-      - name: Verify current and latest PyCharm 2026.3 RC APIs
+      - name: Verify current and latest available PyCharm 2026.3 preview APIs
         id: verifier
         continue-on-error: true
         run: >-
@@ -61,6 +61,11 @@ jobs:
           -PconventionSchemaFile=parent-source/schemas/ok-script-toolkit.schema.json
           -PverifyPyCharm20263=true
           verifyPlugin
+      - name: Reject unrecognized 2026.3 API deprecations
+        id: baseline
+        if: steps.verifier.outcome == 'success'
+        continue-on-error: true
+        run: python3 scripts/check-2026-3-deprecations.py build/reports/pluginVerifier
       - name: Upload detailed Plugin Verifier reports
         if: always()
         uses: actions/upload-artifact@v4
@@ -69,7 +74,7 @@ jobs:
           path: build/reports/pluginVerifier/
           if-no-files-found: warn
       - name: Require compatible APIs
-        if: steps.verifier.outcome != 'success'
+        if: steps.verifier.outcome != 'success' || steps.baseline.outcome != 'success'
         run: exit 1
 
   build:
