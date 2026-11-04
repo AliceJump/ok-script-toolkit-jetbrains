@@ -379,9 +379,7 @@ internal class AccountEditorDialog(
     }
 
     private fun resolveAccountId(snapshot: AccountStoreData, username: String): String {
-        val entries = snapshot.registry.fields()
-        while (entries.hasNext()) {
-            val (id, meta) = entries.next()
+        for ((id, meta) in snapshot.registry.properties()) {
             if (meta.path("username").asText() == username) return id
             val aliases: JsonNode = meta.path("aliases")
             if (aliases.isArray && aliases.any { it.asText() == username }) return id

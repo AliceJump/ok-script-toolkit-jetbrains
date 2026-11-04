@@ -1,3 +1,7 @@
+import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
+import org.jetbrains.intellij.platform.gradle.models.ProductRelease
+import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask
+
 plugins {
     id("org.jetbrains.kotlin.jvm") version "2.1.10"
     id("org.jetbrains.intellij.platform") version "2.18.1"
@@ -193,8 +197,31 @@ intellijPlatform {
     }
 
     pluginVerification {
+        // 日常发布继续只验证构建所用的 PyCharm；额外的 2026.3 预览验证由独立 CI job 开启。
+        // IDEA 未安装 Python 插件时缺少 com.intellij.modules.python 属于预期依赖，不应删除强制依赖。
+        val verifyPyCharm20263 = providers.gradleProperty("verifyPyCharm20263").orNull == "true"
         ides {
             current()
+            if (verifyPyCharm20263) {
+                // 从 263 构建线选最新的 PyCharm EAP / RC，而不是无 Python 的裸 IntelliJ IDEA。
+                latest {
+                    types = listOf(IntelliJPlatformType.PyCharm)
+                    channels = listOf(ProductRelease.Channel.EAP)
+                    sinceBuild = "263"
+                    untilBuild = "263.*"
+                }
+            }
+        }
+        if (verifyPyCharm20263) {
+            // 2026.3 将同步打开编辑器的 API 标记为弃用，但新接口仅存在于新 IDE；
+            // 为兼容最低支持的 2025.1，保留四处旧调用，交给 CI 独立检查已知告警清单。
+            // 兼容性缺失、internal API 和必需依赖错误仍直接让 verifier 失败。
+            failureLevel = listOf(
+                VerifyPluginTask.FailureLevel.COMPATIBILITY_PROBLEMS,
+                VerifyPluginTask.FailureLevel.INTERNAL_API_USAGES,
+                VerifyPluginTask.FailureLevel.OVERRIDE_ONLY_API_USAGES,
+                VerifyPluginTask.FailureLevel.MISSING_DEPENDENCIES,
+            )
         }
     }
 }
