@@ -1,3 +1,7 @@
+import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
+import org.jetbrains.intellij.platform.gradle.models.ProductRelease
+import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask
+
 plugins {
     id("org.jetbrains.kotlin.jvm") version "2.1.10"
     id("org.jetbrains.intellij.platform") version "2.18.1"
@@ -193,8 +197,30 @@ intellijPlatform {
     }
 
     pluginVerification {
+        // 日常发布继续只验证构建所用的 PyCharm；额外的 2026.3 预览验证由独立 CI job 开启。
+        // IDEA 未安装 Python 插件时缺少 com.intellij.modules.python 属于预期依赖，不应删除强制依赖。
+        val verifyPyCharm20263 = providers.gradleProperty("verifyPyCharm20263").orNull == "true"
         ides {
             current()
+            if (verifyPyCharm20263) {
+                // 从 263 构建线选最新的 PyCharm EAP / RC，而不是无 Python 的裸 IntelliJ IDEA。
+                latest {
+                    types = listOf(IntelliJPlatformType.PyCharm)
+                    channels = listOf(ProductRelease.Channel.EAP)
+                    sinceBuild = "263"
+                    untilBuild = "263.*"
+                }
+            }
+        }
+        if (verifyPyCharm20263) {
+            // 新版本检查应暴露弃用 API；同时保留原有的二进制兼容与 internal API 门槛。
+            failureLevel = listOf(
+                VerifyPluginTask.FailureLevel.COMPATIBILITY_PROBLEMS,
+                VerifyPluginTask.FailureLevel.INTERNAL_API_USAGES,
+                VerifyPluginTask.FailureLevel.OVERRIDE_ONLY_API_USAGES,
+                VerifyPluginTask.FailureLevel.MISSING_DEPENDENCIES,
+                VerifyPluginTask.FailureLevel.DEPRECATED_API_USAGES,
+            )
         }
     }
 }
