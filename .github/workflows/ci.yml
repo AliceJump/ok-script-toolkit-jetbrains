@@ -31,6 +31,47 @@ jobs:
         shell: pwsh
         run: ${{ matrix.engine }} -NoProfile -File ./.agents/skills/ok-script-pr-review/test-review-threads-mock.ps1
 
+  # The Marketplace scans IDEA builds without optional Python support. Verify against the
+  # Python-capable product for actionable 2026.3 API diagnostics, and preserve full reports.
+  verify-next-pycharm:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out shared Python scripts and convention schema
+        uses: actions/checkout@v4
+        with:
+          repository: AliceJump/ok-script-toolkit
+          ref: 243a7839e11d7b5cc2400e68f23a511ce0cb9ebb
+          path: parent-source
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-encryption-key: ${{ secrets.GRADLE_ENCRYPTION_KEY }}
+      - name: Verify current and latest PyCharm 2026.3 RC APIs
+        id: verifier
+        continue-on-error: true
+        run: >-
+          ./gradlew
+          -PpythonScriptsDir=parent-source/python
+          -PconventionSchemaFile=parent-source/schemas/ok-script-toolkit.schema.json
+          -PverifyPyCharm20263=true
+          verifyPlugin
+      - name: Upload detailed Plugin Verifier reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pycharm-2026-3-verifier
+          path: build/reports/pluginVerifier/
+          if-no-files-found: warn
+      - name: Require compatible APIs
+        if: steps.verifier.outcome != 'success'
+        run: exit 1
+
   build:
     runs-on: ubuntu-24.04
     steps:
